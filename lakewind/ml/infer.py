@@ -147,8 +147,8 @@ def predict_at(
     ref_u, ref_v = WindVector(speed_kn=ref_speed, direction_deg=ref_dir).to_uv()
     final = bias_correct(ref_u, ref_v, bp.bias_u_q50, bp.bias_v_q50)
 
-    # Gust: apply the same relative bias correction to the gust
-    gust = ref.get("wind_gust_kn")
+    # Gust: lookup from feature vector (ref model gust) and apply bias correction ratio
+    gust = fr.feature_vector.get(f"fc_{ref_fc}_gust")
     if gust is not None and ref_speed > 0.1:
         gust_ratio = gust / ref_speed
         gust = final.speed_kn * gust_ratio
