@@ -17,6 +17,10 @@ console = Console()
 
 # V2 schema additions — all tables prefixed with `v2_` to make diff explicit
 V2_SCHEMA_SQL = """
+-- Note: v2_regime_log, v2_model_registry, v2_feature_cache, v2_kalman_state
+-- are deprecated in V4 (regime classifier, stacking, Kalman all deleted).
+-- They're kept for backward compatibility but not populated.
+
 -- User registry: one row per Telegram user
 CREATE TABLE IF NOT EXISTS v2_users (
     telegram_user_id BIGINT PRIMARY KEY,

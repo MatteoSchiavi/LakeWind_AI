@@ -67,12 +67,19 @@ def build_features_for(
     s = load_settings()
 
     # 1) FORECAST FEATURES — per model, no averaging
-    forecasts = access.fetch_forecasts_at(point_id, valid_time, lead_minutes_window=120)
+    forecasts = access.fetch_forecasts_at(point_id, valid_time, lead_minutes_window=30)
     if not forecasts:
         return None
     by_model: dict[str, dict[str, Any]] = {f["model_name"]: f for f in forecasts}
+    # CRITICAL: if the reference forecast model is missing, return None instead
+    # of silently substituting another model. Training uses icon_eu as reference;
+    # at serve time, silently switching to gfs would shift the target domain.
     if reference_forecast_model not in by_model:
-        reference_forecast_model = list(by_model.keys())[0]
+        logger.debug(
+            "Reference model %s not available for %s @ %s — skipping sample",
+            reference_forecast_model, point_id, valid_time,
+        )
+        return None
 
     ref = by_model[reference_forecast_model]
     ref_u, ref_v = WindVector(
@@ -188,6 +195,17 @@ def build_features_for(
         fv.update(fsi)
     except Exception as exc:
         logger.debug("V3 advanced features skipped: %s", exc)
+
+    # 3c) V4 CLIMATOLOGY FEATURES — derived from 10-year ERA5 backfill.
+    # These capture seasonality + anomalies that the model can't learn from
+    # a few months of data. Only used as FEATURE INPUTS (normals, anomalies),
+    # NEVER as training targets.
+    try:
+        from lakewind.features.climatology import compute_climatology_features
+        clim = compute_climatology_features(valid_time, point_id, fv)
+        fv.update(clim)
+    except Exception as exc:
+        logger.debug("V4 climatology features skipped: %s", exc)
 
     # Solar geometry (Spec §4.4)
     vp = next((p for p in s.virtual_points if p.id == point_id), None)

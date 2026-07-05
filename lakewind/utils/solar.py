@@ -39,10 +39,13 @@ def solar_state_at(
     `dt` is assumed timezone-aware. If naive, local tz_name is applied.
     """
     tz = ZoneInfo(tz_name)
+    # CRITICAL FIX: naive datetimes in this codebase are UTC (from collectors
+    # that store UTC timestamps). Treat them as UTC, then convert to local.
+    # The original code treated naive as local time, shifting all solar/Breva/
+    # Tivano features by 1-2 hours.
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=tz)
-    else:
-        dt = dt.astimezone(tz)
+        dt = dt.replace(tzinfo=ZoneInfo("UTC"))
+    dt = dt.astimezone(tz)
 
     loc = _location_info(lat, lon, tz_name)
 

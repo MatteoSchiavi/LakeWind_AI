@@ -82,7 +82,7 @@ def run_cycle(
                 point_id=vp.id,
                 wind_speed_kn=ir.wind_speed_kn,
                 wind_dir_deg=ir.wind_dir_deg,
-                wind_gust_kn=ir.wind_gust_kn or 0.0,
+                wind_gust_kn=ir.wind_gust_kn,
                 confidence_pct=ir.confidence_pct,
                 expected_error_kn=ir.expected_error_kn,
                 model_version=ir.model_version,

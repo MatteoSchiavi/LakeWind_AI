@@ -89,7 +89,7 @@ def compute_thermal_inertia(
         return _empty_thermal_inertia()
 
     avg_temp = sum(temps) / len(temps)
-    temp_trend = (temps[0] - temps[-1]) / max(len(temps), 1) if len(temps) >= 2 else 0.0
+    temp_trend = (temps[0] - temps[-1]) / max(len(temps) - 1, 1)  # °C per hour if len(temps) >= 2 else 0.0
     solar_accum = sum(solar) if solar else 0.0
 
     # Composite index: normalize each component to 0-1 and average
@@ -205,7 +205,7 @@ def compute_stability_indices(
     # Lifted Index approximation
     li = None
     if cape is not None:
-        li = -cape / 100.0  # rough: 1000 J/kg CAPE ≈ LI of -10
+        li = -cape / 100.0  # proxy: higher CAPE → more negative → more unstable
 
     # Bulk Richardson Number (using gust-sustained as shear proxy)
     brn = None
@@ -230,8 +230,8 @@ def compute_stability_indices(
     temp_dewpt_spread = (temp - dewpt) if (temp is not None and dewpt is not None) else None
 
     return {
-        "stability_lifted_index": round(li, 2) if li is not None else None,
-        "stability_brn": round(brn, 2) if brn is not None else None,
+        "cape_instability_proxy": round(li, 2) if li is not None else None,
+        "surface_shear_proxy": round(brn, 2) if brn is not None else None,
         "stability_score": round(score, 4),
         "stability_convective_potential": convective,
         "temp_dewpt_spread": round(temp_dewpt_spread, 2) if temp_dewpt_spread is not None else None,
@@ -384,20 +384,14 @@ def compute_foehn_strength_index(
     dir_score: float | None = None
     if wind_dir is not None:
         # Normalize: 0° (N) and 360° should both be 1.0; 180° (S) = 0.0
-        if wind_dir <= 90 or wind_dir >= 270:
-            # Northern quadrant
-            if wind_dir <= 45:
-                dir_score = 1.0 - (wind_dir / 45.0) * 0.3  # 0° = 1.0, 45° = 0.7
-            elif wind_dir >= 315:
-                dir_score = 1.0 - ((360 - wind_dir) / 45.0) * 0.3  # 360 = 1.0, 315 = 0.7
-            else:
-                # 46-90 or 270-314: partial
-                if wind_dir <= 90:
-                    dir_score = max(0.0, 0.7 - (wind_dir - 45) / 45.0 * 0.7)
-                else:
-                    dir_score = max(0.0, 0.7 - (270 - wind_dir) / 45.0 * 0.7)
+        # Foehn is N-NW (315°-360° and 0°-45°). Score: 1.0 at 0°/360°, 0.7 at 45°/315°, 0.0 at 90°/270°
+        if wind_dir <= 45:
+            dir_score = 1.0 - (wind_dir / 45.0) * 0.3
+        elif wind_dir >= 315:
+            dir_score = 1.0 - ((360.0 - wind_dir) / 45.0) * 0.3
         else:
-            dir_score = 0.0
+            dir_score = 0.0  # not Foehn direction
+        dir_score = max(0.0, min(1.0, dir_score))  # clamp to [0, 1]
 
     # 4. Composite Foehn strength
     strength: float | None = None

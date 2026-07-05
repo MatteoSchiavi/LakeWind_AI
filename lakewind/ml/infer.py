@@ -22,7 +22,7 @@ from lakewind.utils.wind import WindVector, bias_correct
 
 logger = logging.getLogger(__name__)
 
-MODELS_DIR = Path("data/models")
+MODELS_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "models"
 
 
 @dataclass
@@ -140,14 +140,10 @@ def predict_at(
     # 2) Predict bias
     bp = predict_bias(fr.feature_vector, model_version)
 
-    # 3) Reconstruct wind field (Spec §8 step 5: bias-corrected U/V -> speed/dir)
-    ref_fc = fr.meta.get("reference_model")
-    forecasts = access.fetch_forecasts_at(point_id, valid_time, lead_minutes_window=120)
-    ref = next((f for f in forecasts if f["model_name"] == ref_fc), None) or (forecasts[0] if forecasts else None)
-    if ref is None:
-        return None
-    ref_speed = ref.get("wind_speed_kn") or 0.0
-    ref_dir = ref.get("wind_dir_deg") or 0.0
+    # 3) Reconstruct wind field using fr.meta (no redundant DB query)
+    ref_speed = fr.meta.get("ref_speed_kn") or 0.0
+    ref_dir = fr.meta.get("ref_dir_deg") or 0.0
+    ref_fc = fr.meta.get("reference_model", "icon_eu")
     ref_u, ref_v = WindVector(speed_kn=ref_speed, direction_deg=ref_dir).to_uv()
     final = bias_correct(ref_u, ref_v, bp.bias_u_q50, bp.bias_v_q50)
 

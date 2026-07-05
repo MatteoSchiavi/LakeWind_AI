@@ -30,7 +30,8 @@ CREATE TABLE IF NOT EXISTS forecast_runs (
     shortwave_radiation DOUBLE,
     cape DOUBLE,
     boundary_layer_height DOUBLE,
-    raw_json JSON
+    raw_json JSON,
+    UNIQUE(model_name, point_id, run_time, valid_time)
 );
 
 -- Ground truth: scraped stations, ARPA, and your own DIY sensor (Tier 0/1)
@@ -47,7 +48,8 @@ CREATE TABLE IF NOT EXISTS observations (
     temperature DOUBLE,
     humidity DOUBLE,
     quality_flag VARCHAR,
-    confidence DOUBLE
+    confidence DOUBLE,
+    UNIQUE(source, timestamp, lat, lon)
 );
 
 -- Personal sailing sessions (Tier 4, elevated priority)

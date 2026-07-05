@@ -1,7 +1,7 @@
 """Historical Forecast backfill collector (Spec §4.3).
 
 Spec §4.3 explicitly says:
-    "Historical training data, leakage-free (critical for MOS training):
+    "Historical training data (approximate — for truly leakage-free data use Previous Runs API):
      - Previous Runs API — returns each model's forecast at a fixed lead-time
        offset (1-7 days ahead), exactly reconstructing what was knowable at
        past decision times. This is the correct dataset for training

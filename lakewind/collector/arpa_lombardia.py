@@ -1,17 +1,20 @@
 """ARPA Lombardia collector via Socrata Open Data API (Spec §4.2).
 
-Spec: "Query the station registry by bounding box at runtime to discover actual
-nearby stations — do not hardcode guessed station IDs."
+FIXED in V4: The original collector used `within_box(location, ...)` which
+doesn't work because the ARPA station dataset doesn't have a Socrata Location
+field. The actual fields are `lat` and `lng` (numeric, WGS84). Also, the
+sensor data dataset doesn't have a `tiposensore` column — the sensor type is
+in the station registry, not the readings.
 
-Endpoints (Socrata):
-- sensor data:    https://www.dati.lombardia.it/resource/647i-nhxk.json
-- station meta:   https://www.dati.lombardia.it/resource/nf78-nj6b.json
+Corrected approach:
+1. Query station registry (`nf78-nj6b`) by lat/lng range (NOT within_box)
+2. Build sensor_id → (station_id, sensor_type, lat, lon) lookup from registry
+3. Query sensor readings (`647i-nhxk`) by idsensore IN (...)
+4. Aggregate by (station_id, timestamp) — NOT (sensor_id, timestamp) — so
+   wind_speed and wind_dir from the same station land in the same row
 
-Free, no key for low volume; an app token raises rate limits.
-
-Socrata supports a `SoQL` query syntax. We use `$where=within_box(...)` on the
-station registry to discover stations within the operating area (plus padding),
-then pull recent sensor readings for those station IDs.
+Note: The sensor data dataset `647i-nhxk` only contains CURRENT MONTH data.
+For historical data, ARPA provides a separate form-based download.
 """
 from __future__ import annotations
 
@@ -27,15 +30,41 @@ from lakewind.db import access
 
 logger = logging.getLogger(__name__)
 
+# ARPA sensor type IDs (from the station registry `tipologia` field)
+# These are string descriptions, not numeric codes
+SENSOR_TYPE_MAP = {
+    "Velocità Vento": "wind_speed",       # m/s
+    "Direzione Vento": "wind_dir",        # degrees
+    "Raffica Vento": "wind_gust",         # m/s (if available)
+    "Temperatura": "temperature",         # °C
+    "Umidità Relativa": "humidity",       # %
+    "Pressione": "pressure",              # hPa
+    "Precipitazione": "precipitation",    # mm
+}
+
+# Also try numeric tiposensore values (the sensor readings table uses these)
+SENSOR_ID_MAP = {
+    "1": "temperature",
+    "2": "humidity",
+    "3": "precipitation",
+    "4": "pressure",
+    "5": "wind_speed",
+    "6": "wind_dir",
+    "7": "precipitation",
+    "25": "wind_gust",
+}
+
 
 class ArpaLombardiaCollector(BaseCollector):
+    """Collect real-time wind data from ARPA Lombardia stations near Lake Como."""
+
     source_name = "arpa_lombardia"
 
     def __init__(self) -> None:
         s = load_settings()
         self.cfg = s.arpa_lombardia
         self.area = s.operating_area
-        self.hours_back = 3  # pull last 3h each cycle (idempotent inserts not enforced yet)
+        self.hours_back = 3
 
     def _headers(self) -> dict[str, str]:
         token = load_secrets().arpa_app_token.get_secret_value()
@@ -45,38 +74,87 @@ class ArpaLombardiaCollector(BaseCollector):
         return h
 
     def _discover_stations(self) -> list[dict[str, Any]]:
-        """Query the station registry by bounding box."""
+        """Query station registry by lat/lng range.
+
+        FIXED: Uses `lat` and `lng` numeric fields with range filter,
+        NOT `within_box(location, ...)` which doesn't work on this dataset.
+        """
         pad = self.cfg.bbox_padding_deg
         lat_min = self.area.lat_min - pad
         lat_max = self.area.lat_max + pad
         lon_min = self.area.lon_min - pad
         lon_max = self.area.lon_max + pad
-        # Socrata within_box(field, lat_bottom, lon_left, lat_top, lon_right)
+
+        # Query using lat/lng range — these are direct numeric fields in nf78-nj6b
         soql = (
-            f"?$where=within_box(location, {lat_min}, {lon_min}, {lat_max}, {lon_max})"
-            "&$limit=200"
+            f"?$where=lat >= {lat_min} AND lat <= {lat_max}"
+            f" AND lng >= {lon_min} AND lng <= {lon_max}"
+            f" AND datastop IS NULL"  # only active sensors
+            f"&$limit=500"
         )
         url = f"{self.cfg.base_url}/{self.cfg.station_dataset}.json{soql}"
         try:
             resp = requests.get(url, headers=self._headers(), timeout=20)
-            resp.raise_for_status()
+            if resp.status_code != 200:
+                logger.warning("ARPA station discovery HTTP %d: %s",
+                              resp.status_code, resp.text[:200])
+                return []
             data = resp.json()
         except Exception as exc:
             logger.warning("ARPA station discovery failed: %s", exc)
             return []
         return data if isinstance(data, list) else []
 
-    def _fetch_recent_sensor_data(self, station_ids: list[str]) -> list[dict[str, Any]]:
-        if not station_ids:
+    def _build_sensor_lookup(self, stations: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+        """Build sensor_id → (station_id, sensor_type, lat, lon, station_name) lookup.
+
+        The station registry has ONE ROW PER SENSOR (not per station).
+        Each row has: idsensore, idstazione, nomestazione, lat, lng, tipologia.
+        `tipologia` is a string like "Velocità Vento" that tells us the sensor type.
+        """
+        lookup: dict[str, dict[str, Any]] = {}
+        for st in stations:
+            sid = str(st.get("idsensore") or "")
+            if not sid:
+                continue
+            tipologia = str(st.get("tipologia") or "").strip()
+            sensor_type = SENSOR_TYPE_MAP.get(tipologia)
+            if sensor_type is None:
+                # Try partial match
+                for key, val in SENSOR_TYPE_MAP.items():
+                    if key.lower() in tipologia.lower() or tipologia.lower() in key.lower():
+                        sensor_type = val
+                        break
+            if sensor_type is None:
+                continue  # skip non-weather sensors
+
+            lookup[sid] = {
+                "station_id": str(st.get("idstazione") or ""),
+                "station_name": str(st.get("nomestazione") or ""),
+                "sensor_type": sensor_type,
+                "lat": _safe_float(st.get("lat")),
+                "lng": _safe_float(st.get("lng")),
+                "tipologia": tipologia,
+            }
+        logger.info("ARPA: discovered %d weather sensors from %d registry rows",
+                    len(lookup), len(stations))
+        return lookup
+
+    def _fetch_recent_sensor_data(self, sensor_ids: list[str]) -> list[dict[str, Any]]:
+        """Fetch recent sensor readings for the given sensor IDs."""
+        if not sensor_ids:
             return []
         since = (datetime.utcnow() - timedelta(hours=self.hours_back)).strftime("%Y-%m-%dT%H:%M:%S")
-        # Socrata $where with IN list and > date
-        ids_quoted = ",".join(f"'{sid}'" for sid in station_ids)
+        # Socrata $where with IN list and date filter
+        ids_quoted = ",".join(f"'{sid}'" for sid in sensor_ids)
         soql = f"?$where=idsensore IN ({ids_quoted}) AND data > '{since}'&$limit=10000"
         url = f"{self.cfg.base_url}/{self.cfg.sensor_dataset}.json{soql}"
         try:
             resp = requests.get(url, headers=self._headers(), timeout=30)
-            resp.raise_for_status()
+            if resp.status_code != 200:
+                logger.warning("ARPA sensor data HTTP %d: %s",
+                              resp.status_code, resp.text[:200])
+                return []
             data = resp.json()
         except Exception as exc:
             logger.warning("ARPA sensor data fetch failed: %s", exc)
@@ -84,48 +162,61 @@ class ArpaLombardiaCollector(BaseCollector):
         return data if isinstance(data, list) else []
 
     def fetch_raw(self) -> dict[str, Any]:
+        """Fetch stations + sensor readings."""
         stations = self._discover_stations()
-        # The station registry uses 'idsensore' or 'cod_staz' depending on dataset version;
-        # try both keys defensively.
-        station_ids: list[str] = []
-        station_meta: dict[str, dict[str, Any]] = {}
-        for st in stations:
-            sid = st.get("idsensore") or st.get("cod_staz") or st.get("idstazione")
-            if not sid:
-                continue
-            station_ids.append(str(sid))
-            station_meta[str(sid)] = st
-        sensor_rows = self._fetch_recent_sensor_data(station_ids)
-        return {"stations": station_meta, "sensors": sensor_rows}
+        sensor_lookup = self._build_sensor_lookup(stations)
+        if not sensor_lookup:
+            return {"sensors": {}, "readings": []}
+        readings = self._fetch_recent_sensor_data(list(sensor_lookup.keys()))
+        return {"sensors": sensor_lookup, "readings": readings}
 
     def to_rows(self, raw: dict[str, Any]) -> list[dict[str, Any]]:
-        # ARPA sensor data is per-sensor (one row per measurement type).
-        # Aggregate by (station, timestamp) into a single observation row.
+        """Convert sensor readings to observation rows.
+
+        FIXED: Aggregates by (station_id, timestamp) — NOT (sensor_id, timestamp) —
+        so wind_speed and wind_dir from the same station land in the same row.
+        Uses the sensor lookup to determine the field type.
+        """
+        sensor_lookup = raw["sensors"]
+        readings = raw["readings"]
+
+        # Aggregate by (station_id, timestamp)
         agg: dict[tuple, dict[str, Any]] = {}
-        stations = raw["stations"]
-        for srow in raw["sensors"]:
+        for srow in readings:
             sid = str(srow.get("idsensore") or "")
-            meta = stations.get(sid, {})
+            if sid not in sensor_lookup:
+                continue
+
+            meta = sensor_lookup[sid]
+            station_id = meta["station_id"]
+            sensor_type = meta["sensor_type"]
+
             try:
-                ts_str = srow.get("data") or ""
-                # ARPA format: "2024-01-01T12:00:00.000+00:00"
+                ts_str = str(srow.get("data") or "")
+                # ARPA format: "2024-01-01T12:00:00.000+00:00" or "2024-01-01T12:00:00"
                 ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                if ts.tzinfo:
+                    ts = ts.replace(tzinfo=None)
             except Exception:
                 continue
+
             try:
                 value = float(srow.get("valore") or 0)
             except (TypeError, ValueError):
                 continue
-            # ARPA sensor type codes (tiposensore): 1=temperature, 2=relative humidity,
-            # 4=pressure, 5=wind speed, 6=wind direction, 7=rain, 25=gust... (varies)
-            tipo = str(srow.get("tiposensore") or "").lower()
-            key = (sid, ts.isoformat())
+
+            # Skip sensor readings flagged as invalid by ARPA
+            stato = str(srow.get("stato") or "").strip()
+            if stato and stato.lower() in ("non validato", "invalid", "error"):
+                continue
+
+            key = (station_id, ts.isoformat())
             if key not in agg:
                 agg[key] = {
-                    "source": f"arpa_{sid}",
-                    "timestamp": ts.replace(tzinfo=None),
-                    "lat": _safe_float(meta.get("lat")) or _safe_lat(meta),
-                    "lon": _safe_float(meta.get("lon")) or _safe_lon(meta),
+                    "source": f"arpa_{station_id}",
+                    "timestamp": ts,
+                    "lat": meta["lat"],
+                    "lon": meta["lng"],
                     "wind_speed_kn": None,
                     "wind_dir_deg": None,
                     "wind_gust_kn": None,
@@ -136,23 +227,21 @@ class ArpaLombardiaCollector(BaseCollector):
                     "confidence": 0.85,
                 }
             row = agg[key]
-            # Map sensor type to field. ARPA's sensor values are in metric units:
-            #   wind speed: m/s -> knots (x1.94384)
-            #   pressure: hPa
-            #   temperature: C
-            #   humidity: %
-            if tipo in ("5", "wind_speed", "velocita_vento"):
+            # Map sensor type to field
+            if sensor_type == "wind_speed":
+                # ARPA reports m/s → convert to knots
                 row["wind_speed_kn"] = round(value * 1.94384, 2)
-            elif tipo in ("6", "wind_dir", "direzione_vento"):
+            elif sensor_type == "wind_dir":
                 row["wind_dir_deg"] = value % 360.0
-            elif tipo in ("25", "gust", "raffica"):
+            elif sensor_type == "wind_gust":
                 row["wind_gust_kn"] = round(value * 1.94384, 2)
-            elif tipo in ("4", "pressure", "pressione"):
+            elif sensor_type == "pressure":
                 row["pressure"] = value
-            elif tipo in ("1", "temperature", "temperatura"):
+            elif sensor_type == "temperature":
                 row["temperature"] = value
-            elif tipo in ("2", "humidity", "umidita"):
+            elif sensor_type == "humidity":
                 row["humidity"] = value
+
         return list(agg.values())
 
     def validate(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -174,21 +263,6 @@ def _safe_float(v: Any) -> float | None:
         return float(v)
     except (TypeError, ValueError):
         return None
-
-
-def _safe_lat(meta: dict[str, Any]) -> float | None:
-    # Socrata returns location as nested dict {latitude, longitude} or human-address
-    loc = meta.get("location")
-    if isinstance(loc, dict):
-        return _safe_float(loc.get("latitude"))
-    return None
-
-
-def _safe_lon(meta: dict[str, Any]) -> float | None:
-    loc = meta.get("location")
-    if isinstance(loc, dict):
-        return _safe_float(loc.get("longitude"))
-    return None
 
 
 __all__ = ["ArpaLombardiaCollector"]

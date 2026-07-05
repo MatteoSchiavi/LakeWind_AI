@@ -398,8 +398,6 @@ def _draw_panel_v3(
 
     # Town labels (V3: expanded with more towns)
     extended_towns = _TOWNS_V3 + [
-        (9.290, 46.116, "Musso", "left"),
-        (9.307, 46.077, "Dervio", "right"),
         (9.330, 46.010, "Valmadrera", "right"),
     ]
     for lon, lat, name, ha in extended_towns:
@@ -477,7 +475,7 @@ def generate_heatmap_v3(
     # Footer with data sources
     fig.text(
         0.5, 0.005,
-        "LakeWind V3  •  MOS bias-corrected  •  15-point GP interpolation  •  "
+        "LakeWind V3  •  MOS bias-corrected  •  8-point RBF interpolation  •  "
         "Station models + pressure gradient + regime",
         ha="center", fontsize=5.5, color="#888", fontstyle="italic",
     )

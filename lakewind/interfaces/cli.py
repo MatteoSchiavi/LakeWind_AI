@@ -315,13 +315,21 @@ def retrain(
 @app.command("promote")
 def promote_cmd(
     model_version: str = typer.Argument(..., help="Model version to promote to production"),
-    force: bool = typer.Option(False, help="Bypass the upgrade gate"),
 ) -> None:
-    """Promote a candidate model to production (human review)."""
+    """Promote a candidate model to production (human review).
+
+    Spec §7.3: human-reviewed promotion is the default. The upgrade gate
+    (min_mae_improvement_kn, min_dir_improvement_deg) should be checked
+    via `lakewind backtest --promote` first. This command is the manual
+    override for when you've reviewed the backtest report and decided to
+    promote regardless.
+
+    Stores NULL for backtest metrics (not 0.0) so the upgrade gate
+    remains functional for future candidates.
+    """
     _setup_logging()
     from lakewind.db import access
 
-    # Spec §7.3: human-reviewed promotion is the default; --force bypasses the gate
     s = load_settings()
     with access.cursor() as conn:
         conn.execute(
@@ -334,10 +342,10 @@ def promote_cmd(
         feature_set_version=s.model.feature_set_version,
         training_start=None,
         training_end=None,
-        backtest_mae_kn=0.0,
-        backtest_dir_error_deg=0.0,
+        backtest_mae_kn=None,  # NULL, not 0.0 — preserves upgrade gate
+        backtest_dir_error_deg=None,
         promoted=True,
-        notes=f"Manually promoted (force={force})",
+        notes="Manually promoted (human review)",
     )
     console.print(f"[bold green]Promoted {model_version} to production.[/bold green]")
 

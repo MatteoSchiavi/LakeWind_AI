@@ -190,52 +190,103 @@ def register_v2_commands(app: typer.Typer) -> None:
         asyncio.run(run_scheduler(_Ctx(bot)))
         console.print("[green]Alert check done.[/green]")
 
-    # --- V3 commands ---
+    # --- V4 commands (deep backfill, CPCV, conformal, auto-pipeline) ---
 
-    @app.command("retrain-stacked")
-    def retrain_stacked(
-        days: int = typer.Option(60, help="Training window in days"),
+    @app.command("deep-backfill")
+    def deep_backfill_cmd(
+        years: int = typer.Option(10, help="Years to backfill (default 10, max recommended 10)"),
+        start: Optional[str] = typer.Option(None, help="Start date YYYY-MM-DD"),
+        end: Optional[str] = typer.Option(None, help="End date YYYY-MM-DD"),
+        points: Optional[str] = typer.Option(None, help="Comma-separated point ids"),
     ) -> None:
-        """Train a V3 stacked ensemble (LGB + XGBoost + MLP + Ridge + Isotonic)."""
+        """V4: Deep historical backfill — 10 years of ERA5 reanalysis for climatology.
+
+        Populates v4_climatology table for seasonal normals + anomaly features.
+        V4 FIX: default reduced from 80 to 10 years (climate change makes old
+        data misleading for training; 10 years is enough for climatology).
+        NEVER use as training targets — only for climatology feature lookups.
+        """
         logging.basicConfig(level=logging.INFO,
                             format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
-        from lakewind.ml.stacking import train_stacked_ensemble
-        end = datetime.utcnow()
+        from datetime import datetime as dt, timedelta
+        from lakewind.collector.deep_backfill import deep_backfill
+        end_dt = dt.strptime(end, "%Y-%m-%d") if end else dt.utcnow()
+        if start:
+            start_dt = dt.strptime(start, "%Y-%m-%d")
+        else:
+            start_dt = end_dt - timedelta(days=years * 365)
+        pt_list = points.split(",") if points else None
+        console.print(f"[bold]Deep backfill: {start_dt.date()} to {end_dt.date()}[/bold]")
+        summary = deep_backfill(start=start_dt, end=end_dt, points=pt_list)
+        total = sum(summary.values())
+        console.print(f"[green]Done: {total} rows inserted[/green]")
+
+    @app.command("cpcv-backtest")
+    def cpcv_backtest_cmd(
+        days: int = typer.Option(30, help="Test window in days"),
+        candidate: Optional[str] = typer.Option(None, help="Model version to evaluate"),
+        n_groups: int = typer.Option(6, help="Number of groups for CPCV"),
+        n_test_groups: int = typer.Option(2, help="Test groups per path"),
+    ) -> None:
+        """V4: Combinatorial Purged Cross-Validation backtest (López de Prado)."""
+        logging.basicConfig(level=logging.INFO,
+                            format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+        from datetime import datetime as dt, timedelta
+        from lakewind.ml.cpcv_backtest import run_cpcv_backtest
+        end = dt.utcnow()
         start = end - timedelta(days=days)
-        result = train_stacked_ensemble(start=start, end=end)
-        if result is None:
-            console.print("[red]Not enough data for stacked training.[/red]")
-            raise typer.Exit(1)
-        console.print(f"[bold green]Stacked ensemble trained:[/bold green] {result['model_version']}")
-        console.print(f"  Samples:  {result['n_samples']}")
-        console.print(f"  Features: {result['n_features']}")
-        console.print(f"  Quantiles: {result['quantiles']}")
-        console.print("  Metrics:")
-        for k, v in result["metrics"].items():
-            console.print(f"    {k}: {v:.4f}")
+        report = run_cpcv_backtest(
+            start=start, end=end, model_version=candidate,
+            n_groups=n_groups, n_test_groups=n_test_groups,
+        )
+        console.print(f"\n[bold]CPCV Backtest Report[/bold]")
+        console.print(f"  Paths: {report.n_paths}")
+        console.print(f"  Candidate MAE: {report.candidate_mae_mean} ± {report.candidate_mae_std}")
+        console.print(f"  NWP MAE: {report.raw_nwp_mae_mean} ± {report.raw_nwp_mae_std}")
+        console.print(f"  Improvement vs NWP: {report.improvement_vs_nwp_pct}%")
+        console.print(f"  [bold]Significant: {report.is_significant}[/bold]")
 
-    @app.command("collect-v3")
-    def collect_v3(
-        skip_lake_temp: bool = typer.Option(False, help="Skip lake water temp collector"),
+    @app.command("train-conformal")
+    def train_conformal_cmd(
+        model_version: str = typer.Argument(..., help="Model version to calibrate"),
+        days: int = typer.Option(30, help="Calibration window"),
     ) -> None:
-        """Run all collectors including V3 sources (Holfuy, lake water temp)."""
+        """V4: Train conformal prediction calibrators for calibrated uncertainty."""
         logging.basicConfig(level=logging.INFO,
                             format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
-        from lakewind.collector import run_all_collectors
-        results = run_all_collectors()
-        table = Table(title="V3 Collection cycle")
-        table.add_column("Source")
-        table.add_column("OK")
-        table.add_column("Rows")
-        table.add_column("Latency (ms)")
-        for r in results:
-            table.add_row(
-                r["source"],
-                "✓" if r["ok"] else "✗",
-                str(r["rows"]),
-                str(r["latency_ms"]),
-            )
-        console.print(table)
+        from datetime import datetime as dt, timedelta
+        from lakewind.ml.conformal import train_conformal_calibrator
+        end = dt.utcnow()
+        start = end - timedelta(days=days)
+        n = 0
+        for target in ("u", "v"):
+            for q in [0.1, 0.5, 0.9]:
+                cal = train_conformal_calibrator(
+                    model_version, target, q, start=start, end=end, alpha=0.1
+                )
+                if cal:
+                    n += 1
+                    console.print(f"  {target} q{q}: q_hat={cal.q_hat:.4f} (n={cal.n_calibration})")
+        console.print(f"[green]Trained {n} conformal calibrators[/green]")
+
+    @app.command("auto-pipeline")
+    def auto_pipeline_cmd(
+        check: bool = typer.Option(False, help="Dry-run"),
+        force: bool = typer.Option(False, help="Force retrain"),
+    ) -> None:
+        """V4: Run automated pipeline (backfill + retrain + backtest + RECOMMEND).
+
+        V4 FIX: Per Spec §7.3, this RECOMMENDS models for promotion but does
+        NOT auto-promote. Human review is always required.
+        """
+        logging.basicConfig(level=logging.INFO,
+                            format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+        from lakewind.ml.auto_pipeline import run_pipeline
+        result = run_pipeline(check_only=check, force=force)
+        console.print(f"\n[bold]Pipeline result:[/bold] {result.get('status')}")
+        for step in result.get("steps", []):
+            status_color = "green" if step.get("status") == "ok" else "red"
+            console.print(f"  [{status_color}]{step['step']}[/{status_color}]: {step.get('status')}")
 
     @app.command("features-info")
     def features_info(

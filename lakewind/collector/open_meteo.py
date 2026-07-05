@@ -9,7 +9,7 @@ store one row per (model, point, valid_time).
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 import requests
@@ -83,7 +83,10 @@ class OpenMeteoCollector(BaseCollector):
                 first_valid = datetime.fromisoformat(times[0].replace("Z", "+00:00"))
             except Exception:
                 first_valid = datetime.utcnow()
-            run_time = first_valid - __import__("datetime").timedelta(hours=1)
+            # Approximate run_time: Open-Meteo doesn't expose the actual model init time.
+            # Use the nearest 6h synoptic time before first_valid (00/06/12/18 UTC).
+            run_hour = (first_valid.hour // 6) * 6
+            run_time = first_valid.replace(hour=run_hour, minute=0, second=0, microsecond=0)
             model_name = item["model_name"]
             point_id = item["point_id"]
             for i, t_iso in enumerate(times):

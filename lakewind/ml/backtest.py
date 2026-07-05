@@ -289,8 +289,13 @@ def run_backtest(
                 nwp_errors.append(nwp_err)
                 nwp_dir_errors.append(nwp_dir_err)
 
-                # Decision usefulness (Spec §1.2: sustained wind >=8 kn for >=2h in 11:00-16:00)
-                if 11 <= s_row["valid_time"].hour <= 16:
+                # Decision usefulness (Spec §1.2: sustained wind >=8 kn for >=2h
+                # in 11:00-16:00 LOCAL time, not UTC)
+                from zoneinfo import ZoneInfo
+                local_hour = s_row["valid_time"].replace(tzinfo=ZoneInfo("UTC")).astimezone(
+                    ZoneInfo("Europe/Rome")
+                ).hour
+                if 11 <= local_hour <= 16:
                     actual_yes = s_row["obs_speed"] >= 8.0
                     predicted_yes = cand_speed >= 8.0
                     decision_attempts.append(True)

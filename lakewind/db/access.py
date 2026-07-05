@@ -62,7 +62,7 @@ def _next_id() -> int:
     return uuid.uuid4().int >> 65  # 63 bits, positive
 
 
-def close_thread_conn() -> None:
+def close_global_conn() -> None:
     """Close the global DuckDB connection (used by tests)."""
     global _global_conn
     if _global_conn is not None:
@@ -83,7 +83,7 @@ def insert_forecast_run(row: dict[str, Any]) -> int:
     with cursor() as conn:
         conn.execute(
             f"""
-            INSERT INTO {s.db.forecast_table}
+            INSERT OR REPLACE INTO {s.db.forecast_table}
             (id, model_name, point_id, run_time, valid_time,
              wind_speed_kn, wind_dir_deg, wind_gust_kn,
              pressure_msl, temperature_2m, dew_point_2m, cloud_cover,
@@ -141,7 +141,7 @@ def bulk_insert_forecast_runs(rows: list[dict[str, Any]]) -> int:
     with cursor() as conn:
         conn.executemany(
             f"""
-            INSERT INTO {s.db.forecast_table}
+            INSERT OR REPLACE INTO {s.db.forecast_table}
             (id, model_name, point_id, run_time, valid_time,
              wind_speed_kn, wind_dir_deg, wind_gust_kn,
              pressure_msl, temperature_2m, dew_point_2m, cloud_cover,
@@ -162,7 +162,7 @@ def insert_observation(row: dict[str, Any]) -> int:
     with cursor() as conn:
         conn.execute(
             f"""
-            INSERT INTO {s.db.observations_table}
+            INSERT OR REPLACE INTO {s.db.observations_table}
             (id, source, timestamp, lat, lon,
              wind_speed_kn, wind_dir_deg, wind_gust_kn,
              pressure, temperature, humidity, quality_flag, confidence)
@@ -212,7 +212,7 @@ def bulk_insert_observations(rows: list[dict[str, Any]]) -> int:
     with cursor() as conn:
         conn.executemany(
             f"""
-            INSERT INTO {s.db.observations_table}
+            INSERT OR REPLACE INTO {s.db.observations_table}
             (id, source, timestamp, lat, lon,
              wind_speed_kn, wind_dir_deg, wind_gust_kn,
              pressure, temperature, humidity, quality_flag, confidence)

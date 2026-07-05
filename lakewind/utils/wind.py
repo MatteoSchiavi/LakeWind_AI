@@ -22,11 +22,13 @@ class WindVector:
     direction_deg: float  # 0..360, meteorological (where wind comes FROM)
 
     def to_uv(self) -> tuple[float, float]:
-        """Convert speed/direction to (u, v) components."""
-        # Meteorological convention: wind FROM direction θ blows toward (sin(θ), -cos(θ))... wait.
-        # Standard: u = -speed * sin(θ), v = -speed * cos(θ), where θ is the direction wind comes FROM.
-        # Because wind FROM north (θ=0) blows southward (v negative).
-        # Wind FROM east (θ=90) blows westward (u negative).
+        """Convert speed/direction to (u, v) components.
+
+        Meteorological convention: wind FROM direction θ (clockwise from north).
+        u = -speed * sin(θ), v = -speed * cos(θ)
+        Wind FROM north (θ=0): u=0, v=-speed (blows south)
+        Wind FROM east (θ=90): u=-speed, v=0 (blows west)
+        """
         theta_rad = math.radians(self.direction_deg)
         u = -self.speed_kn * math.sin(theta_rad)
         v = -self.speed_kn * math.cos(theta_rad)

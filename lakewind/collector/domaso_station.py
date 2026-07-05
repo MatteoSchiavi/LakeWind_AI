@@ -133,22 +133,7 @@ class DomasoCollector(BaseCollector):
 
         if table is None:
             logger.warning("Domaso weather table not found")
-            return [
-                {
-                    "source": self.source_name,
-                    "timestamp": datetime.utcnow(),
-                    "lat": DOMASO_LAT,
-                    "lon": DOMASO_LON,
-                    "wind_speed_kn": None,
-                    "wind_dir_deg": None,
-                    "wind_gust_kn": None,
-                    "pressure": None,
-                    "temperature": None,
-                    "humidity": None,
-                    "quality_flag": "suspect",
-                    "confidence": 0.1,
-                }
-            ]
+            return []
 
         # Inspected page structure (2026-06-29):
         # The weather table alternates between LABEL rows (class `des2`, cells

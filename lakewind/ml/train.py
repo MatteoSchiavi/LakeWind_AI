@@ -35,7 +35,7 @@ from lakewind.features.build import build_features_for
 
 logger = logging.getLogger(__name__)
 
-MODELS_DIR = Path("data/models")
+MODELS_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "models"
 
 
 @dataclass
@@ -292,7 +292,7 @@ def train(
         training_start=start.date(),
         training_end=end.date(),
         backtest_mae_kn=metrics.get("u_q0.5_insample_mae", 0.0),
-        backtest_dir_error_deg=0.0,
+        backtest_dir_error_deg=None,
         promoted=False,
         git_commit="",
         notes=f"backend={backend}; in-sample metrics: {metrics}",
