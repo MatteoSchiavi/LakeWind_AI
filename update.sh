@@ -65,7 +65,7 @@ if $ROLLBACK; then
     fi
     LAST_GOOD=$(cat "$ROLLBACK_MARKER")
     log "Restoring commit: $LAST_GOOD"
-    git stash
+    git stash 2>/dev/null || true
     git checkout "$LAST_GOOD"
     docker compose build --no-cache
     docker compose up -d
@@ -75,14 +75,16 @@ fi
 
 # --- Cron mode: skip if no new commits ---
 if $CRON_MODE; then
-    git fetch origin main 2>/dev/null
+    git fetch origin main 2>/dev/null || {
+        warn "Git fetch failed, retrying in next cycle"
+        exit 1
+    }
     LOCAL=$(git rev-parse HEAD)
-    REMOTE=$(git rev-parse origin/main)
+    REMOTE=$(git rev-parse origin/main 2>/dev/null || echo "")
     if [ "$LOCAL" = "$REMOTE" ]; then
-        # No new commits, exit silently
         exit 0
     fi
-    log "New commits detected: $LOCAL → $REMOTE"
+    log "New commits detected: ${LOCAL:0:7} → ${REMOTE:0:7}"
 fi
 
 # --- Step 1: Save current state as rollback point ---
@@ -93,6 +95,7 @@ log "Current commit: $CURRENT_COMMIT (saved as rollback point)"
 # --- Step 2: Pull latest code ---
 if $DO_PULL; then
     log "Pulling latest code from git..."
+    git stash 2>/dev/null || true
     git pull origin main || {
         err "Git pull failed. Aborting."
         exit 1
