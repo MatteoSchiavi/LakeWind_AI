@@ -16,6 +16,8 @@ from lakewind.collector.cml_dervio import CmlDervioCollector
 from lakewind.collector.diy_buoy import DiyBuoyCollector
 from lakewind.collector.domaso_station import DomasoCollector
 from lakewind.collector.era5_reanalysis import Era5ReanalysisCollector
+from lakewind.collector.holfuy import HolfuyCollector
+from lakewind.collector.lake_water_temp import LakeWaterTempCollector
 from lakewind.collector.open_meteo import OpenMeteoCollector
 from lakewind.collector.open_meteo_ensemble import OpenMeteoEnsembleCollector
 
@@ -37,7 +39,11 @@ def all_collectors() -> list[BaseCollector]:
         DomasoCollector(),
         CmlDervioCollector(),
         ArpaLombardiaCollector(),
-        Era5ReanalysisCollector(),  # ERA5 as a high-quality fallback observation
+        Era5ReanalysisCollector(),
+        # V3: Holfuy real-time stations (if any near Lake Como)
+        HolfuyCollector(),
+        # V3: Lake water temperature (ERA5 skin temp proxy — daily, for Breva prediction)
+        LakeWaterTempCollector(),
         # Tier 0 — DIY buoy (Spec §4.1, disabled until hardware exists)
         DiyBuoyCollector(),
     ]

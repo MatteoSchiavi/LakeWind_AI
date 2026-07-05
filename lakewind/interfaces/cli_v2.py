@@ -190,5 +190,100 @@ def register_v2_commands(app: typer.Typer) -> None:
         asyncio.run(run_scheduler(_Ctx(bot)))
         console.print("[green]Alert check done.[/green]")
 
+    # --- V3 commands ---
+
+    @app.command("retrain-stacked")
+    def retrain_stacked(
+        days: int = typer.Option(60, help="Training window in days"),
+    ) -> None:
+        """Train a V3 stacked ensemble (LGB + XGBoost + MLP + Ridge + Isotonic)."""
+        logging.basicConfig(level=logging.INFO,
+                            format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+        from lakewind.ml.stacking import train_stacked_ensemble
+        end = datetime.utcnow()
+        start = end - timedelta(days=days)
+        result = train_stacked_ensemble(start=start, end=end)
+        if result is None:
+            console.print("[red]Not enough data for stacked training.[/red]")
+            raise typer.Exit(1)
+        console.print(f"[bold green]Stacked ensemble trained:[/bold green] {result['model_version']}")
+        console.print(f"  Samples:  {result['n_samples']}")
+        console.print(f"  Features: {result['n_features']}")
+        console.print(f"  Quantiles: {result['quantiles']}")
+        console.print("  Metrics:")
+        for k, v in result["metrics"].items():
+            console.print(f"    {k}: {v:.4f}")
+
+    @app.command("collect-v3")
+    def collect_v3(
+        skip_lake_temp: bool = typer.Option(False, help="Skip lake water temp collector"),
+    ) -> None:
+        """Run all collectors including V3 sources (Holfuy, lake water temp)."""
+        logging.basicConfig(level=logging.INFO,
+                            format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+        from lakewind.collector import run_all_collectors
+        results = run_all_collectors()
+        table = Table(title="V3 Collection cycle")
+        table.add_column("Source")
+        table.add_column("OK")
+        table.add_column("Rows")
+        table.add_column("Latency (ms)")
+        for r in results:
+            table.add_row(
+                r["source"],
+                "✓" if r["ok"] else "✗",
+                str(r["rows"]),
+                str(r["latency_ms"]),
+            )
+        console.print(table)
+
+    @app.command("features-info")
+    def features_info(
+        point: str = typer.Option("mid_channel", help="Point to inspect"),
+    ) -> None:
+        """Show all features that would be built for a point (V3 debug)."""
+        logging.basicConfig(level=logging.WARNING)
+        from lakewind.features.build import build_features_for
+        from datetime import datetime as dt
+        fr = build_features_for(point, dt.utcnow())
+        if fr is None:
+            console.print("[red]No data for this point.[/red]")
+            raise typer.Exit(1)
+        console.print(f"[bold]Feature set for {point}[/bold] ({len(fr.feature_vector)} features):")
+        # Group by prefix
+        groups: dict[str, list[str]] = {}
+        for k, v in sorted(fr.feature_vector.items()):
+            prefix = k.split("_")[0] if "_" in k else "other"
+            if k.startswith("fc_"):
+                prefix = "forecast"
+            elif k.startswith("agree_"):
+                prefix = "agreement"
+            elif k.startswith("ens_"):
+                prefix = "ensemble"
+            elif k.startswith("foehn"):
+                prefix = "foehn"
+            elif k.startswith("solar"):
+                prefix = "solar"
+            elif k.startswith("thermal"):
+                prefix = "thermal_inertia"
+            elif k.startswith("pressure_grad"):
+                prefix = "macro_area_pressure"
+            elif k.startswith("stability"):
+                prefix = "stability"
+            elif k.startswith("lake_breeze"):
+                prefix = "lake_breeze"
+            elif k.startswith("lag"):
+                prefix = "persistence"
+            elif k.startswith("obs_"):
+                prefix = "ground_station"
+            elif k in ("hour_local", "day_of_year", "month", "season", "is_weekend"):
+                prefix = "temporal"
+            groups.setdefault(prefix, []).append(f"{k} = {v}")
+        for group, items in sorted(groups.items()):
+            console.print(f"\n[cyan]{group}[/cyan] ({len(items)} features):")
+            for item in items:
+                console.print(f"  {item}")
+        console.print(f"\n[bold]Target:[/bold] u={fr.target_u}, v={fr.target_v}")
+
 
 __all__ = ["register_v2_commands"]

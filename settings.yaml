@@ -14,33 +14,55 @@ operating_area:
   lon_min: 9.26
   lon_max: 9.34
 
-# Section 2.2 — virtual observation points (replaces 625-cell grid)
-# Plus two "auxiliary" points (Zurich, Milano Linate) used to compute the
-# Foehn pressure-gradient feature (Spec §4.4). These are collected by the
-# same Open-Meteo collector as the sailing-area points.
+# Section 2.2 — virtual observation points (V3: expanded from 7 to 15 operational
+# points for finer spatial resolution across the Dongo-Dervio corridor).
+# Plus auxiliary points (Zurich, Milano Linate, Sondrio, Lugano) used to compute
+# macro-area pressure-gradient features (Spec §4.4 + V3 BrevaGuru-style features).
 virtual_points:
-  - {id: dongo_shore,     lat: 46.124, lon: 9.280}
-  - {id: gravedona_shore, lat: 46.147, lon: 9.307}
-  - {id: domaso_offshore, lat: 46.151, lon: 9.332}
-  - {id: mid_channel,     lat: 46.100, lon: 9.304}
-  - {id: piona_entrance,  lat: 46.114, lon: 9.316}
-  - {id: dervio_shore,    lat: 46.077, lon: 9.307}
-  - {id: bellano_offshore,lat: 46.051, lon: 9.304}
-  # Auxiliary points — excluded from operational forecasts but used for
-  # pressure-gradient feature computation.
-  - {id: zurich,          lat: 47.376, lon: 8.541}
-  - {id: milano_linate,   lat: 45.445, lon: 9.278}
+  # --- Operational points (15) — Dongo-Dervio corridor ---
+  # North sector (Dongo-Gravedona-Domaso)
+  - {id: dongo_shore,       lat: 46.124, lon: 9.280}
+  - {id: dongo_offshore,    lat: 46.130, lon: 9.295}
+  - {id: gravedona_shore,   lat: 46.147, lon: 9.307}
+  - {id: gravedona_offshore,lat: 46.145, lon: 9.320}
+  - {id: domaso_offshore,   lat: 46.151, lon: 9.332}
+  # Mid-lake sector (Musso-Piona-Dervio)
+  - {id: musso_shore,       lat: 46.116, lon: 9.290}
+  - {id: mid_channel_north, lat: 46.110, lon: 9.300}
+  - {id: mid_channel,       lat: 46.100, lon: 9.304}
+  - {id: piona_entrance,    lat: 46.114, lon: 9.316}
+  - {id: dervio_shore,      lat: 46.077, lon: 9.307}
+  - {id: dervio_offshore,   lat: 46.075, lon: 9.315}
+  # South sector (Bellano-Lecno)
+  - {id: bellano_offshore,  lat: 46.051, lon: 9.304}
+  - {id: bellano_shore,     lat: 46.050, lon: 9.294}
+  - {id: lecco_north,       lat: 46.020, lon: 9.290}
+  - {id: valmadrera_south,  lat: 46.010, lon: 9.330}
+  # --- Auxiliary points (4) — macro-area pressure gradients ---
+  # Used to compute pressure differentials between different macro-areas
+  # (V3: BrevaGuru-style "pressure differentials between macro-areas of the lake")
+  - {id: zurich,          lat: 47.376, lon: 8.541}   # North-Alpine (Foehn source)
+  - {id: milano_linate,   lat: 45.445, lon: 9.278}   # South-Po valley (Breva source)
+  - {id: sondrio,         lat: 46.170, lon: 9.870}   # Valtellina (east of lake)
+  - {id: lugano,          lat: 46.005, lon: 8.952}   # West of lake
 
-# Operational virtual points (subset of virtual_points) — used by the
-# prediction engine and Telegram /wind command.
+# Operational virtual points (15) — used by prediction engine + Telegram
 operational_point_ids:
   - dongo_shore
+  - dongo_offshore
   - gravedona_shore
+  - gravedona_offshore
   - domaso_offshore
+  - musso_shore
+  - mid_channel_north
   - mid_channel
   - piona_entrance
   - dervio_shore
+  - dervio_offshore
   - bellano_offshore
+  - bellano_shore
+  - lecco_north
+  - valmadrera_south
 
 # Section 4.3 — Open-Meteo multi-model NWP
 open_meteo:

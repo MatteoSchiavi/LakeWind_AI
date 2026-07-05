@@ -41,6 +41,7 @@ from lakewind.config import load_secrets, load_settings
 from lakewind.db import access
 from lakewind.db import users as user_db
 from lakewind.utils import heatmap as heatmap_mod
+from lakewind.utils import heatmap_v3 as heatmap_v3_mod
 
 logger = logging.getLogger(__name__)
 
@@ -677,7 +678,7 @@ async def _map(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(_t(lang, "no_forecast"))
         return
 
-    png = heatmap_mod.generate_heatmap(preds, target_time=target_time)
+    png = heatmap_v3_mod.generate_heatmap_v3(preds, target_time=target_time)
     if png is None:
         await update.message.reply_text(_t(lang, "no_forecast"))
         return
@@ -1112,7 +1113,7 @@ async def _callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not preds:
             await query.message.reply_text(_t(lang, "no_forecast"))
             return
-        png = heatmap_mod.generate_heatmap(preds, target_time=target_time)
+        png = heatmap_v3_mod.generate_heatmap_v3(preds, target_time=target_time)
         if png:
             user_db.cache_image(cache_key, png, ttl_minutes=30)
             await query.message.reply_photo(
@@ -1149,8 +1150,233 @@ async def _unknown(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
+# --- V3 new commands: /sailing /trend /history ---
+
+
+async def _sailing(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/sailing — get a GO/NO-GO recommendation for today.
+
+    Analyzes the 11:00-16:00 window across all points and tells you:
+    - Whether it's worth going (sustained >=8kn for >=2h)
+    - Best point + best time window
+    - What sail to bring
+    - Expected wind direction + gust factor
+    """
+    allowed, user = await _authorize(update)
+    if not allowed:
+        return
+    if not _check_rate_limit(update.effective_user.id):
+        await update.message.reply_text(_t("en", "rate_limited"))
+        return
+    lang = user.get("language", "en") if user else "en"
+    units = user.get("units", "kn") if user else "kn"
+
+    s = load_settings()
+    now = datetime.utcnow()
+    op_ids = s.operational_point_ids or []
+
+    # Check 11:00-16:00 local time for each point
+    from zoneinfo import ZoneInfo
+    tz = ZoneInfo(s.project.timezone)
+    local_now = now.astimezone(tz)
+    today_11 = local_now.replace(hour=11, minute=0, second=0, microsecond=0)
+    today_16 = local_now.replace(hour=16, minute=0, second=0, microsecond=0)
+
+    best_point = None
+    best_speed = 0
+    best_window_start = None
+    best_window_end = None
+    best_dir = None
+    point_scores: list[dict[str, Any]] = []
+
+    for vp_id in op_ids:
+        speeds_in_window = []
+        dirs_in_window = []
+        for h in range(11, 17):
+            target = today_11.replace(hour=h)
+            target_utc = target.astimezone(ZoneInfo("UTC")).replace(tzinfo=None)
+            p = _fetch_pred_at(vp_id, target_utc)
+            if p and p.get("wind_speed_kn"):
+                speeds_in_window.append((h, p["wind_speed_kn"]))
+                dirs_in_window.append(p.get("wind_dir_deg", 0))
+
+        if not speeds_in_window:
+            continue
+
+        # Find longest contiguous run with speed >=8kn
+        max_run = 0
+        max_run_start = None
+        max_run_end = None
+        cur_run = 0
+        cur_start = None
+        for h, spd in speeds_in_window:
+            if spd >= 8.0:
+                if cur_run == 0:
+                    cur_start = h
+                cur_run += 1
+                if cur_run > max_run:
+                    max_run = cur_run
+                    max_run_start = cur_start
+                    max_run_end = h
+            else:
+                cur_run = 0
+
+        avg_speed = sum(s for _, s in speeds_in_window) / len(speeds_in_window)
+        max_speed = max(s for _, s in speeds_in_window)
+        avg_dir = sum(dirs_in_window) / len(dirs_in_window) if dirs_in_window else 0
+
+        point_scores.append({
+            "point_id": vp_id,
+            "avg_speed": avg_speed,
+            "max_speed": max_speed,
+            "sailing_hours": max_run,
+            "window_start": max_run_start,
+            "window_end": max_run_end,
+            "avg_dir": avg_dir,
+        })
+
+        if max_run >= 2 and max_speed > best_speed:
+            best_speed = max_speed
+            best_point = vp_id
+            best_window_start = max_run_start
+            best_window_end = max_run_end
+            best_dir = avg_dir
+
+    # Build recommendation
+    if best_point and best_window_start is not None:
+        v, u = _convert_speed(best_speed, units)
+        dir_card = _fmt_cardinal(best_dir)
+        # Sail recommendation based on wind strength
+        if best_speed < 6:
+            sail_rec = "Light wind — consider light sail / genoa only"
+        elif best_speed < 10:
+            sail_rec = "Moderate — main + jib, full sail"
+        elif best_speed < 16:
+            sail_rec = "Fresh — main + jib, consider reef"
+        elif best_speed < 22:
+            sail_rec = "Strong — reefed main + small jib"
+        else:
+            sail_rec = "Very strong — stay ashore or minimal sail"
+
+        if lang == "it":
+            msg = (
+                f"⛵ *VAI A NAVIGARE!*\n\n"
+                f"📍 Punto migliore: {best_point}\n"
+                f"⏰ Finestra: {best_window_start:02d}:00-{best_window_end+1:02d}:00\n"
+                f"🌬 Vento: {v:.1f} {u} {dir_card} ({best_dir:.0f}°)\n"
+                f"📋 {sail_rec}\n\n"
+            )
+        else:
+            msg = (
+                f"⛵ *GO SAILING!*\n\n"
+                f"📍 Best point: {best_point}\n"
+                f"⏰ Window: {best_window_start:02d}:00-{best_window_end+1:02d}:00\n"
+                f"🌬 Wind: {v:.1f} {u} {dir_card} ({best_dir:.0f}°)\n"
+                f"📋 {sail_rec}\n\n"
+            )
+        # Add per-point summary
+        msg += "*All points:*\n" if lang == "en" else "*Tutti i punti:*\n"
+        for ps in sorted(point_scores, key=lambda x: x["max_speed"], reverse=True):
+            v_avg, _ = _convert_speed(ps["avg_speed"], units)
+            v_max, _ = _convert_speed(ps["max_speed"], units)
+            hours = ps["sailing_hours"]
+            mark = "✅" if hours >= 2 else "❌" if hours == 0 else "⚠️"
+            msg += f"  {mark} {ps['point_id']}: avg {v_avg:.1f}, max {v_max:.1f} {u}, {hours}h sail\n"
+    else:
+        if lang == "it":
+            msg = (
+                f"🏠 *NON VALE LA PENA OGGI*\n\n"
+                f"Nessun punto ha vento sostenuto >=8kn per >=2h nella finestra 11:00-16:00.\n\n"
+            )
+        else:
+            msg = (
+                f"🏠 *NOT WORTH IT TODAY*\n\n"
+                f"No point has sustained wind >=8kn for >=2h in the 11:00-16:00 window.\n\n"
+            )
+        msg += "*All points:*\n" if lang == "en" else "*Tutti i punti:*\n"
+        for ps in sorted(point_scores, key=lambda x: x["max_speed"], reverse=True):
+            v_avg, _ = _convert_speed(ps["avg_speed"], units)
+            v_max, _ = _convert_speed(ps["max_speed"], units)
+            msg += f"  • {ps['point_id']}: avg {v_avg:.1f}, max {v_max:.1f} {u}\n"
+
+    await update.message.reply_text(msg, parse_mode=None)
+
+
+async def _trend(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/trend [point] — wind trend chart (speed + direction + confidence)."""
+    allowed, user = await _authorize(update)
+    if not allowed:
+        return
+    if not _check_rate_limit(update.effective_user.id):
+        await update.message.reply_text(_t("en", "rate_limited"))
+        return
+    lang = user.get("language", "en") if user else "en"
+
+    arg = context.args[0] if context.args else None
+    point_id = _resolve_point(arg, user)
+    if not point_id:
+        s = load_settings()
+        point_id = s.operational_point_ids[0] if s.operational_point_ids else "mid_channel"
+
+    from lakewind.utils.heatmap_v3 import generate_trend_chart
+    png = generate_trend_chart(point_id, hours=24)
+    if png is None:
+        await update.message.reply_text(_t(lang, "no_forecast"))
+        return
+    await update.message.reply_photo(
+        photo=io.BytesIO(png),
+        caption=f"📈 Wind trend — {point_id} (next 24h)"
+    )
+
+
+async def _history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/history [days] — show past sailing logs + forecast accuracy."""
+    allowed, user = await _authorize(update)
+    if not allowed:
+        return
+    lang = user.get("language", "en") if user else "en"
+
+    days = 30
+    if context.args:
+        try:
+            days = int(context.args[0])
+        except ValueError:
+            pass
+
+    logs = access.list_sailing_log(limit=50)
+    if not logs:
+        msg = "📝 No sailing sessions logged yet. Use /log to add one." if lang == "en" \
+              else "📝 Nessuna sessione registrata. Usa /log per aggiungerne una."
+        await update.message.reply_text(msg)
+        return
+
+    lines = [f"📝 *Sailing history (last {len(logs)} sessions)*\n"]
+    for log in logs[:15]:
+        start = log.get("session_start")
+        if isinstance(start, str):
+            try:
+                start = datetime.fromisoformat(start)
+            except Exception:
+                pass
+        wind = log.get("perceived_wind_kn")
+        dir_val = log.get("perceived_direction_deg")
+        sail = log.get("sail_config", "")
+        notes = log.get("notes", "")
+
+        date_str = start.strftime("%b %d") if hasattr(start, "strftime") else "?"
+        dir_card = _fmt_cardinal(dir_val) if dir_val else "?"
+        lines.append(f"  • {date_str}: {wind:.0f}kn {dir_card} — {sail}")
+        if notes:
+            lines.append(f"      \"{notes[:60]}\"")
+
+    if len(logs) > 15:
+        lines.append(f"\n  ... and {len(logs) - 15} more sessions")
+
+    await update.message.reply_text("\n".join(lines), parse_mode=None)
+
+
 def build_app():
-    """Build the Telegram Application with all V2 handlers."""
+    """Build the Telegram Application with all V2+V3 handlers."""
     secrets = load_secrets()
     s = load_settings()
     token = secrets.telegram_bot_token.get_secret_value()
@@ -1175,6 +1401,11 @@ def build_app():
     app.add_handler(CommandHandler("map", _map))
     app.add_handler(CommandHandler("rose", _rose))
     app.add_handler(CommandHandler("compare", _compare))
+
+    # V3: new commands
+    app.add_handler(CommandHandler("sailing", _sailing))
+    app.add_handler(CommandHandler("trend", _trend))
+    app.add_handler(CommandHandler("history", _history))
 
     # Alerts & subscriptions
     app.add_handler(CommandHandler("alert", _alert))

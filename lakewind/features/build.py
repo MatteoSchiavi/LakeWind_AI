@@ -160,6 +160,35 @@ def build_features_for(
     except Exception as exc:
         logger.debug("Pressure gradient DB lookup skipped: %s", exc)
 
+    # 3b) V3 ADVANCED FEATURES — thermal inertia, macro-area pressure differentials,
+    # stability indices, lake breeze potential, Foehn strength index.
+    # These are the BrevaGuru-style "complex variables created ad hoc" features.
+    try:
+        from lakewind.features.advanced import (
+            compute_thermal_inertia,
+            compute_macro_area_pressure_differentials,
+            compute_stability_indices,
+            compute_lake_breeze_potential,
+            compute_foehn_strength_index,
+        )
+        # Thermal inertia (last 6 hours)
+        ti = compute_thermal_inertia(valid_time, point_id, hours=6)
+        fv.update(ti)
+        # Macro-area pressure differentials (6 gradients)
+        mad = compute_macro_area_pressure_differentials(valid_time)
+        fv.update(mad)
+        # Stability indices
+        si = compute_stability_indices(fv)
+        fv.update(si)
+        # Lake breeze potential (the #1 missing feature for Breva)
+        lbp = compute_lake_breeze_potential(valid_time, fv, point_id)
+        fv.update(lbp)
+        # Foehn strength index
+        fsi = compute_foehn_strength_index(fv)
+        fv.update(fsi)
+    except Exception as exc:
+        logger.debug("V3 advanced features skipped: %s", exc)
+
     # Solar geometry (Spec §4.4)
     vp = next((p for p in s.virtual_points if p.id == point_id), None)
     if vp is None:
