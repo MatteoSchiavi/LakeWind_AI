@@ -1,0 +1,16 @@
+services:
+  lakewind:
+    build: .
+    container_name: lakewind
+    restart: always
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./settings.yaml:/app/settings.yaml:ro
+      - ./data:/app/data
+      - ./data/models:/app/models
+    env_file:
+      - .env
+    environment:
+      - TZ=Europe/Rome
+    stop_grace_period: 30s

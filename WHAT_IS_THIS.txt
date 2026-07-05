@@ -1,0 +1,73 @@
+# LakeWind — code only
+
+## What's here (35 files)
+
+The minimum needed to run LakeWind. No README, no scripts, no tests, no docs.
+
+```
+pyproject.toml          # dependencies + CLI entry point
+settings.yaml           # all configurable values
+.env.example            # template for secrets (Telegram token, ARPA token)
+.gitignore
+
+lakewind/               # the Python package (23 .py files)
+├── __init__.py         (empty — package marker, required)
+├── config.py           (287 lines) — pydantic-settings config loader
+├── db/
+│   ├── __init__.py     (empty)
+│   ├── schema.py       (159) — DuckDB DDL
+│   └── access.py       (555) — typed DB access layer
+├── collector/
+│   ├── __init__.py     (108) — orchestrator: run_all_collectors()
+│   ├── base.py         (159) — fetch/validate/store + retry/backoff
+│   ├── open_meteo.py            — 5-model NWP forecast collector
+│   ├── open_meteo_ensemble.py   — ensemble spread features
+│   ├── era5_reanalysis.py       — ERA5 ground-truth observations
+│   ├── historical_backfill.py   — backfill 60+ days of history
+│   ├── domaso_station.py        — Domaso live station scraper
+│   ├── cml_dervio.py            — CML with 3bmeteo fallback
+│   ├── arpa_lombardia.py        — ARPA Socrata API
+│   └── diy_buoy.py              — Phase 3 hardware stub
+├── features/
+│   ├── __init__.py     (empty)
+│   └── build.py        (411) — ONE shared feature builder (Spec §6)
+├── ml/
+│   ├── __init__.py     (empty)
+│   ├── train.py        (353) — LightGBM + XGBoost-GPU trainer
+│   ├── infer.py        (246) — bias-corrected predict + SHAP
+│   └── backtest.py     (430) — walk-forward evaluation
+├── prediction/
+│   ├── __init__.py     (empty)
+│   ├── forecast.py     (55)  — frozen Forecast dataclass
+│   └── engine.py       (118) — 6-stage operational pipeline
+├── interfaces/
+│   ├── __init__.py     (empty)
+│   ├── cli.py          (464) — Typer CLI (collect/predict/backtest/retrain/...)
+│   ├── telegram_bot.py (264) — Telegram bot
+│   └── dashboard.py    (183) — Streamlit dashboard
+└── utils/
+    ├── __init__.py     (empty)
+    ├── wind.py         (61)  — U/V <-> speed/direction
+    └── solar.py        (97)  — astral-based solar geometry
+```
+
+The 8 empty `__init__.py` files are required by Python — without them `import lakewind.collector` won't work.
+
+## Install + run
+
+```bash
+tar -xzf lakewind-code.tar.gz
+cd lakewind_clean
+python -m venv .venv && source .venv/bin/activate
+pip install -e .
+
+lakewind init-db
+lakewind doctor
+lakewind backfill --days 60
+lakewind retrain --days 60 --backend xgboost_gpu   # for RTX 3070
+lakewind promote <model_version> --force
+lakewind predict --no-collect
+lakewind backtest --days 60 --candidate <model_version>
+```
+
+For full docs see the project README at https://github.com/.../lakewind (or ask me to regenerate it).
