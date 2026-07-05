@@ -64,7 +64,7 @@ class ArpaLombardiaCollector(BaseCollector):
         s = load_settings()
         self.cfg = s.arpa_lombardia
         self.area = s.operating_area
-        self.hours_back = 3
+        self.hours_back = 12
 
     def _headers(self) -> dict[str, str]:
         token = load_secrets().arpa_app_token.get_secret_value()
@@ -141,25 +141,37 @@ class ArpaLombardiaCollector(BaseCollector):
         return lookup
 
     def _fetch_recent_sensor_data(self, sensor_ids: list[str]) -> list[dict[str, Any]]:
-        """Fetch recent sensor readings for the given sensor IDs."""
+        """Fetch recent sensor readings for the given sensor IDs.
+
+        Batches queries into chunks of 10 to avoid Socrata URL length limits
+        and silently truncated results with large IN clauses.
+        """
         if not sensor_ids:
             return []
         since = (datetime.utcnow() - timedelta(hours=self.hours_back)).strftime("%Y-%m-%dT%H:%M:%S")
-        # Socrata $where with IN list and date filter
-        ids_quoted = ",".join(f"'{sid}'" for sid in sensor_ids)
-        soql = f"?$where=idsensore IN ({ids_quoted}) AND data > '{since}'&$limit=10000"
-        url = f"{self.cfg.base_url}/{self.cfg.sensor_dataset}.json{soql}"
-        try:
-            resp = requests.get(url, headers=self._headers(), timeout=30)
-            if resp.status_code != 200:
-                logger.warning("ARPA sensor data HTTP %d: %s",
-                              resp.status_code, resp.text[:200])
-                return []
-            data = resp.json()
-        except Exception as exc:
-            logger.warning("ARPA sensor data fetch failed: %s", exc)
-            return []
-        return data if isinstance(data, list) else []
+        all_data: list[dict[str, Any]] = []
+        chunk_size = 10
+
+        for i in range(0, len(sensor_ids), chunk_size):
+            chunk = sensor_ids[i:i + chunk_size]
+            ids_quoted = ",".join(f"'{sid}'" for sid in chunk)
+            soql = f"?$where=idsensore IN ({ids_quoted}) AND data > '{since}'&$limit=10000"
+            url = f"{self.cfg.base_url}/{self.cfg.sensor_dataset}.json{soql}"
+            try:
+                resp = requests.get(url, headers=self._headers(), timeout=30)
+                if resp.status_code != 200:
+                    logger.warning("ARPA sensor data HTTP %d for chunk %d: %s",
+                                  resp.status_code, i // chunk_size, resp.text[:150])
+                    continue
+                data = resp.json()
+                if isinstance(data, list):
+                    all_data.extend(data)
+            except Exception as exc:
+                logger.warning("ARPA sensor data fetch failed for chunk %d: %s",
+                              i // chunk_size, exc)
+                continue
+
+        return all_data
 
     def fetch_raw(self) -> dict[str, Any]:
         """Fetch stations + sensor readings."""
