@@ -4,7 +4,7 @@
 trap 'echo "Shutting down..."; kill $DASHBOARD_PID $BOT_PID 2>/dev/null; wait; exit 0' SIGTERM SIGINT
 
 echo "========================================"
-echo "  LakeWind AI — Docker entrypoint (V2)"
+echo "  LakeWind AI — Docker entrypoint (V5)"
 echo "========================================"
 
 if [ ! -f /app/settings.yaml ]; then
@@ -20,8 +20,8 @@ if [ -z "$TELEGRAM_BOT_TOKEN" ]; then
     echo "WARNING: TELEGRAM_BOT_TOKEN not set. Telegram bot will not start."
 fi
 
-echo "Initializing database..."
-lakewind doctor 2>&1 | head -5
+echo "Checking database..."
+lakewind init-db 2>&1 | head -3
 
 echo ""
 echo "Starting services..."
@@ -36,11 +36,10 @@ streamlit run lakewind/interfaces/dashboard.py \
     > /tmp/dashboard.log 2>&1 &
 DASHBOARD_PID=$!
 
-# Start V2 Telegram bot (handles alerts + collect + predict internally via
-# APScheduler — everything in ONE process with ONE DuckDB connection).
+# Start Telegram bot (read-only — collect+predict runs via systemd timer)
 BOT_PID=""
 if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ "$TELEGRAM_BOT_TOKEN" != "your_token_here" ]; then
-    echo "  → V2 Telegram bot (alerts + pipeline)"
+    echo "  → Telegram bot (read-only, instant responses)"
     lakewind serve-bot > /tmp/bot.log 2>&1 &
     BOT_PID=$!
 else
@@ -50,7 +49,7 @@ fi
 echo ""
 echo "========================================"
 
-# Supervisor loop: check bg processes, no collect/predict (bot does it)
+# Supervisor loop: restart bg processes if they die
 while true; do
     sleep 60
 
