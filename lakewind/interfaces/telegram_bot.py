@@ -1384,9 +1384,6 @@ def run_bot() -> None:  # pragma: no cover - long-running
     app.run_polling(
         allowed_updates=Update.ALL_TYPES,
         drop_pending_updates=True,
-        pool_timeout=5,
-        read_timeout=5,
-        write_timeout=5,
     )
 
 
