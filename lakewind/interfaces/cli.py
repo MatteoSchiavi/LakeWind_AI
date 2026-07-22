@@ -172,6 +172,7 @@ def doctor() -> None:
     # Reachability (lightweight)
     table.add_row("Open-Meteo", _check_url(s.open_meteo.base_url), s.open_meteo.base_url)
     table.add_row("Domaso", _check_url(s.domaso.url), s.domaso.url)
+    arpa_url = f"{s.arpa_lombardia.base_url}/{s.arpa_lombardia.station_dataset}.json?$limit=1"
     table.add_row("ARPA Lombardia", _check_url(arpa_url), arpa_url)
 
     # Virtual points
