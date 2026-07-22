@@ -388,66 +388,9 @@ async def _help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 # ---------------------------------------------------------------------------
-# On-demand prediction — runs pipeline if forecasts are stale (>30 min)
+# Predictions are pre-computed externally by systemd timer / cron.
+# The bot only reads; no on-demand prediction triggers.
 # ---------------------------------------------------------------------------
-
-_PREDICTION_MAX_AGE = 1800  # 30 minutes
-
-
-def _predictions_fresh() -> bool:
-    """Return True if the latest prediction is less than _PREDICTION_MAX_AGE old."""
-    s = load_settings()
-    for vp_id in (s.operational_point_ids or [vp.id for vp in s.virtual_points]):
-        preds = access.latest_predictions(point_id=vp_id, limit=1)
-        if not preds:
-            return False
-        gen = preds[0].get("generated_at")
-        if isinstance(gen, str):
-            try:
-                gen = datetime.fromisoformat(gen)
-            except Exception:
-                return False
-        if gen is None:
-            return False
-        age = (datetime.utcnow() - gen).total_seconds()
-        if age > _PREDICTION_MAX_AGE:
-            return False
-    return True
-
-
-def _run_prediction_sync() -> tuple[int, float]:
-    """Run prediction pipeline synchronously (no collection — uses existing NWP data).
-
-    Returns (n_forecasts, runtime_seconds).
-    """
-    import time as _time
-
-    from lakewind.prediction.engine import run_cycle
-
-    start = _time.perf_counter()
-    result = run_cycle(collect=False)
-    elapsed = _time.perf_counter() - start
-    n = result.get("n_forecasts", 0) if isinstance(result, dict) else 0
-    return n, elapsed
-
-
-async def _ensure_fresh(update) -> bool:
-    """Check predictions freshness; run pipeline if stale. Returns True if fresh."""
-    if _predictions_fresh():
-        return True
-
-    msg = await update.message.reply_text("⏳ Computing forecast... (~15s)")
-
-    try:
-        loop = asyncio.get_running_loop()
-        n, elapsed = await loop.run_in_executor(None, _run_prediction_sync)
-        await msg.edit_text(f"✅ Forecast ready ({n} predictions in {elapsed:.1f}s)")
-    except Exception as e:
-        logger.exception("On-demand prediction failed: %s", e)
-        await msg.edit_text(f"❌ Forecast generation failed: {e}")
-        return False
-
-    return True
 
 
 async def _wind(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -460,10 +403,6 @@ async def _wind(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     lang = user.get("language", "en") if user else "en"
     units = user.get("units", "kn") if user else "kn"
-
-    # On-demand prediction if stale
-    if not await _ensure_fresh(update):
-        return
 
     arg = context.args[0] if context.args else None
     point_id = _resolve_point(arg, user)
@@ -510,9 +449,6 @@ async def _today(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     lang = user.get("language", "en") if user else "en"
     units = user.get("units", "kn") if user else "kn"
-
-    if not await _ensure_fresh(update):
-        return
 
     arg = context.args[0] if context.args else None
     point_id = _resolve_point(arg, user)
@@ -635,9 +571,6 @@ async def _map(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(_t("en", "rate_limited"))
         return
     lang = user.get("language", "en") if user else "en"
-
-    if not await _ensure_fresh(update):
-        return
 
     # Parse time argument
     arg = context.args[0] if context.args else "now"
@@ -1434,56 +1367,27 @@ def build_app():
     return app
 
 
-async def _run_pipeline(_ctx) -> None:
-    """Collect + predict pipeline — runs in a thread executor to not block the bot."""
-
-    def _synchronous_pipeline() -> dict:
-        from lakewind.collector import run_all_collectors
-        from lakewind.prediction.engine import run_cycle
-        logger.info("Pipeline: collecting...")
-        col_results = run_all_collectors()
-        n_ok = sum(1 for r in col_results if r["ok"])
-        logger.info("Pipeline: %d/%d collectors OK", n_ok, len(col_results))
-        logger.info("Pipeline: predicting...")
-        summary = run_cycle(collect=False)
-        logger.info("Pipeline: %d forecasts — status=%s",
-                     summary.get("n_forecasts", 0), summary.get("status"))
-        return summary
-
-    loop = asyncio.get_running_loop()
-    try:
-        await loop.run_in_executor(None, _synchronous_pipeline)
-    except Exception as exc:
-        logger.exception("Pipeline failed: %s", exc)
 
 
 def run_bot() -> None:  # pragma: no cover - long-running
-    """Start the V2 Telegram bot (long-polling) + alert + pipeline scheduler.
+    """Start the V2 Telegram bot (long-polling).
 
-    Everything runs in ONE process, sharing ONE DuckDB connection — no more
-    file-lock conflicts between the bot reader and the collect/predict writer.
+    The bot is a PURE READER — it never triggers data collection or prediction.
+    Those run independently via systemd timer (update.sh --cron every 10 min) or
+    via `lakewind collect && lakewind predict` cron job.
+
+    This separation keeps the bot responsive (<1s for any command) since DuckDB
+    is single-writer and the collector pipeline takes 3+ minutes.
     """
     app = build_app()
-
-    from lakewind.interfaces.bot_scheduler import run_scheduler
-
-    async def post_init(application):
-        # Alert + subscription checker (every 30 min, first at T+3min)
-        application.job_queue.run_repeating(
-            lambda ctx: asyncio.create_task(run_scheduler(ctx)),
-            interval=1800,
-            first=180,
-        )
-        # Collect + predict pipeline (every 30 min, first at T+30s)
-        application.job_queue.run_repeating(
-            _run_pipeline,
-            interval=1800,
-            first=30,
-        )
-
-    app.post_init = post_init
-    logging.info("V2 Telegram bot starting (long-polling, 22 commands, alert + pipeline scheduler)...")
-    app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+    logging.info("V2 Telegram bot starting (long-polling, 25 commands, read-only)...")
+    app.run_polling(
+        allowed_updates=Update.ALL_TYPES,
+        drop_pending_updates=True,
+        pool_timeout=5,
+        read_timeout=5,
+        write_timeout=5,
+    )
 
 
 __all__ = ["run_bot", "build_app"]
