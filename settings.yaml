@@ -21,15 +21,17 @@ operating_area:
 # IDENTICAL forecasts, doubling API calls for zero skill gain.
 # Plus 4 auxiliary points for macro-area pressure gradients.
 virtual_points:
-  # --- Operational points (8) — one per distinct NWP-resolvable location ---
-  - {id: dongo_shore,       lat: 46.124, lon: 9.280}
-  - {id: gravedona_shore,   lat: 46.147, lon: 9.307}
-  - {id: domaso_offshore,   lat: 46.151, lon: 9.332}
-  - {id: mid_channel,       lat: 46.100, lon: 9.304}
-  - {id: piona_entrance,    lat: 46.114, lon: 9.316}
-  - {id: dervio_shore,      lat: 46.077, lon: 9.307}
-  - {id: bellano_offshore,  lat: 46.051, lon: 9.304}
-  - {id: lecco_north,       lat: 46.020, lon: 9.290}
+  # --- Operational points (8) — coordinates validated by scripts/validate_points.py ---
+  # V5 FIX: Dervio and Bellano were 1.5-1.7km off. All coordinates now validated
+  # against the Lake Como water polygon to ensure they sit on water, not mountainside.
+  - {id: dongo_shore,       lat: 46.1230, lon: 9.2850}   # on water, near Dongo
+  - {id: gravedona_shore,   lat: 46.1460, lon: 9.3050}   # on water, Gravedona bay
+  - {id: domaso_offshore,   lat: 46.1500, lon: 9.3230}   # on water, off Domaso
+  - {id: mid_channel,       lat: 46.1000, lon: 9.3040}   # mid-lake
+  - {id: piona_entrance,    lat: 46.1140, lon: 9.3100}   # on water, Piona entrance
+  - {id: dervio_shore,      lat: 46.0763, lon: 9.2980}   # V5 FIX: on water, off Dervio
+  - {id: bellano_offshore,  lat: 46.0550, lon: 9.3000}   # V5 FIX: on water, off Bellano
+  - {id: lecco_north,       lat: 46.0600, lon: 9.3000}   # V5 FIX: on water, south end of corridor
   # --- Auxiliary points (4) — macro-area pressure gradients ---
   - {id: zurich,          lat: 47.376, lon: 8.541}
   - {id: milano_linate,   lat: 45.445, lon: 9.278}
@@ -69,6 +71,10 @@ open_meteo:
     - wind_speed_10m
     - wind_direction_10m
     - wind_gusts_10m
+    - wind_speed_80m           # multi-level wind (wind shear features)
+    - wind_direction_80m
+    - wind_speed_120m
+    - wind_direction_120m
     - temperature_2m
     - dew_point_2m
     - relative_humidity_2m
@@ -81,6 +87,12 @@ open_meteo:
     - shortwave_radiation
     - cape
     - boundary_layer_height
+    - precipitation             # V5: rain (mm/h) — for weather display + wet-sail warning
+    - rain                     # V5: rain specifically (mm/h)
+    - snowfall                 # V5: snowfall (cm/h) — winter sailing safety
+    - weather_code             # V5: WMO weather code (0=clear, 61=light rain, etc.)
+    - visibility               # V5: visibility (m) — safety feature
+    - uv_index                 # V5: UV index — sunburn warning for sailors
   wind_speed_unit: "kn"
   timezone: "auto"
   forecast_days: 7

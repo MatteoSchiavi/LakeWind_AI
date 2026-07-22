@@ -255,6 +255,30 @@ def train(
     y_u = df["target_u"].values
     y_v = df["target_v"].values
 
+    # V5: Feature count vs sample count warning (Claude audit: overfitting risk)
+    n_features = len(feature_cols)
+    n_samples = len(df)
+    if n_features > n_samples / 5:
+        logger.warning(
+            "⚠ OVERFITTING RISK: %d features vs %d samples (ratio 1:%.1f, "
+            "recommended max 1:5). Consider running feature selection or "
+            "collecting more data before trusting this model.",
+            n_features, n_samples, n_samples / n_features,
+        )
+        # Auto-prune: keep only top features by variance (drop constant + low-variance)
+        from sklearn.feature_selection import VarianceThreshold
+        selector = VarianceThreshold(threshold=0.01)
+        X_array = X.fillna(0).values
+        selector.fit(X_array)
+        kept_mask = selector.get_support()
+        kept_cols = [c for c, keep in zip(feature_cols, kept_mask) if keep]
+        dropped = len(feature_cols) - len(kept_cols)
+        if dropped > 0:
+            logger.info("Auto-pruned %d low-variance features (%d → %d)",
+                        dropped, len(feature_cols), len(kept_cols))
+            X = X[kept_cols]
+            feature_cols = kept_cols
+
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
     mv = model_version or f"mos_v1_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}"
 

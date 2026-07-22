@@ -36,11 +36,17 @@ console = Console()
 def _setup_logging(level: str = "INFO") -> None:
     s = load_settings()
     logging.basicConfig(level=level, format=s.logging.format)
+    # V5: Install crash prevention (signal handlers, exception hook, memory monitor)
+    try:
+        from lakewind.stability import setup_crash_prevention
+        setup_crash_prevention()
+    except Exception:
+        pass  # don't fail if stability module has issues
 
 
 @app.command("init-db")
 def init_db() -> None:
-    """Create the DuckDB file, apply V1 schema, and extend with V2 tables."""
+    """Create the DuckDB file, apply V1+V2 schema, and auto-recover any gaps."""
     from lakewind.db.schema import init_db as _init
 
     _init()
@@ -51,6 +57,80 @@ def init_db() -> None:
         console.print("[green]V2 schema extended (users, alerts, subscriptions).[/green]")
     except Exception as exc:
         console.print(f"[yellow]V2 schema extension skipped: {exc}[/yellow]")
+
+    # V5: Quick gap check (non-blocking — no backfill here).
+    # Use `lakewind recover` to actually fill gaps.
+    try:
+        from lakewind.recovery import detect_gaps
+        gaps = detect_gaps()
+        fc = gaps.get("forecast_runs", {})
+        obs = gaps.get("observations", {})
+        if fc.get("needs_recovery") or obs.get("needs_recovery"):
+            console.print(
+                f"[yellow]⚠ Data gaps detected: forecasts {fc.get('gap_days', 0):.1f}d, "
+                f"observations {obs.get('gap_days', 0):.1f}d.[/yellow]"
+            )
+            console.print("[cyan]Run `lakewind recover` to backfill missing data.[/cyan]")
+        else:
+            console.print("[green]No data gaps — everything is current.[/green]")
+    except Exception as exc:
+        console.print(f"[yellow]Gap check skipped: {exc}[/yellow]")
+
+
+@app.command("recover")
+def recover_cmd(
+    check: bool = typer.Option(False, help="Dry-run: show what's missing without backfilling"),
+    force: bool = typer.Option(False, help="Force full recheck of entire history"),
+) -> None:
+    """V5: Detect and fill data gaps (auto-backfill after downtime).
+
+    If the T420 was down for a week, this command detects the missing period
+    and automatically backfills NWP forecasts + ERA5 observations from the
+    Open-Meteo Historical Forecast and Archive APIs.
+
+    Called automatically on every startup via init-db / docker-entrypoint.
+    """
+    _setup_logging()
+    import json
+    from lakewind.recovery import recover
+
+    console.print("[bold cyan]=== Auto-Recovery: Data Gap Detection ===[/bold cyan]")
+    result = recover(check_only=check, force_full=force)
+
+    gaps = result.get("gaps", {})
+    fc = gaps.get("forecast_runs", {})
+    obs = gaps.get("observations", {})
+
+    console.print(f"\n[bold]Forecast data:[/bold]")
+    console.print(f"  Latest: {fc.get('latest', 'none')}")
+    console.print(f"  Gap: {fc.get('gap_days', '?')} days")
+    console.print(f"  Total rows: {fc.get('count', 0)}")
+    console.print(f"  Needs recovery: {'⚠ YES' if fc.get('needs_recovery') else '✓ no'}")
+
+    console.print(f"\n[bold]Observations:[/bold]")
+    console.print(f"  Latest: {obs.get('latest', 'none')}")
+    console.print(f"  Gap: {obs.get('gap_days', '?')} days")
+    console.print(f"  Total rows: {obs.get('count', 0)}")
+    console.print(f"  Needs recovery: {'⚠ YES' if obs.get('needs_recovery') else '✓ no'}")
+
+    if obs.get("by_source"):
+        console.print(f"\n  [bold]By source:[/bold]")
+        for src, info in obs["by_source"].items():
+            console.print(f"    {src}: {info['count']} rows, gap {info['gap_hours']}h")
+
+    if result.get("any_recovered"):
+        rec = result.get("recovery", {})
+        fc_rec = rec.get("forecasts", {})
+        era5_rec = rec.get("era5", {})
+        console.print(f"\n[bold green]Recovery completed:[/bold green]")
+        if fc_rec.get("rows_inserted"):
+            console.print(f"  Forecasts: {fc_rec['rows_inserted']} rows ({fc_rec.get('days', 0)} days)")
+        if era5_rec.get("rows_inserted"):
+            console.print(f"  ERA5: {era5_rec['rows_inserted']} rows ({era5_rec.get('days', 0)} days)")
+    elif check:
+        console.print(f"\n[yellow]Dry-run: no data was modified.[/yellow]")
+    else:
+        console.print(f"\n[green]No gaps needed filling.[/green]")
 
 
 @app.command("doctor")
@@ -92,8 +172,6 @@ def doctor() -> None:
     # Reachability (lightweight)
     table.add_row("Open-Meteo", _check_url(s.open_meteo.base_url), s.open_meteo.base_url)
     table.add_row("Domaso", _check_url(s.domaso.url), s.domaso.url)
-    table.add_row("CML", _check_url(s.cml.url), s.cml.url)
-    arpa_url = f"{s.arpa_lombardia.base_url}/{s.arpa_lombardia.station_dataset}.json?$limit=1"
     table.add_row("ARPA Lombardia", _check_url(arpa_url), arpa_url)
 
     # Virtual points
@@ -262,6 +340,18 @@ def backtest_cmd(
     console.print(f"  80% interval coverage:           {report.confidence_interval_coverage_pct}%")
     console.print(f"  Decision precision:              {report.decision_precision_pct}%")
     console.print(f"  [bold]Success criteria met: {report.success_criteria_met}[/bold]")
+
+    # V5: Source-separated metrics (Claude audit: separate vs-ERA5 and vs-real)
+    console.print(f"\n[bold cyan]Observation source breakdown:[/bold cyan]")
+    console.print(f"  ERA5 reanalysis samples:         {report.n_era5_samples}")
+    console.print(f"  Real station samples:            {report.n_real_samples}")
+    if report.candidate_mae_vs_era5 is not None:
+        console.print(f"  Candidate MAE vs ERA5:           {report.candidate_mae_vs_era5} kn")
+    if report.candidate_mae_vs_real is not None:
+        console.print(f"  Candidate MAE vs real stations:  {report.candidate_mae_vs_real} kn")
+    if report.n_era5_samples > report.n_real_samples:
+        console.print(f"  [yellow]⚠ Most metrics are vs ERA5 (inter-model bias), not real observations.[/yellow]")
+        console.print(f"    Deploy DIY buoy for real ground truth.")
 
     console.print("\n[bold]Per-regime:[/bold]")
     rt = Table()

@@ -59,6 +59,13 @@ class BacktestReport:
     confidence_interval_coverage_pct: float
     decision_precision_pct: float
     success_criteria_met: bool
+    # V5: Source-separated metrics (Claude audit)
+    n_era5_samples: int = 0
+    n_real_samples: int = 0
+    candidate_mae_vs_era5: float | None = None
+    candidate_mae_vs_real: float | None = None
+    nwp_mae_vs_era5: float | None = None
+    nwp_mae_vs_real: float | None = None
     per_regime: dict[str, dict[str, float]] = field(default_factory=dict)
     windows: list[dict[str, Any]] = field(default_factory=list)
 
@@ -108,6 +115,12 @@ def _materialize_test_samples(
             obs_u = ref_u + fr.target_u
             obs_v = ref_v + fr.target_v
             obs = WindVector.from_uv(obs_u, obs_v)
+
+            # V5: Track whether the observation is from ERA5 or a real station
+            # (Claude audit: separate vs-ERA5 and vs-real-station metrics)
+            obs_source = fr.meta.get("obs_source", "unknown")
+            is_era5 = obs_source == "era5_reanalysis"
+
             rows.append(
                 {
                     "point_id": point_id,
@@ -116,6 +129,8 @@ def _materialize_test_samples(
                     "ref_dir": ref_dir,
                     "obs_speed": obs.speed_kn,
                     "obs_dir": obs.direction_deg,
+                    "obs_source": obs_source,
+                    "is_era5": is_era5,
                     "feature_vector": fr.feature_vector,
                     "regime_tivano": fr.feature_vector.get("tivano_window", False),
                     "regime_breva": fr.feature_vector.get("breva_window", False),
@@ -238,6 +253,11 @@ def run_backtest(
     interval_covered: list[bool] = []
     decision_hits: list[bool] = []
     decision_attempts: list[bool] = []
+    # V5: Separate errors by observation source (Claude audit)
+    cand_errors_era5: list[float] = []
+    cand_errors_real: list[float] = []
+    nwp_errors_era5: list[float] = []
+    nwp_errors_real: list[float] = []
     per_regime: dict[str, dict[str, list[float]]] = {
         "breva": {"cand_mae": [], "pers_mae": [], "nwp_mae": []},
         "tivano": {"cand_mae": [], "pers_mae": [], "nwp_mae": []},
@@ -288,6 +308,14 @@ def run_backtest(
                 nwp_dir_err = circular_direction_error_deg(s_row["ref_dir"], s_row["obs_dir"])
                 nwp_errors.append(nwp_err)
                 nwp_dir_errors.append(nwp_dir_err)
+
+                # V5: Separate by observation source
+                if s_row.get("is_era5"):
+                    cand_errors_era5.append(cand_err)
+                    nwp_errors_era5.append(nwp_err)
+                else:
+                    cand_errors_real.append(cand_err)
+                    nwp_errors_real.append(nwp_err)
 
                 # Decision usefulness (Spec §1.2: sustained wind >=8 kn for >=2h
                 # in 11:00-16:00 LOCAL time, not UTC)
@@ -377,6 +405,13 @@ def run_backtest(
         confidence_interval_coverage_pct=round(interval_cov, 2),
         decision_precision_pct=round(decision_prec, 2),
         success_criteria_met=success,
+        # V5: Source-separated metrics
+        n_era5_samples=len(cand_errors_era5),
+        n_real_samples=len(cand_errors_real),
+        candidate_mae_vs_era5=round(float(np.mean(cand_errors_era5)), 3) if cand_errors_era5 else None,
+        candidate_mae_vs_real=round(float(np.mean(cand_errors_real)), 3) if cand_errors_real else None,
+        nwp_mae_vs_era5=round(float(np.mean(nwp_errors_era5)), 3) if nwp_errors_era5 else None,
+        nwp_mae_vs_real=round(float(np.mean(nwp_errors_real)), 3) if nwp_errors_real else None,
         per_regime=per_regime_summary,
         windows=windows_summary,
     )

@@ -974,7 +974,7 @@ async def _about(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "  • Regime classifier (Breva/Tivano/Foehn/Storm/Calm)\n\n"
         "*Data sources:*\n"
         "  • Open-Meteo Forecast, Ensemble, Historical Forecast, ERA5\n"
-        "  • Domaso live station, CML Dervio (3bmeteo fallback)\n"
+        "  • Domaso live station, ARPA Lombardia (9 stations)\n"
         "  • ARPA Lombardia (Socrata API)\n"
         "  • DIY buoy (Phase 3)\n\n"
         "V2 — multi-user, alerts, daily summaries, heatmap.\n"

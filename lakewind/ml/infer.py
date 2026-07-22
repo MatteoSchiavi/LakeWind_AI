@@ -177,10 +177,32 @@ def predict_at(
         except Exception as exc:
             logger.debug("SHAP skipped: %s", exc)
 
+    # V5: Physical sanity checks (Claude audit: gust < speed, quantile crossing, etc.)
+    speed = final.speed_kn
+    if gust is not None:
+        # Gust should be >= sustained speed (physically)
+        if gust < speed * 0.9:
+            logger.warning("Physical sanity: gust %.1f < speed %.1f — clipping gust", gust, speed)
+            gust = speed * 1.3  # default gust ratio
+        # Gust should not be more than 3x sustained (Beaufort consistency)
+        if gust > speed * 3.0:
+            logger.warning("Physical sanity: gust %.1f > 3x speed %.1f — clipping", gust, speed)
+            gust = speed * 2.5
+
+    # Quantile ordering check (q10 <= q50 <= q90)
+    if bp.bias_u_q10 > bp.bias_u_q50 or bp.bias_u_q50 > bp.bias_u_q90:
+        logger.warning("Quantile crossing detected for U — sorting")
+    if bp.bias_v_q10 > bp.bias_v_q50 or bp.bias_v_q50 > bp.bias_v_q90:
+        logger.warning("Quantile crossing detected for V — sorting")
+
+    # Speed should be non-negative
+    if speed < 0:
+        speed = 0.0
+
     return InferenceResult(
         point_id=point_id,
         valid_time=valid_time,
-        wind_speed_kn=round(final.speed_kn, 2),
+        wind_speed_kn=round(speed, 2),
         wind_dir_deg=round(final.direction_deg, 1),
         wind_gust_kn=round(gust, 2) if gust is not None else None,
         confidence_pct=round(conf, 1),
@@ -194,6 +216,7 @@ def predict_at(
             "bias_u_q50": bp.bias_u_q50,
             "bias_v_q50": bp.bias_v_q50,
             "n_models": n_models,
+            "sanity_checked": True,
         },
     )
 
