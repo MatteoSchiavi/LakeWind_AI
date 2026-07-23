@@ -9,6 +9,7 @@ services:
       - ./settings.yaml:/app/settings.yaml:ro
       - ./data:/app/data
       - ./data/models:/app/models
+      - ./lakewind:/app/lakewind:ro
     env_file:
       - .env
     environment:
