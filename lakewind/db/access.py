@@ -83,12 +83,24 @@ def insert_forecast_run(row: dict[str, Any]) -> int:
     with cursor() as conn:
         conn.execute(
             f"""
-            INSERT OR REPLACE INTO {s.db.forecast_table}
+            INSERT INTO {s.db.forecast_table}
             (id, model_name, point_id, run_time, valid_time,
              wind_speed_kn, wind_dir_deg, wind_gust_kn,
              pressure_msl, temperature_2m, dew_point_2m, cloud_cover,
              shortwave_radiation, cape, boundary_layer_height, raw_json)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (model_name, point_id, run_time, valid_time) DO UPDATE SET
+                wind_speed_kn = EXCLUDED.wind_speed_kn,
+                wind_dir_deg = EXCLUDED.wind_dir_deg,
+                wind_gust_kn = EXCLUDED.wind_gust_kn,
+                pressure_msl = EXCLUDED.pressure_msl,
+                temperature_2m = EXCLUDED.temperature_2m,
+                dew_point_2m = EXCLUDED.dew_point_2m,
+                cloud_cover = EXCLUDED.cloud_cover,
+                shortwave_radiation = EXCLUDED.shortwave_radiation,
+                cape = EXCLUDED.cape,
+                boundary_layer_height = EXCLUDED.boundary_layer_height,
+                raw_json = EXCLUDED.raw_json
             """,
             (
                 rid,
@@ -141,12 +153,24 @@ def bulk_insert_forecast_runs(rows: list[dict[str, Any]]) -> int:
     with cursor() as conn:
         conn.executemany(
             f"""
-            INSERT OR REPLACE INTO {s.db.forecast_table}
+            INSERT INTO {s.db.forecast_table}
             (id, model_name, point_id, run_time, valid_time,
              wind_speed_kn, wind_dir_deg, wind_gust_kn,
              pressure_msl, temperature_2m, dew_point_2m, cloud_cover,
              shortwave_radiation, cape, boundary_layer_height, raw_json)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (model_name, point_id, run_time, valid_time) DO UPDATE SET
+                wind_speed_kn = EXCLUDED.wind_speed_kn,
+                wind_dir_deg = EXCLUDED.wind_dir_deg,
+                wind_gust_kn = EXCLUDED.wind_gust_kn,
+                pressure_msl = EXCLUDED.pressure_msl,
+                temperature_2m = EXCLUDED.temperature_2m,
+                dew_point_2m = EXCLUDED.dew_point_2m,
+                cloud_cover = EXCLUDED.cloud_cover,
+                shortwave_radiation = EXCLUDED.shortwave_radiation,
+                cape = EXCLUDED.cape,
+                boundary_layer_height = EXCLUDED.boundary_layer_height,
+                raw_json = EXCLUDED.raw_json
             """,
             payload,
         )
@@ -162,11 +186,20 @@ def insert_observation(row: dict[str, Any]) -> int:
     with cursor() as conn:
         conn.execute(
             f"""
-            INSERT OR REPLACE INTO {s.db.observations_table}
+            INSERT INTO {s.db.observations_table}
             (id, source, timestamp, lat, lon,
              wind_speed_kn, wind_dir_deg, wind_gust_kn,
              pressure, temperature, humidity, quality_flag, confidence)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (source, timestamp, lat, lon) DO UPDATE SET
+                wind_speed_kn = EXCLUDED.wind_speed_kn,
+                wind_dir_deg = EXCLUDED.wind_dir_deg,
+                wind_gust_kn = EXCLUDED.wind_gust_kn,
+                pressure = EXCLUDED.pressure,
+                temperature = EXCLUDED.temperature,
+                humidity = EXCLUDED.humidity,
+                quality_flag = EXCLUDED.quality_flag,
+                confidence = EXCLUDED.confidence
             """,
             (
                 rid,
@@ -212,11 +245,20 @@ def bulk_insert_observations(rows: list[dict[str, Any]]) -> int:
     with cursor() as conn:
         conn.executemany(
             f"""
-            INSERT OR REPLACE INTO {s.db.observations_table}
+            INSERT INTO {s.db.observations_table}
             (id, source, timestamp, lat, lon,
              wind_speed_kn, wind_dir_deg, wind_gust_kn,
              pressure, temperature, humidity, quality_flag, confidence)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (source, timestamp, lat, lon) DO UPDATE SET
+                wind_speed_kn = EXCLUDED.wind_speed_kn,
+                wind_dir_deg = EXCLUDED.wind_dir_deg,
+                wind_gust_kn = EXCLUDED.wind_gust_kn,
+                pressure = EXCLUDED.pressure,
+                temperature = EXCLUDED.temperature,
+                humidity = EXCLUDED.humidity,
+                quality_flag = EXCLUDED.quality_flag,
+                confidence = EXCLUDED.confidence
             """,
             payload,
         )
@@ -348,12 +390,22 @@ def register_model(
     with cursor() as conn:
         conn.execute(
             f"""
-            INSERT OR REPLACE INTO {s.db.model_registry_table}
+            INSERT INTO {s.db.model_registry_table}
             (model_version, trained_at, feature_set_version,
              training_period_start, training_period_end,
              backtest_mae_kn, backtest_dir_error_deg,
              promoted_to_production, git_commit, notes)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (model_version) DO UPDATE SET
+                trained_at = EXCLUDED.trained_at,
+                feature_set_version = EXCLUDED.feature_set_version,
+                training_period_start = EXCLUDED.training_period_start,
+                training_period_end = EXCLUDED.training_period_end,
+                backtest_mae_kn = EXCLUDED.backtest_mae_kn,
+                backtest_dir_error_deg = EXCLUDED.backtest_dir_error_deg,
+                promoted_to_production = EXCLUDED.promoted_to_production,
+                git_commit = EXCLUDED.git_commit,
+                notes = EXCLUDED.notes
             """,
             (
                 model_version,
