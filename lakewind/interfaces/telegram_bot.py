@@ -422,7 +422,7 @@ async def _start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     lang = _get_user_lang(user)
     welcome = (
-        f"🌊 *LakeWind AI*\n\n"
+        f"🌊 LakeWind AI\n\n"
         f"Hyperlocal wind forecasts for Dongo-Dervio, Lake Como.\n"
         f"Tap a button below to get started 👇"
     )
@@ -471,21 +471,21 @@ async def _menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     if data == "m:wind":
         await query.edit_message_text(
-            "🌬 *Wind*\nChoose a point 👇",
+            "🌬 Wind\nChoose a point 👇",
             reply_markup=_point_kb("w", lang),
         )
         return
 
     if data == "m:today":
         await query.edit_message_text(
-            "📅 *Today*\nChoose a point 👇",
+            "📅 Today\nChoose a point 👇",
             reply_markup=_point_kb("t", lang),
         )
         return
 
     if data == "m:map":
         await query.edit_message_text(
-            "🗺 *Wind Map*\nChoose a time 👇",
+            "🗺 Wind Map\nChoose a time 👇",
             reply_markup=_map_time_kb(),
         )
         return
@@ -496,7 +496,7 @@ async def _menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     if data == "m:trend":
         await query.edit_message_text(
-            "📈 *Trend*\nChoose a point 👇",
+            "📈 Trend\nChoose a point 👇",
             reply_markup=_point_kb("tr", lang),
         )
         return
@@ -513,20 +513,7 @@ async def _menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await _status_display(query, lang)
         return
 
-    # --- Wind: point selected → show time options ---
-    if data.startswith("w:") and data != "w:back":
-        point_id = data[2:]
-        await query.edit_message_text(
-            f"🌬 *{point_id.replace('_', ' ').title()}*\nChoose a time 👇",
-            reply_markup=_time_kb("w", point_id),
-        )
-        return
-
-    if data == "w:back":
-        await query.edit_message_text("🌬 *Wind*\nChoose a point 👇", reply_markup=_point_kb("w", lang))
-        return
-
-    # --- Wind: point + time selected → show result ---
+    # --- Wind: point + time selected → show result (CHECK FIRST — 2 colons) ---
     if data.startswith("w:") and data.count(":") == 2:
         _, point_id, hours_str = data.split(":")
         hours = int(hours_str)
@@ -549,6 +536,19 @@ async def _menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
         return
 
+    # --- Wind: point selected (1 colon) → show time options ---
+    if data.startswith("w:") and data != "w:back":
+        point_id = data[2:]
+        await query.edit_message_text(
+            f"🌬 {point_id.replace('_', ' ').title()}\nChoose a time 👇",
+            reply_markup=_time_kb("w", point_id),
+        )
+        return
+
+    if data == "w:back":
+        await query.edit_message_text("🌬 Wind\nChoose a point 👇", reply_markup=_point_kb("w", lang))
+        return
+
     # --- Today: point selected → show hourly table ---
     if data.startswith("t:") and data != "t:back":
         point_id = data[2:]
@@ -569,7 +569,7 @@ async def _menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     if data == "t:back":
-        await query.edit_message_text("📅 *Today*\nChoose a point 👇", reply_markup=_point_kb("t", lang))
+        await query.edit_message_text("📅 Today\nChoose a point 👇", reply_markup=_point_kb("t", lang))
         return
 
     # --- Map: time selected → generate + send heatmap ---
@@ -586,7 +586,7 @@ async def _menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     if data == "tr:back":
-        await query.edit_message_text("📈 *Trend*\nChoose a point 👇", reply_markup=_point_kb("tr", lang))
+        await query.edit_message_text("📈 Trend\nChoose a point 👇", reply_markup=_point_kb("tr", lang))
         return
 
 
@@ -689,9 +689,9 @@ async def _alert_menu(query, user, lang) -> None:
     """Show alert management menu."""
     alerts = user_db.list_alerts(user["telegram_user_id"])
     if not alerts:
-        text = "⚠️ *Alerts*\nNo alerts set.\n\nUse /alert set 8 dervio_shore\nto get notified when wind reaches 8kn at Dervio."
+        text = "⚠️ Alerts\nNo alerts set.\n\nUse /alert set 8 dervio_shore\nto get notified when wind reaches 8kn at Dervio."
     else:
-        text = "⚠️ *Your Alerts*\n\n"
+        text = "⚠️ Your Alerts\n\n"
         for a in alerts:
             text += f"  • #{a['id']} {a['point_id']} ≥ {a['threshold_kn']}kn {'✅' if a['enabled'] else '❌'}\n"
     await query.edit_message_text(text, reply_markup=_main_menu_kb())
@@ -700,7 +700,7 @@ async def _alert_menu(query, user, lang) -> None:
 async def _settings_menu(query, user, lang) -> None:
     """Show settings menu."""
     text = (
-        f"⚙️ *Settings*\n\n"
+        f"⚙️ Settings\n\n"
         f"  Language: `{user.get('language', 'en')}`\n"
         f"  Units: `{user.get('units', 'kn')}`\n"
         f"  Favorite: `{user.get('favorite_point_id', '(none)')}`\n"
@@ -832,7 +832,7 @@ async def _alert_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
                 "This notifies you when wind reaches 8kn at Dervio."
             )
             return
-        text = "⚠️ *Your Alerts*\n\n"
+        text = "⚠️ Your Alerts\n\n"
         for a in alerts:
             text += f"  • #{a['id']} {a['point_id']} ≥ {a['threshold_kn']}kn {'✅' if a['enabled'] else '❌'}\n"
         await update.message.reply_text(text)
@@ -871,11 +871,11 @@ async def _status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     from lakewind.db.freshness import check_freshness
     health = access.latest_source_health()
     freshness = check_freshness()
-    lines = ["📊 *Data Source Status*\n"]
+    lines = ["📊 Data Source Status\n"]
     for h in health:
         mark = "✅" if h["ok"] else "❌"
         lines.append(f"  {mark} `{h['source']}` ({h['latency_ms']:.0f}ms)")
-    lines.append("\n*Freshness:*")
+    lines.append("\nFreshness:")
     for f in freshness:
         mark = "✅" if f["is_fresh"] else "⚠️"
         lines.append(f"  {mark} `{f['source']}` — {f['age_minutes']:.0f}min ago")
@@ -1020,26 +1020,26 @@ async def _accuracy_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 decision_hits += 1
 
     # Build accuracy report
-    lines = [f"📊 *Accuracy Report — {point_id.replace('_', ' ').title()}*", ""]
+    lines = [f"📊 Accuracy Report — {point_id.replace('_', ' ').title()}*", ""]
 
     if errors_7d:
         mae_7 = np.mean(errors_7d)
-        lines.append(f"📈 *7-day MAE:* {mae_7:.2f} kn ({len(errors_7d)} samples)")
+        lines.append(f"📈 7-day MAE: {mae_7:.2f} kn ({len(errors_7d)} samples)")
     else:
-        lines.append("📈 *7-day MAE:* not enough data")
+        lines.append("📈 7-day MAE: not enough data")
 
     if errors_30d:
         mae_30 = np.mean(errors_30d)
-        lines.append(f"📈 *30-day MAE:* {mae_30:.2f} kn ({len(errors_30d)} samples)")
+        lines.append(f"📈 30-day MAE: {mae_30:.2f} kn ({len(errors_30d)} samples)")
     else:
-        lines.append("📈 *30-day MAE:* not enough data")
+        lines.append("📈 30-day MAE: not enough data")
 
     if dir_errors:
         dir_mae = np.mean(dir_errors)
-        lines.append(f"🧭 *Direction error:* {dir_mae:.1f}° ({len(dir_errors)} samples)")
+        lines.append(f"🧭 Direction error: {dir_mae:.1f}° ({len(dir_errors)} samples)")
 
     lines.append("")
-    lines.append("*Observation source breakdown:*")
+    lines.append("Observation source breakdown:")
     if errors_era5:
         lines.append(f"  📌 vs ERA5: {np.mean(errors_era5):.2f} kn ({len(errors_era5)} samples)")
     if errors_real:
@@ -1051,11 +1051,11 @@ async def _accuracy_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if decision_total > 0:
         hit_rate = decision_hits / decision_total * 100
         lines.append("")
-        lines.append(f"🎯 *Decision hit rate:* {hit_rate:.0f}% ({decision_hits}/{decision_total})")
+        lines.append(f"🎯 Decision hit rate: {hit_rate:.0f}% ({decision_hits}/{decision_total})")
 
     if len(errors_30d) < 50:
         lines.append("")
-        lines.append("⚠️ *Not enough data yet* — collect more observations for reliable metrics")
+        lines.append("⚠️ Not enough data yet — collect more observations for reliable metrics")
 
     await update.message.reply_text("\n".join(lines))
 
@@ -1093,7 +1093,7 @@ async def _why_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             pass
 
     lines = [
-        f"🔍 *Why is the wind {speed:.1f}kn?*",
+        f"🔍 Why is the wind {speed:.1f}kn?",
         f"📍 {point_id.replace('_', ' ').title()}",
         f"🌬 {_fmt_cardinal(direction)} ({direction:.0f}°)",
         f"✅ Confidence: {conf:.0f}%",
@@ -1101,7 +1101,7 @@ async def _why_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     ]
 
     if contributors:
-        lines.append("*Top contributing factors:*")
+        lines.append("Top contributing factors:")
         for i, (name, value) in enumerate(contributors[:5], 1):
             # Translate feature names to plain language
             plain = _feature_to_plain_language(name, value)
@@ -1118,7 +1118,7 @@ async def _why_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if fr:
             result = classify_regime(now, fr.feature_vector)
             lines.append("")
-            lines.append(f"🌬 *Regime:* {result.regime.title()} (conf {result.confidence:.0f}%)")
+            lines.append(f"🌬 Regime: {result.regime.title()} (conf {result.confidence:.0f}%)")
             if result.regime == "breva":
                 lines.append("   Thermal south wind — driven by land-lake temperature gradient")
             elif result.regime == "tivano":
@@ -1179,7 +1179,7 @@ async def _report_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     if not context.args or len(context.args) < 2:
         await update.message.reply_text(
-            "📝 *Report wind conditions*\n\n"
+            "📝 Report wind conditions\n\n"
             "Usage: /report <beaufort> <direction> [note]\n\n"
             "Example: /report 4 S steady breva, whitecaps\n\n"
             "Beaufort: 0=calm, 1-3=light, 4-5=moderate, 6-7=strong, 8+=gale\n"
@@ -1233,12 +1233,12 @@ async def _report_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             pred_dir = pred.get("wind_dir_deg", 0)
             err = abs(pred_speed - speed_kn)
             pred_text = (
-                f"\n\n📋 *Model predicted:* {pred_speed:.1f}kn {_fmt_cardinal(pred_dir)}\n"
-                f"📊 *Error:* {err:.1f}kn"
+                f"\n\n📋 Model predicted: {pred_speed:.1f}kn {_fmt_cardinal(pred_dir)}\n"
+                f"📊 Error: {err:.1f}kn"
             )
 
         await update.message.reply_text(
-            f"✅ *Report logged*\n"
+            f"✅ Report logged\n"
             f"🌊 B{bf} ({speed_kn}kn) from {dir_str}\n"
             f"📝 {note or '(no note)'}"
             f"{pred_text}"

@@ -9,9 +9,9 @@ project:
 # Section 2.1 — operating area bounding box (Dongo-Dervio corridor)
 operating_area:
   name: "Dongo-Dervio corridor"
-  lat_min: 46.05
-  lat_max: 46.16
-  lon_min: 9.26
+  lat_min: 46.04
+  lat_max: 46.17
+  lon_min: 9.27
   lon_max: 9.34
 
 # Section 2.2 — virtual observation points

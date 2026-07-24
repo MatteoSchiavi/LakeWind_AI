@@ -48,14 +48,13 @@ _LAKE_POLYGON_FALLBACK = [
 ]
 
 _TOWNS_V3 = [
-    (9.285, 46.123, "Dongo", "left"),
-    (9.305, 46.146, "Gravedona", "right"),
-    (9.323, 46.150, "Domaso", "right"),
-    (9.290, 46.116, "Musso", "left"),
-    (9.298, 46.076, "Dervio", "right"),
-    (9.310, 46.114, "Piona", "right"),
-    (9.305, 46.055, "Bellano", "right"),
-    # V6.5: Removed Lecco (was at 46.020 — 19km away, floating outside map bounds)
+    (9.278, 46.125, "Dongo", "right"),      # on west shore
+    (9.300, 46.149, "Gravedona", "left"),    # on east shore
+    (9.326, 46.151, "Domaso", "left"),       # on east shore
+    (9.285, 46.114, "Musso", "right"),       # on west shore
+    (9.293, 46.078, "Dervio", "right"),      # on west shore
+    (9.315, 46.114, "Piona", "left"),        # on east shore (peninsula)
+    (9.298, 46.050, "Bellano", "right"),     # on west shore
 ]
 
 
