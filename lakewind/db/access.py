@@ -2,6 +2,10 @@
 
 Provides typed helpers around the tables defined in `schema.py`. All other
 modules (collectors, features, ml, prediction, interfaces) go through here.
+
+V6.5 FIX: Connections are opened and closed per query — no persistent
+connection that would lock the DB file. This allows the bot (reader) and
+collector/predict (writer) to run concurrently without lock conflicts.
 """
 from __future__ import annotations
 
@@ -17,44 +21,28 @@ import duckdb
 
 from lakewind.config import get_db_path, load_settings
 
-# Single shared DuckDB connection used by all threads (bot + pipeline). A
-# threading.Lock serializes write access so multiple cursors can coexist on
-# the same connection without file-lock conflicts.
-_global_conn: duckdb.DuckDBPyConnection | None = None
-_global_conn_lock = threading.Lock()
 
-
-def _ensure_conn() -> duckdb.DuckDBPyConnection:
-    global _global_conn
-    if _global_conn is None:
-        with _global_conn_lock:
-            if _global_conn is None:
-                _global_conn = duckdb.connect(str(get_db_path()))
-    return _global_conn
+def _connect(read_only: bool = False) -> duckdb.DuckDBPyConnection:
+    """Open a new DuckDB connection to the configured database file."""
+    return duckdb.connect(str(get_db_path()), read_only=read_only)
 
 
 @contextmanager
 def cursor(read_only: bool = False) -> Iterator[duckdb.DuckDBPyConnection]:
-    """Yield the shared DuckDB connection.
+    """Yield a fresh DuckDB connection, closed automatically after use.
 
-    Writes are serialized via ``_global_conn_lock``. Read-only callers skip
-    the lock so they can proceed while a write is happening in another thread
-    (DuckDB supports multiple cursors on the same connection).
+    Opens and closes a connection per query. DuckDB is embedded (no server),
+    so connections are cheap (~1ms). This ensures no persistent file lock
+    blocks concurrent collector/predict processes from writing.
     """
-    conn = _ensure_conn()
-    if not read_only:
-        _global_conn_lock.acquire()
+    conn = _connect(read_only=read_only)
     try:
         yield conn
-        if not read_only:
-            conn.commit()
     except Exception:
-        if not read_only:
-            conn.rollback()
+        conn.rollback()
         raise
     finally:
-        if not read_only:
-            _global_conn_lock.release()
+        conn.close()
 
 
 def _next_id() -> int:
@@ -63,14 +51,8 @@ def _next_id() -> int:
 
 
 def close_global_conn() -> None:
-    """Close the global DuckDB connection (used by tests)."""
-    global _global_conn
-    if _global_conn is not None:
-        try:
-            _global_conn.close()
-        except Exception:
-            pass
-        _global_conn = None
+    """No-op — connections are opened and closed per query (V6.5 fix)."""
+    pass
 
 
 # --- forecast_runs (Spec §5) ---
