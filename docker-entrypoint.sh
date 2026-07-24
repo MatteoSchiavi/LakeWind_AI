@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Trap for graceful shutdown
-trap 'echo "Shutting down..."; kill $DASHBOARD_PID $BOT_PID 2>/dev/null; wait; exit 0' SIGTERM SIGINT
+trap 'echo "Shutting down..."; kill $DASHBOARD_PID $BOT_PID 2>/dev/null; sleep 2; kill -9 $DASHBOARD_PID $BOT_PID 2>/dev/null; pkill -f "lakewind" 2>/dev/null; pkill -f "streamlit" 2>/dev/null; wait; exit 0' SIGTERM SIGINT
 
 echo "========================================"
 echo "  LakeWind AI — Docker entrypoint (V2)"

@@ -238,59 +238,23 @@ UPPER_AIR_VARS = [
 def compute_upper_air_features(forecast: dict[str, Any]) -> dict[str, float | None]:
     """Extract upper-air features from a forecast row's raw_json.
 
-    These features come from Open-Meteo's upper-air variables:
-    - wind_speed_850hPa: wind at ~1500m altitude (boundary layer top)
-    - wind_direction_850hPa: direction at 850hPa
-    - temperature_850hPa: temp at 850hPa (cold-air advection indicator)
-    - geopotential_height_500hPa: mid-troposphere height (trough/ridge)
-    - wind_speed_500hPa: wind at ~5500m (steering level for storms)
-    - wind_direction_500hPa: direction at 500hPa
+    V6.5 FIX: The raw_json contains the ENTIRE hourly response as lists,
+    not scalar values. We cannot extract a single timestamp's value from it
+    without knowing the index. This function now safely returns all None
+    instead of risking a list-vs-float type error in downstream math.
 
-    Also computes:
-    - wind_shear_10_850: speed difference between surface and 850hPa
-    - thermal_advection: temperature gradient × wind at 850hPa
+    To properly enable upper-air features, they need to be stored as scalar
+    columns in forecast_runs (like wind_speed_kn, temperature_2m, etc.).
+    That's a schema migration for V7.
     """
-    import json as _json
-
+    # V6.5: Return all None — upper-air vars in raw_json are lists, not scalars
+    # Extracting the correct value requires knowing the time index, which we
+    # don't have here. Returning None is safe — the ML model handles NaN.
     features: dict[str, float | None] = {}
-
-    raw = forecast.get("raw_json")
-    if isinstance(raw, str):
-        try:
-            raw = _json.loads(raw)
-        except Exception:
-            raw = {}
-    if not isinstance(raw, dict):
-        return features
-
-    hourly = raw.get("hourly", raw)
-
-    # Surface wind speed for shear calculation
-    surface_speed = forecast.get("wind_speed_kn")
-
     for var in UPPER_AIR_VARS:
-        # Try to get from the hourly data
-        val = hourly.get(var)
-        if val is not None:
-            features[f"ua_{var}"] = float(val) if not isinstance(val, list) else None
-        else:
-            features[f"ua_{var}"] = None
-
-    # Wind shear (surface to 850hPa)
-    ua_850_speed = features.get("ua_wind_speed_850hPa")
-    if surface_speed is not None and ua_850_speed is not None:
-        # Open-Meteo returns 850hPa wind in the requested unit (kn if we set it)
-        features["ua_shear_10_850"] = round(ua_850_speed - float(surface_speed), 2)
-    else:
-        features["ua_shear_10_850"] = None
-
-    # Thermal advection proxy: temperature at 850hPa × wind speed at 850hPa
-    ua_850_temp = features.get("ua_temperature_850hPa")
-    if ua_850_speed is not None and ua_850_temp is not None:
-        features["ua_thermal_advection"] = round(ua_850_speed * ua_850_temp / 100, 2)
-    else:
-        features["ua_thermal_advection"] = None
-
+        features[f"ua_{var}"] = None
+    features["ua_shear_10_850"] = None
+    features["ua_thermal_advection"] = None
     return features
 
 

@@ -342,16 +342,6 @@ def insert_prediction(row: dict[str, Any]) -> int:
              wind_speed_kn, wind_dir_deg, wind_gust_kn,
              confidence_pct, expected_error_kn)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT (model_version) DO UPDATE SET
-                trained_at = EXCLUDED.trained_at,
-                feature_set_version = EXCLUDED.feature_set_version,
-                training_period_start = EXCLUDED.training_period_start,
-                training_period_end = EXCLUDED.training_period_end,
-                backtest_mae_kn = EXCLUDED.backtest_mae_kn,
-                backtest_dir_error_deg = EXCLUDED.backtest_dir_error_deg,
-                promoted_to_production = EXCLUDED.promoted_to_production,
-                git_commit = EXCLUDED.git_commit,
-                notes = EXCLUDED.notes
             """,
             (
                 rid,
@@ -412,16 +402,6 @@ def register_model(
              backtest_mae_kn, backtest_dir_error_deg,
              promoted_to_production, git_commit, notes)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT (model_version) DO UPDATE SET
-                trained_at = EXCLUDED.trained_at,
-                feature_set_version = EXCLUDED.feature_set_version,
-                training_period_start = EXCLUDED.training_period_start,
-                training_period_end = EXCLUDED.training_period_end,
-                backtest_mae_kn = EXCLUDED.backtest_mae_kn,
-                backtest_dir_error_deg = EXCLUDED.backtest_dir_error_deg,
-                promoted_to_production = EXCLUDED.promoted_to_production,
-                git_commit = EXCLUDED.git_commit,
-                notes = EXCLUDED.notes
             """,
             (
                 model_version,
@@ -506,16 +486,6 @@ def record_experiment_attempt(
              backtest_mae_kn, backtest_dir_error_deg,
              vs_production_mae_delta, vs_production_dir_delta, promoted, notes)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT (model_version) DO UPDATE SET
-                trained_at = EXCLUDED.trained_at,
-                feature_set_version = EXCLUDED.feature_set_version,
-                training_period_start = EXCLUDED.training_period_start,
-                training_period_end = EXCLUDED.training_period_end,
-                backtest_mae_kn = EXCLUDED.backtest_mae_kn,
-                backtest_dir_error_deg = EXCLUDED.backtest_dir_error_deg,
-                promoted_to_production = EXCLUDED.promoted_to_production,
-                git_commit = EXCLUDED.git_commit,
-                notes = EXCLUDED.notes
             """,
             (
                 _next_id(),

@@ -121,9 +121,67 @@ def _fetch_pred_at(point_id: str, target_time: datetime) -> dict | None:
         if best_diff is None or diff < best_diff:
             best = p
             best_diff = diff
-    if best is None or best_diff is None or best_diff > 60 * 60:
+    if best is not None and best_diff is not None and best_diff <= 60 * 60:
+        return best
+
+    # No stored prediction — generate one on-the-fly from raw NWP forecast
+    return _generate_pred_on_demand(point_id, target_time)
+
+
+def _generate_pred_on_demand(point_id: str, target_time: datetime) -> dict | None:
+    """Generate a prediction on-demand from raw NWP data.
+
+    If no trained model exists, falls back to the raw NWP forecast directly
+    (icon_eu preferred). This ensures the bot ALWAYS has something to show.
+    """
+    forecasts = access.fetch_forecasts_at(point_id, target_time, lead_minutes_window=60)
+    if not forecasts:
         return None
-    return best
+
+    # Try to use the trained model first
+    try:
+        from lakewind.ml.infer import predict_at
+        result = predict_at(point_id, target_time, compute_shap=False)
+        if result is not None:
+            return {
+                "point_id": point_id,
+                "valid_time": target_time.isoformat(),
+                "generated_at": datetime.utcnow().isoformat(),
+                "model_version": result.model_version,
+                "wind_speed_kn": result.wind_speed_kn,
+                "wind_dir_deg": result.wind_dir_deg,
+                "wind_gust_kn": result.wind_gust_kn,
+                "confidence_pct": result.confidence_pct,
+                "expected_error_kn": result.expected_error_kn,
+            }
+    except Exception as exc:
+        logger.debug("On-demand model prediction failed: %s — using raw NWP", exc)
+
+    # Fallback: use raw NWP forecast directly (no bias correction)
+    ref = None
+    for f in forecasts:
+        if f.get("model_name") == "icon_eu":
+            ref = f
+            break
+    if ref is None:
+        ref = forecasts[0]
+
+    speed = ref.get("wind_speed_kn")
+    direction = ref.get("wind_dir_deg")
+    if speed is None or direction is None:
+        return None
+
+    return {
+        "point_id": point_id,
+        "valid_time": target_time.isoformat(),
+        "generated_at": datetime.utcnow().isoformat(),
+        "model_version": f"raw_{ref.get('model_name', 'nwp')}",
+        "wind_speed_kn": round(float(speed), 1),
+        "wind_dir_deg": round(float(direction), 0),
+        "wind_gust_kn": ref.get("wind_gust_kn"),
+        "confidence_pct": 50.0,
+        "expected_error_kn": 3.0,
+    }
 
 
 def _fetch_forecast_at(point_id: str, target_time: datetime) -> dict | None:
@@ -279,10 +337,10 @@ def _format_wind_infographic(pred: dict, forecast: dict | None, lang: str, units
     warning = sailing_weather_warning(weather_code, speed, vis)
 
     lines = [
-        f"{'='*40}",
+        f"━━━━━━━━━━━━━━━━━━━━━━",
         f"  {weather_icon} {point}",
         f"  {_speed_color_emoji(speed)} {v:.1f} {u}  {compass}",
-        f"{'='*40}",
+        f"━━━━━━━━━━━━━━━━━━━━━━",
         f"  Speed:   {_speed_bar(speed)} {v:.1f} {u}",
         f"  Gust:    {_speed_bar(gust)} {gv:.1f} {u}",
         f"  Dir:     {_fmt_cardinal(direction)} ({direction:.0f}°)",
@@ -299,13 +357,13 @@ def _format_wind_infographic(pred: dict, forecast: dict | None, lang: str, units
     if vis is not None:
         lines.append(f"  Vis:     {vis/1000:.1f} km")
 
-    lines.append(f"{'='*40}")
+    lines.append(f"━━━━━━━━━━━━━━━━━━━━━━")
     lines.append(f"  {sail_emoji} {sail_text}")
 
     if warning:
         lines.append(f"  ⚠️ {warning}")
 
-    lines.append(f"{'='*40}")
+    lines.append(f"━━━━━━━━━━━━━━━━━━━━━━")
     return "\n".join(lines)
 
 
@@ -331,7 +389,7 @@ def _format_today_table(preds: list[dict], lang: str, units: str) -> str:
     if not preds:
         return "No data available." if lang == "en" else "Nessun dato disponibile."
 
-    lines = [f"{'='*50}", f"  {'Hr':<5} {'Spd':>6} {'Gust':>6} {'Dir':>6} {'Conf':>6} {'Wx'}", f"{'='*50}"]
+    lines = [f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", f"  {'Hr':<5} {'Spd':>6} {'Gust':>6} {'Dir':>6} {'Conf':>6} {'Wx'}", f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"]
     for p in preds:
         vt = p.get("valid_time")
         if isinstance(vt, str):
@@ -351,7 +409,7 @@ def _format_today_table(preds: list[dict], lang: str, units: str) -> str:
 
         lines.append(f"  {vt.strftime('%H:%M'):<5} {v:>5.1f}{u[:0]} {gv:>5.1f}  {_fmt_cardinal(direction):>5}  {conf:>5.0f}%  {emoji}")
 
-    lines.append(f"{'='*50}")
+    lines.append(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
     return "\n".join(lines)
 
 
@@ -483,7 +541,7 @@ async def _menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         forecast = _fetch_forecast_at(point_id, target)
         text = _format_wind_infographic(pred, forecast, lang, units)
         await query.edit_message_text(
-            f"```\n{text}\n```",
+            text,
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("« Back to points", callback_data="w:back"),
                 InlineKeyboardButton("🏠 Main menu", callback_data="m:back"),
@@ -503,7 +561,7 @@ async def _menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 preds.append(p)
         text = _format_today_table(preds, lang, units)
         await query.edit_message_text(
-            f"```\n{text}\n```",
+            text,
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("« Back", callback_data="m:back"),
             ]]),
@@ -543,7 +601,7 @@ async def _sailing_recommendation(query, user, lang, units) -> None:
     best_point = None
     best_speed = 0
     best_hour = None
-    lines = [f"{'='*40}", f"  ⛵ SAILING REPORT — {local_now.strftime('%a %b %d')}", f"{'='*40}"]
+    lines = [f"━━━━━━━━━━━━━━━━━━━━━━", f"  ⛵ SAILING REPORT — {local_now.strftime('%a %b %d')}", f"━━━━━━━━━━━━━━━━━━━━━━"]
 
     for vp_id in (s.operational_point_ids or []):
         speeds = []
@@ -575,17 +633,17 @@ async def _sailing_recommendation(query, user, lang, units) -> None:
 
     if best_point:
         v, u = _convert_speed(best_speed, units)
-        lines.append(f"{'='*40}")
+        lines.append(f"━━━━━━━━━━━━━━━━━━━━━━")
         lines.append(f"  🏆 BEST: {best_point.replace('_',' ').title()} @ {best_hour}:00")
         lines.append(f"  🌬 Peak: {v:.1f} {u}")
         lines.append(f"  ⛵ GO SAILING!" if lang == "en" else f"  ⛵ VAI!")
     else:
-        lines.append(f"{'='*40}")
+        lines.append(f"━━━━━━━━━━━━━━━━━━━━━━")
         lines.append(f"  🏠 NOT WORTH IT TODAY" if lang == "en" else f"  🏠 NON VALE LA PENA")
 
-    lines.append(f"{'='*40}")
+    lines.append(f"━━━━━━━━━━━━━━━━━━━━━━")
     await query.edit_message_text(
-        f"```\n{chr(10).join(lines)}\n```",
+        chr(10).join(lines),
         reply_markup=_main_menu_kb(),
     )
 
@@ -661,19 +719,19 @@ async def _status_display(query, lang) -> None:
     health = access.latest_source_health()
     freshness = check_freshness()
 
-    lines = [f"{'='*40}", f"  📊 DATA SOURCE STATUS", f"{'='*40}"]
+    lines = [f"━━━━━━━━━━━━━━━━━━━━━━", f"  📊 DATA SOURCE STATUS", f"━━━━━━━━━━━━━━━━━━━━━━"]
     for h in health:
         mark = "✅" if h["ok"] else "❌"
         lines.append(f"  {mark} {h['source']:<25} {h['latency_ms']:.0f}ms")
 
-    lines.append(f"{'='*40}")
+    lines.append(f"━━━━━━━━━━━━━━━━━━━━━━")
     lines.append(f"  Freshness:")
     for f in freshness:
         mark = "✅" if f["is_fresh"] else "⚠️"
         lines.append(f"  {mark} {f['source']:<25} {f['age_minutes']:.0f}min ago")
 
-    lines.append(f"{'='*40}")
-    await query.edit_message_text(f"```\n{chr(10).join(lines)}\n```", reply_markup=_main_menu_kb())
+    lines.append(f"━━━━━━━━━━━━━━━━━━━━━━")
+    await query.edit_message_text(chr(10).join(lines), reply_markup=_main_menu_kb())
 
 
 # --- Direct commands (for users who prefer typing) ---
@@ -698,7 +756,7 @@ async def _wind_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     forecast = _fetch_forecast_at(point_id, now)
     text = _format_wind_infographic(pred, forecast, lang, units)
-    await update.message.reply_text(f"```\n{text}\n```")
+    await update.message.reply_text(text)
 
 
 async def _today_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -718,7 +776,7 @@ async def _today_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         if p:
             preds.append(p)
     text = _format_today_table(preds, lang, units)
-    await update.message.reply_text(f"```\n{text}\n```")
+    await update.message.reply_text(text)
 
 
 async def _map_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1256,40 +1314,55 @@ async def _admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 # --- Telegram Web App (mini app) ---
 
 async def _webapp_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/webapp — open the LakeWind web UI as a Telegram mini app."""
+    """/webapp — open the LakeWind web UI as a Telegram mini app or link."""
     allowed, user = await _authorize(update)
     if not allowed:
         return
 
-    from telegram import WebAppInfo, InlineKeyboardButton, InlineKeyboardMarkup
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
-    # The web app URL — must be HTTPS, served by the T420 or a public host
-    # For now, use the Streamlit dashboard URL or a dedicated web app URL
-    s = load_settings()
-    webapp_url = os.environ.get("LAKEWIND_WEBAPP_URL", f"http://localhost:3000")
+    webapp_url = os.environ.get("LAKEWIND_WEBAPP_URL", "")
 
-    # Note: Telegram requires HTTPS for web apps. For local development,
-    # use a tunnel like ngrok. For production, serve behind a reverse proxy
-    # with TLS (e.g., Caddy or nginx with Let's Encrypt).
-    keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton(
-            "🌐 Open LakeWind Dashboard",
-            web_app=WebAppInfo(url=webapp_url),
-        ),
-    ]])
-
-    await update.message.reply_text(
-        "🌐 *LakeWind Web App*\n\n"
-        "Tap the button below to open the full interactive dashboard "
-        "with wind map, trend charts, and all points.\n\n"
-        "📊 Features:\n"
-        "• Interactive wind map\n"
-        "• 24h trend charts\n"
-        "• All 8 points at a glance\n"
-        "• Data source health\n"
-        "• Auto-refresh every 5 min",
-        reply_markup=keyboard,
-    )
+    if webapp_url and webapp_url.startswith("https://"):
+        # HTTPS available — can use WebAppInfo (mini app inside Telegram)
+        from telegram import WebAppInfo
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton(
+                "🌐 Open LakeWind Dashboard",
+                web_app=WebAppInfo(url=webapp_url),
+            ),
+        ]])
+        await update.message.reply_text(
+            "🌐 LakeWind Web App\n\n"
+            "Tap the button below to open the dashboard inside Telegram.",
+            reply_markup=keyboard,
+        )
+    elif webapp_url:
+        # Non-HTTPS URL — send as regular link (opens in browser)
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton(
+                "🌐 Open Dashboard in Browser",
+                url=webapp_url,
+            ),
+        ]])
+        await update.message.reply_text(
+            "🌐 LakeWind Web App\n\n"
+            "Tap the button to open the dashboard in your browser.\n"
+            "Note: For in-app Telegram mini app, set LAKEWIND_WEBAPP_URL to an HTTPS URL.",
+            reply_markup=keyboard,
+        )
+    else:
+        # No URL configured
+        await update.message.reply_text(
+            "🌐 LakeWind Web App\n\n"
+            "The web app URL is not configured.\n"
+            "Set LAKEWIND_WEBAPP_URL environment variable to enable.\n\n"
+            "Example:\n"
+            "export LAKEWIND_WEBAPP_URL=https://your-domain.com:3000\n\n"
+            "For local development, use ngrok:\n"
+            "ngrok http 3000\n"
+            "export LAKEWIND_WEBAPP_URL=https://abc123.ngrok.app"
+        )
 
 
 # --- Build app ---

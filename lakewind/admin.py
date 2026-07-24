@@ -118,11 +118,12 @@ def get_admin_status() -> str:
 
     # Uptime (approximate from process start)
     try:
-        uptime_s = time.time() - __import__("psutil").Process().create_time()
+        import psutil
+        uptime_s = time.time() - psutil.Process().create_time()
         uptime_h = uptime_s / 3600
         lines.append(f"  Uptime: {uptime_h:.1f}h")
     except Exception:
-        pass
+        lines.append(f"  Uptime: (psutil not installed)")
 
     # --- Program Status ---
     lines.append("")

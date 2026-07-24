@@ -108,25 +108,17 @@ def build_features_for(
         fv[f"{prefix}_precip"] = f.get("precipitation")
         fv[f"{prefix}_weather_code"] = f.get("weather_code")
         fv[f"{prefix}_visibility"] = f.get("visibility")
-        # V5: Multi-level wind shear features (80m, 120m from raw_json)
-        raw = f.get("raw_json")
-        if isinstance(raw, str):
-            import json as _json
-            try:
-                raw = _json.loads(raw)
-            except Exception:
-                raw = {}
-        if isinstance(raw, dict):
-            hourly = raw.get("hourly", raw)  # might be the hourly dict directly
-            # Try to get multi-level wind from the raw payload
-            for level in ("80m", "120m"):
-                speed_key = f"wind_speed_{level}"
-                dir_key = f"wind_direction_{level}"
-                if speed_key in hourly:
-                    fv[f"{prefix}_speed_{level}"] = hourly.get(speed_key)
-                if dir_key in hourly:
-                    fv[f"{prefix}_dir_{level}"] = hourly.get(dir_key)
-        # V5: Wind shear (10m → 80m, 10m → 120m)
+        # V5: Multi-level wind shear features (80m, 120m)
+        # V6.5 FIX: raw_json contains entire hourly arrays (lists), not scalar values.
+        # We cannot extract a single timestamp's value without knowing the index.
+        # Multi-level wind data is stored in raw_json as lists — skip extraction
+        # until schema migration stores them as scalar columns (V7).
+        # The shear features will be None, which LightGBM handles natively.
+        fv[f"{prefix}_speed_80m"] = None
+        fv[f"{prefix}_dir_80m"] = None
+        fv[f"{prefix}_speed_120m"] = None
+        fv[f"{prefix}_dir_120m"] = None
+        # V5: Wind shear (10m → 80m, 10m → 120m) — will be None until V7 schema migration
         speed_80 = fv.get(f"{prefix}_speed_80m")
         speed_120 = fv.get(f"{prefix}_speed_120m")
         if speed is not None and speed_80 is not None:

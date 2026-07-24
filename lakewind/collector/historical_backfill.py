@@ -155,6 +155,9 @@ def _parse_to_rows(data: dict[str, Any], point_id: str, model_name: str) -> list
             "shortwave_radiation": _safe_idx(hourly, "shortwave_radiation", i),
             "cape": _safe_idx(hourly, "cape", i),
             "boundary_layer_height": _safe_idx(hourly, "boundary_layer_height", i),
+            "precipitation": _safe_idx(hourly, "precipitation", i),
+            "weather_code": _safe_idx(hourly, "weather_code", i),
+            "visibility": _safe_idx(hourly, "visibility", i),
             "raw_json": {"model": model_name, "point": point_id, "source": "historical_forecast_api"},
         }
         rows.append(row)
