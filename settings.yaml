@@ -31,7 +31,6 @@ virtual_points:
   - {id: piona_entrance,    lat: 46.1140, lon: 9.3100}   # on water, Piona entrance
   - {id: dervio_shore,      lat: 46.0763, lon: 9.2980}   # V5 FIX: on water, off Dervio
   - {id: bellano_offshore,  lat: 46.0550, lon: 9.3000}   # V5 FIX: on water, off Bellano
-  - {id: lecco_north,       lat: 46.0600, lon: 9.3000}   # V5 FIX: on water, south end of corridor
   # --- Auxiliary points (4) — macro-area pressure gradients ---
   - {id: zurich,          lat: 47.376, lon: 8.541}
   - {id: milano_linate,   lat: 45.445, lon: 9.278}
@@ -47,7 +46,6 @@ operational_point_ids:
   - piona_entrance
   - dervio_shore
   - bellano_offshore
-  - lecco_north
 
 # Section 4.3 — Open-Meteo multi-model NWP
 open_meteo:
@@ -93,6 +91,13 @@ open_meteo:
     - weather_code             # V5: WMO weather code (0=clear, 61=light rain, etc.)
     - visibility               # V5: visibility (m) — safety feature
     - uv_index                 # V5: UV index — sunburn warning for sailors
+    # V6.2: Upper-air features (windmojo-inspired)
+    - wind_speed_850hPa        # wind at ~1500m (boundary layer top)
+    - wind_direction_850hPa
+    - temperature_850hPa       # cold-air advection indicator
+    - geopotential_height_500hPa  # mid-troposphere (trough/ridge)
+    - wind_speed_500hPa        # steering level for storms
+    - wind_direction_500hPa
   wind_speed_unit: "kn"
   timezone: "auto"
   forecast_days: 7
