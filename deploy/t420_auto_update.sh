@@ -44,7 +44,7 @@ Wants=network-online.target
 Type=oneshot
 User=matteos
 WorkingDirectory=${REPO_DIR}
-ExecStart=${REPO_DIR}/update.sh --cron
+ExecStart=/home/matteos/lakewind/deploy/update.sh --cron
 StandardOutput=journal
 StandardError=journal
 

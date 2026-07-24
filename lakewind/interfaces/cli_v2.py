@@ -44,7 +44,7 @@ def register_v2_commands(app: typer.Typer) -> None:
         """Run V2 prediction cycle (Kalman+LGB blend)."""
         logging.basicConfig(level=logging.INFO,
                             format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
-        from lakewind.prediction.engine_v2 import run_cycle_v2
+        # V2 engine removed in V6.5
         hrs = [int(x) for x in horizons.split(",")] if horizons else None
         summary = run_cycle_v2(collect=not no_collect, horizons_hours=hrs,
                                update_kalman=not no_kalman)
@@ -85,23 +85,6 @@ def register_v2_commands(app: typer.Typer) -> None:
         else:
             console.print("[red]Failed (not enough data).[/red]")
             raise typer.Exit(1)
-
-    @app.command("update-kalman")
-    def update_kalman() -> None:
-        """Update Kalman filter state from latest observations."""
-        logging.basicConfig(level=logging.INFO)
-        from lakewind.config import load_settings
-        from lakewind.ml.kalman import update_from_latest_observations
-        s = load_settings()
-        for vp_id in (s.operational_point_ids or []):
-            state = update_from_latest_observations(vp_id)
-            if state:
-                console.print(
-                    f"[green]{vp_id}[/green]: bias_u={state.bias_u:.3f}, "
-                    f"bias_v={state.bias_v:.3f}, P=[{state.p_uu:.3f}, {state.p_vv:.3f}]"
-                )
-            else:
-                console.print(f"[yellow]{vp_id}[/yellow]: no recent observation")
 
     @app.command("user-add")
     def user_add(
