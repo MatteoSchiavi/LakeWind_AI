@@ -161,6 +161,10 @@ class ModelConfig(BaseModel):
     # basins (Phase 6 multi-spot): {point_id: axis_deg}.
     valley_axis_deg: float = 10.0
     valley_axis_overrides: dict[str, float] = Field(default_factory=dict)
+    # Deep Audit R10: auxiliary points (Zurich, Milano, ...) that feed the
+    # Foehn gradient and thermal-contrast features read this deterministic
+    # model's forecast instead of an unordered latest-run pick.
+    aux_reference_model: str = "icon_eu"
 
 
 class SuccessCriteria(BaseModel):

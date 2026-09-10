@@ -16,7 +16,10 @@ SCHEMA_SQL = """
 -- Raw NWP forecasts, every model, every run, every virtual point
 CREATE TABLE IF NOT EXISTS forecast_runs (
     id BIGINT PRIMARY KEY,
-    model_name VARCHAR,
+    -- Deep Audit R10: the stray model_name='x' experiment row motivated a
+    -- guard at the storage layer. Slugs themselves stay config-driven
+    -- (Phase 6 adds models), so the constraint only rejects empty/junk names.
+    model_name VARCHAR CHECK (model_name IS NOT NULL AND length(model_name) BETWEEN 2 AND 64),
     point_id VARCHAR,
     run_time TIMESTAMP,
     valid_time TIMESTAMP,

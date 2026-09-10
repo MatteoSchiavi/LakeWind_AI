@@ -286,10 +286,19 @@ def build_features_for(
     # temperatures feed the V7 thermal-contrast features.
     aux: dict[str, dict[str, Any]] = {}
     try:
+        # Deep Audit R10 (3.7): aux gradients used rows[0] of the latest-run-
+        # per-model list — an UNORDERED list that can contain ensemble rows
+        # (model_name "*_ens"). Which model supplied Zurich's or Milano's
+        # pressure changed run to run, injecting noise into the Foehn
+        # gradient. Selection is now deterministic: the configured reference
+        # model first, then any deterministic model in stable order; ensemble
+        # rows are never used for aux gradients.
+        aux_pin = getattr(s.model, "aux_reference_model", "icon_eu")
         for aux_id in ("zurich", "milano_linate", "sondrio", "lugano", "dongo_shore", "bellano_offshore"):
             rows = _fetch(aux_id, valid_time, 180)
-            if rows:
-                aux[aux_id] = rows[0]
+            pick = _pick_aux_row(rows, aux_pin)
+            if pick is not None:
+                aux[aux_id] = pick
         z_p = aux.get("zurich", {}).get("pressure_msl")
         m_p = aux.get("milano_linate", {}).get("pressure_msl")
         if z_p is not None and m_p is not None:
@@ -506,6 +515,21 @@ def build_features_for(
 
 
 # --- helpers ---
+
+
+def _pick_aux_row(rows: list[dict[str, Any]] | None, pinned_model: str) -> dict[str, Any] | None:
+    """Deterministic aux-point row selection (Deep Audit R10).
+
+    Prefers the pinned reference model, then any deterministic model in
+    stable order; ensemble rows ("*_ens") are never used for aux gradients.
+    """
+    if not rows:
+        return None
+    deterministic = [r for r in rows if not str(r.get("model_name", "")).endswith("_ens")]
+    pinned = next((r for r in deterministic if r.get("model_name") == pinned_model), None)
+    if pinned is not None:
+        return pinned
+    return deterministic[0] if deterministic else rows[0]
 
 
 def _season_index(month: int) -> int:

@@ -53,6 +53,51 @@ def circular_direction_error_deg(pred_deg: float, obs_deg: float) -> float:
     return abs(diff)
 
 
+def circular_mean_deg(degs: list[float]) -> float | None:
+    """Directional (circular) mean of directions in degrees.
+
+    Arithmetic means of degrees are wrong across the 350/10 wraparound
+    (350, 10 would average to 180). This computes the mean via the unit-vector
+    resultant, which is the correct aggregate for wind direction members
+    (Deep Audit 3.7).
+    """
+    if not degs:
+        return None
+    rads = [math.radians(d) for d in degs]
+    sin_mean = sum(math.sin(r) for r in rads) / len(rads)
+    cos_mean = sum(math.cos(r) for r in rads) / len(rads)
+    if math.hypot(sin_mean, cos_mean) < 1e-9:
+        # Vectors perfectly cancel (e.g. 0 and 180) — direction undefined.
+        return None
+    return (math.degrees(math.atan2(sin_mean, cos_mean)) + 360.0) % 360.0
+
+
+def circular_std_deg(degs: list[float]) -> float | None:
+    """Circular standard deviation in degrees: sqrt(-2 ln R).
+
+    R is the mean resultant length; R=1 (all members agree) -> 0 deg,
+    R->0 (uniform spread) -> sqrt(-2 ln eps) ~ 551 deg is unbounded, so the
+    caller-facing value is capped by the formula's natural behaviour and is
+    monotonically increasing with dispersion. Returns None for empty input.
+    """
+    if not degs:
+        return None
+    rads = [math.radians(d) for d in degs]
+    sin_mean = sum(math.sin(r) for r in rads) / len(rads)
+    cos_mean = sum(math.cos(r) for r in rads) / len(rads)
+    r_length = math.hypot(sin_mean, cos_mean)
+    r_clamped = min(1.0, max(1e-9, r_length))
+    return math.degrees(math.sqrt(-2.0 * math.log(r_clamped)))
+
+
+def circular_spread_deg(degs: list[float]) -> float | None:
+    """Max angular deviation of any member from the circular mean (0..180)."""
+    mean = circular_mean_deg(degs)
+    if mean is None or not degs:
+        return None
+    return max(circular_direction_error_deg(d, mean) for d in degs)
+
+
 def bias_correct(
     forecast_u: float, forecast_v: float, bias_u: float, bias_v: float
 ) -> WindVector:
@@ -60,4 +105,11 @@ def bias_correct(
     return WindVector.from_uv(forecast_u + bias_u, forecast_v + bias_v)
 
 
-__all__ = ["WindVector", "circular_direction_error_deg", "bias_correct"]
+__all__ = [
+    "WindVector",
+    "circular_direction_error_deg",
+    "circular_mean_deg",
+    "circular_std_deg",
+    "circular_spread_deg",
+    "bias_correct",
+]

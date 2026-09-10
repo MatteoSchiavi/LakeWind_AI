@@ -169,8 +169,35 @@ def _next_id() -> int:
 # --- forecast_runs (Spec §5) ---
 
 
+def _warn_unknown_model_slugs(rows: list[dict[str, Any]]) -> None:
+    """Warn when rows carry model slugs outside the configured model set.
+
+    Deep Audit R10: a stray model_name='x' row sat in forecast_runs for weeks.
+    The CHECK constraint (schema.py) rejects junk on new databases; this
+    warning catches mislabeled data on every database without blocking
+    config-driven extensions (Phase 6 adds models/settings entries).
+    """
+    try:
+        s = load_settings()
+        known = {str(m) for m in s.open_meteo.models}
+        known |= {str(m) for m in s.open_meteo.ensemble_models}
+        known |= {f"{m}_ens" for m in s.open_meteo.ensemble_models}
+        seen = {str(r.get("model_name")) for r in rows}
+        unknown = seen - known
+        if unknown:
+            logger.warning(
+                "Storing forecast rows with model slugs not present in "
+                "settings (open_meteo.models/ensemble_models): %s — verify "
+                "this is intentional (stray rows pollute per-model features).",
+                sorted(unknown),
+            )
+    except Exception:  # pragma: no cover — validation must never block writes
+        pass
+
+
 def insert_forecast_run(row: dict[str, Any]) -> int:
     """Insert one forecast row. Returns the new id."""
+    _warn_unknown_model_slugs([row])
     s = load_settings()
     rid = row.get("id") or _next_id()
     with cursor() as conn:
@@ -227,6 +254,7 @@ def bulk_insert_forecast_runs(rows: list[dict[str, Any]]) -> int:
     """Insert many. Returns count inserted."""
     if not rows:
         return 0
+    _warn_unknown_model_slugs(rows)
     s = load_settings()
     payload = [
         (
@@ -277,6 +305,89 @@ def bulk_insert_forecast_runs(rows: list[dict[str, Any]]) -> int:
             payload,
         )
     return len(payload)
+
+
+def compact_bloated_raw_json(
+    dry_run: bool = False,
+    max_bytes: int = 2048,
+    batch_size: int = 500,
+    max_batches: int = 200,
+) -> dict[str, Any]:
+    """One-time remediation for the R1 raw_json bloat (Deep Audit 3.4).
+
+    Operational rows written before the fix embed the FULL multi-day hourly
+    payload (~50-60 KB) in EVERY row of a collection block. This rewrites
+    such rows' raw_json to the compact provenance dict now produced by the
+    collectors. Ensemble rows are skipped: their raw_json carries the spread
+    statistics consumed by the feature builder. Runs in bounded batches so a
+    huge legacy table can be cleaned over several invocations.
+
+    Returns stats: {examined, compacted, bytes_before, bytes_after, done}.
+    """
+    s = load_settings()
+    stats: dict[str, Any] = {
+        "examined": 0,
+        "compacted": 0,
+        "bytes_before": 0,
+        "bytes_after": 0,
+        "done": False,
+        "dry_run": dry_run,
+    }
+
+    def _bloated_count(conn: duckdb.DuckDBPyConnection) -> int:
+        row = conn.execute(
+            f"""
+            SELECT count(*) FROM {s.db.forecast_table}
+            WHERE length(raw_json::VARCHAR) > ?
+              AND NOT coalesce(ends_with(model_name, '_ens'), false)
+            """,
+            [max_bytes],
+        ).fetchone()
+        return int(row[0]) if row else 0
+
+    if dry_run:
+        with cursor(read_only=True) as conn:
+            stats["compacted"] = _bloated_count(conn)
+            row = conn.execute(
+                f"SELECT coalesce(sum(length(raw_json::VARCHAR)), 0) FROM {s.db.forecast_table}"
+            ).fetchone()
+            stats["bytes_before"] = int(row[0]) if row else 0
+        return stats
+
+    with cursor() as conn:
+        row = conn.execute(
+            f"SELECT coalesce(sum(length(raw_json::VARCHAR)), 0) FROM {s.db.forecast_table}"
+        ).fetchone()
+        stats["bytes_before"] = int(row[0]) if row else 0
+        for _ in range(max_batches):
+            bloated = conn.execute(
+                f"""
+                SELECT id, model_name, point_id FROM {s.db.forecast_table}
+                WHERE length(raw_json::VARCHAR) > ?
+                  AND NOT coalesce(ends_with(model_name, '_ens'), false)
+                LIMIT ?
+                """,
+                [max_bytes, batch_size],
+            ).fetchall()
+            if not bloated:
+                break
+            stats["examined"] += len(bloated)
+            for rid, model_name, point_id in bloated:
+                compact = json.dumps(
+                    {"model": model_name, "point": point_id, "source": "legacy_payload_compacted"}
+                )
+                conn.execute(
+                    f"UPDATE {s.db.forecast_table} SET raw_json = ?::JSON WHERE id = ?",
+                    [compact, rid],
+                )
+                stats["compacted"] += 1
+        conn.execute("CHECKPOINT")
+        row = conn.execute(
+            f"SELECT coalesce(sum(length(raw_json::VARCHAR)), 0) FROM {s.db.forecast_table}"
+        ).fetchone()
+        stats["bytes_after"] = int(row[0]) if row else 0
+        stats["done"] = stats["compacted"] < (max_batches * batch_size) or stats["compacted"] == 0
+    return stats
 
 
 # --- observations ---

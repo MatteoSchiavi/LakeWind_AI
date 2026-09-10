@@ -196,6 +196,9 @@ model:
   # along/cross-valley decomposition of the forecast wind.
   valley_axis_deg: 10.0
   valley_axis_overrides: {}
+  # Deep Audit R10: deterministic model used for aux-point (Zurich/Milano/…)
+  # gradients — replaces the former unordered rows[0] pick.
+  aux_reference_model: "icon_eu"
   # Section 7.2 — upgrade gate. Do not add a second model unless these are met.
   upgrade_gate:
     min_mae_improvement_kn: 0.2

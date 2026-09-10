@@ -666,6 +666,29 @@ def dump_forecasts(
     print(json.dumps(preds, default=str, indent=2))
 
 
+@app.command("maintenance")
+def maintenance(
+    compact_raw_json: bool = typer.Option(
+        False, "--compact-raw-json", help="Rewrite legacy full-payload raw_json rows to compact provenance (Deep Audit R1)"
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Report what would change without writing"),
+) -> None:
+    """Database maintenance (R1 bloat cleanup; R11 retention shares this entry)."""
+    _setup_logging()
+    from lakewind.db import access
+
+    if not compact_raw_json:
+        console.print("Nothing to do — pass --compact-raw-json (see --help).")
+        return
+    stats = access.compact_bloated_raw_json(dry_run=dry_run)
+    label = "would compact" if dry_run else "compacted"
+    console.print(
+        f"[green]raw_json cleanup: {label} {stats['compacted']} rows; "
+        f"payload {stats['bytes_before'] / 1e6:.1f} MB -> {stats['bytes_after'] / 1e6:.1f} MB. "
+        f"done={stats['done']}[/green]"
+    )
+
+
 # --- V2 commands (registered on the same Typer app) ---
 
 try:

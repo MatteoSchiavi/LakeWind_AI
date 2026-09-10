@@ -14,7 +14,11 @@ from typing import Any
 
 import requests
 
-from lakewind.collector.base import BaseCollector, apply_physical_limits
+from lakewind.collector.base import (
+    BaseCollector,
+    apply_physical_limits,
+    nearest_model_init_time,
+)
 from lakewind.config import load_settings
 from lakewind.db import access
 from lakewind.utils.timeutil import utcnow
@@ -122,20 +126,20 @@ class OpenMeteoCollector(BaseCollector):
             times = hourly.get("time", [])
             if not times:
                 continue
-            # run_time = model init time, approximated as the earliest time in the
-            # forecast minus 1h. Open-Meteo doesn't expose model run_time directly
-            # in this endpoint; we approximate. (Spec §4.3: Previous Runs API is the
-            # proper training-data source.)
+            # run_time = model init time. Open-Meteo does not expose the
+            # producing run on this endpoint; the former code assumed a 6h
+            # synoptic cadence for every model, but icon_d2/icon_eu (and the
+            # MeteoSwiss models) initialize every 3h — a systematic lead-time
+            # error of up to 3h. Snap to the nearest init of the model's REAL
+            # cadence (Deep Audit R10). Previous Runs API remains the
+            # authoritative training-data source (R15).
             try:
                 first_valid = datetime.fromisoformat(times[0].replace("Z", "+00:00"))
             except Exception:
                 first_valid = utcnow()
-            # Approximate run_time: Open-Meteo doesn't expose the actual model init time.
-            # Use the nearest 6h synoptic time before first_valid (00/06/12/18 UTC).
-            run_hour = (first_valid.hour // 6) * 6
-            run_time = first_valid.replace(hour=run_hour, minute=0, second=0, microsecond=0)
             model_name = item["model_name"]
             point_id = item["point_id"]
+            run_time = nearest_model_init_time(first_valid, model_name)
             for i, t_iso in enumerate(times):
                 try:
                     valid_time = datetime.fromisoformat(t_iso.replace("Z", "+00:00"))
@@ -159,7 +163,19 @@ class OpenMeteoCollector(BaseCollector):
                     "precipitation": _safe_get(hourly, "precipitation", i),
                     "weather_code": _safe_get(hourly, "weather_code", i),
                     "visibility": _safe_get(hourly, "visibility", i),
-                    "raw_json": {"hourly": hourly, "model": model_name, "point": point_id},
+                    # Deep Audit R1: the former `raw_json: {"hourly": hourly, ...}`
+                    # embedded the ENTIRE multi-day payload (~31 vars x 168 steps,
+                    # 50-60 KB) into EVERY row of the block — multi-GB/day of
+                    # duplicated JSON at the 30-min cadence, with ZERO downstream
+                    # consumers (no reader of deterministic raw_json exists; the
+                    # ensemble path uses its own compact spread dict). Multi-level
+                    # wind data moved to real scalar columns in the V8 schema
+                    # (db/schema.py) — provenance only is stored here.
+                    "raw_json": {
+                        "model": model_name,
+                        "point": point_id,
+                        "source": "open_meteo_forecast",
+                    },
                 }
                 rows.append(row)
         return rows

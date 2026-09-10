@@ -224,10 +224,27 @@ class ArpaLombardiaCollector(BaseCollector):
             except (TypeError, ValueError):
                 continue
 
-            # Skip sensor readings flagged as invalid by ARPA
+            # Deep Audit R10 (3.7): the former filter DROPPED any row whose
+            # `stato` contained "non validato" — but ARPA's realtime feed
+            # marks RECENT data as unvalidated by default, so the collector
+            # was silently discarding exactly the freshest observations the
+            # 10-minute cadence exists to capture (and ARPA's current-month
+            # dataset makes those gaps permanently unbackfillable). Policy:
+            # keep unvalidated rows with a reduced confidence + explicit
+            # quality flag (the ground-truth hierarchy in features/build.py
+            # already weighs targets by confidence), drop only hard-error
+            # states. Unknown states are kept but flagged.
             stato = str(srow.get("stato") or "").strip()
-            if stato and stato.lower() in ("non validato", "invalid", "error"):
+            stato_l = stato.lower()
+            if stato_l in ("error", "e", "err", "fault", "missing", "m"):
                 continue
+            # Validated markers: empty (legacy rows), explicit validated words,
+            # or ARPA's short codes V/VE. Everything else (N/NV/D, "non
+            # validato", unknown encodings) is kept but treated as unvalidated.
+            if stato == "" or stato_l in ("v", "ve", "val", "validated"):
+                row_validated = True
+            else:
+                row_validated = False
 
             key = (station_id, ts.isoformat())
             if key not in agg:
@@ -242,10 +259,15 @@ class ArpaLombardiaCollector(BaseCollector):
                     "pressure": None,
                     "temperature": None,
                     "humidity": None,
-                    "quality_flag": "ok",
-                    "confidence": 0.85,
+                    "quality_flag": "ok" if row_validated else "unvalidated",
+                    "confidence": 0.85 if row_validated else 0.7,
                 }
             row = agg[key]
+            # If any sensor of this station flagged unvalidated, degrade the
+            # combined row (a station row is as good as its weakest sensor).
+            if not row_validated and row["quality_flag"] == "ok":
+                row["quality_flag"] = "unvalidated"
+                row["confidence"] = 0.7
             # Map sensor type to field
             if sensor_type == "wind_speed":
                 # ARPA reports m/s → convert to knots

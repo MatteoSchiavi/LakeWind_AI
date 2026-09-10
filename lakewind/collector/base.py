@@ -115,6 +115,47 @@ class BaseCollector(ABC):
             )
 
 
+# --- Model init-time helpers (Deep Audit R10) ---
+
+# NWP init cadence (hours between consecutive model runs, UTC). Open-Meteo's
+# forecast endpoint does not expose the producing run explicitly; the response
+# starts at today 00:00 UTC and reflects the latest published run. Snapping
+# run_time to the nearest init BEFORE the first valid step with the model's
+# REAL cadence removes the systematic up-to-3h lead-time error of the former
+# blanket 6h assumption (icon_d2/icon_eu initialize every 3h). The Previous
+# Runs API (open_meteo.previous_runs_url) remains the authoritative source for
+# leakage-free training data — see collector/historical_backfill.py.
+MODEL_INIT_CADENCE_HOURS = {
+    "icon_d2": 3,
+    "icon_eu": 3,
+    "meteoswiss_icon_ch1": 3,
+    "meteoswiss_icon_ch2": 3,
+    "meteoswiss_icon_ch1_eps": 3,
+    "ecmwf_ifs025": 6,
+    "gfs_seamless": 6,
+    "italia_meteo_arpae_icon_2i": 6,
+}
+
+
+def model_init_cadence_hours(model_name: str) -> int:
+    """Init cadence in hours for a model slug (6h default for unknown models)."""
+    base = model_name[:-4] if model_name.endswith("_ens") else model_name
+    return MODEL_INIT_CADENCE_HOURS.get(base, 6)
+
+
+def nearest_model_init_time(first_valid: datetime, model_name: str) -> datetime:
+    """Nearest model-init instant at or before `first_valid` (naive UTC).
+
+    Keeps run_time monotonic per collection cycle so re-collections UPSERT
+    onto the same (model, point, run_time, valid_time) rows instead of
+    accumulating duplicates, and gives lead_time arithmetic a defensible
+    basis with per-model cadence.
+    """
+    cad = model_init_cadence_hours(model_name)
+    run_hour = (first_valid.hour // cad) * cad
+    return first_valid.replace(hour=run_hour, minute=0, second=0, microsecond=0)
+
+
 # --- Section 11 quality checks (portable, used by every collector) ---
 
 
@@ -157,4 +198,12 @@ def apply_physical_limits(row: dict[str, Any]) -> str:
     return flag
 
 
-__all__ = ["BaseCollector", "CollectResult", "apply_physical_limits", "PHYSICAL_LIMITS"]
+__all__ = [
+    "BaseCollector",
+    "CollectResult",
+    "apply_physical_limits",
+    "PHYSICAL_LIMITS",
+    "MODEL_INIT_CADENCE_HOURS",
+    "model_init_cadence_hours",
+    "nearest_model_init_time",
+]

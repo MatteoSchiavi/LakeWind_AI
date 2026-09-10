@@ -21,10 +21,15 @@ from typing import Any
 
 import requests
 
-from lakewind.collector.base import BaseCollector, apply_physical_limits
+from lakewind.collector.base import (
+    BaseCollector,
+    apply_physical_limits,
+    nearest_model_init_time,
+)
 from lakewind.config import load_settings
 from lakewind.db import access
 from lakewind.utils.timeutil import utcnow
+from lakewind.utils.wind import circular_mean_deg, circular_spread_deg, circular_std_deg
 
 logger = logging.getLogger(__name__)
 
@@ -161,15 +166,14 @@ class OpenMeteoEnsembleCollector(BaseCollector):
             # collection cycle. Since (model_name, point_id, run_time, valid_time)
             # is the UNIQUE key, every cycle inserted a full new copy of the
             # ensemble block instead of updating the previous one → unbounded
-            # forecast_runs growth (~3.5k rows / 30 min). Snap run_time to the
-            # same 6h synoptic window used by the deterministic collector so
-            # re-collections UPERT instead of accumulating.
+            # forecast_runs growth (~3.5k rows / 30 min). Snapped to the model
+            # init grid; Deep Audit R10: uses the model's REAL init cadence
+            # (3h for ICON-family ensemble models, 6h for ECMWF/GFS).
             try:
                 first_valid = datetime.fromisoformat(times[0].replace("Z", "+00:00"))
             except Exception:
                 first_valid = utcnow()
-            run_hour = (first_valid.hour // 6) * 6
-            run_time = first_valid.replace(hour=run_hour, minute=0, second=0, microsecond=0, tzinfo=None)
+            run_time = nearest_model_init_time(first_valid, model_name).replace(tzinfo=None)
 
             for i, t_iso in enumerate(times):
                 try:
@@ -188,7 +192,13 @@ class OpenMeteoEnsembleCollector(BaseCollector):
                 press_members = _member_values(hourly, "pressure_msl", i)
 
                 speed_mean, speed_std, speed_range = _stats(speed_members)
-                dir_mean, dir_std, dir_range = _stats(dir_members)
+                # Deep Audit R10 (3.7): direction members were aggregated with
+                # ARITHMETIC mean/std of degrees — wrong across the 350/10
+                # wraparound (e.g. members at 350 and 10 averaged to 180).
+                # Circular formulas produce wraparound-correct statistics.
+                dir_mean = circular_mean_deg(dir_members)
+                dir_std = circular_std_deg(dir_members)
+                dir_range = circular_spread_deg(dir_members)
                 gust_mean, gust_std, gust_range = _stats(gust_members)
                 press_mean, press_std, press_range = _stats(press_members)
 
