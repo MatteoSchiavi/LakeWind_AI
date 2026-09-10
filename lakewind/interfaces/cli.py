@@ -28,6 +28,7 @@ from rich.console import Console
 from rich.table import Table
 
 from lakewind.config import get_db_path, load_settings, load_secrets
+from lakewind.utils.timeutil import utcnow
 
 app = typer.Typer(help="LakeWind — hyperlocal wind forecasting for Lake Como")
 console = Console()
@@ -245,7 +246,7 @@ def backfill_cmd(
 
     from lakewind.collector.historical_backfill import backfill_era5, backfill_forecasts
 
-    end_dt = datetime.strptime(end, "%Y-%m-%d") if end else datetime.utcnow()
+    end_dt = datetime.strptime(end, "%Y-%m-%d") if end else utcnow()
     if start:
         start_dt = datetime.strptime(start, "%Y-%m-%d")
     else:
@@ -324,7 +325,7 @@ def backtest_cmd(
     _setup_logging()
     from lakewind.ml.backtest import maybe_promote, run_backtest
 
-    end = datetime.utcnow()
+    end = utcnow()
     start = end - timedelta(days=days)
     report = run_backtest(candidate_model_version=candidate, start=start, end=end)
 
@@ -385,7 +386,7 @@ def retrain(
     _setup_logging()
     from lakewind.ml.train import train
 
-    end = datetime.utcnow()
+    end = utcnow()
     start = end - timedelta(days=days)
     result = train(start=start, end=end, backend=backend)
     if result is None:
@@ -399,6 +400,29 @@ def retrain(
     console.print("  Metrics:")
     for k, v in result.metrics.items():
         console.print(f"    {k}: {v:.4f}")
+
+
+@app.command("tune")
+def tune(
+    days: int = typer.Option(120, help="Tuning window in days (time-ordered val split applied inside)"),
+    trials: int = typer.Option(40, help="Number of Optuna TPE trials"),
+) -> None:
+    """Phase 3: tune LightGBM hyperparameters (Optuna TPE, resumable study).
+
+    Tunes on the LAST `days` days of stored history with a time-ordered
+    validation split; prints the best params and where to put them.
+    The study persists in data/cache/tune_study.db — reruns resume.
+    """
+    _setup_logging()
+    from lakewind.config import get_db_path as _gdp
+    from lakewind.ml.tune import tune_from_db
+
+    best = tune_from_db(days=days, n_trials=trials,
+                        storage_path=str(_gdp().parent / "cache" / "tune_study.db"))
+    console.print(f"[bold green]Tuning complete ({trials} trials)[/bold green]")
+    console.print("Merge these into settings.yaml `model.lgbm_params`:")
+    for k, v in best.items():
+        console.print(f"  {k}: {v}")
 
 
 @app.command("promote")
@@ -425,9 +449,11 @@ def promote_cmd(
             f"UPDATE {s.db.model_registry_table} SET promoted_to_production = FALSE "
             "WHERE promoted_to_production = TRUE"
         )
-    access.register_model(
+    # V6.6 FIX: use upsert — the version was already registered by `train()`,
+    # so a plain INSERT violated the PRIMARY KEY and `promote` always crashed.
+    access.register_or_update_model(
         model_version=model_version,
-        trained_at=datetime.utcnow(),
+        trained_at=utcnow(),
         feature_set_version=s.model.feature_set_version,
         training_start=None,
         training_end=None,
@@ -495,6 +521,82 @@ def serve_bot() -> None:
     run_bot()
 
 
+@app.command("serve-api")
+def serve_api() -> None:
+    """Run the internal HTTP API only (long-running, no Telegram)."""
+    _setup_logging()
+    import uvicorn
+
+    from lakewind.api import create_app
+
+    s = load_settings()
+    console.print(f"[bold]LakeWind API on {s.api.host}:{s.api.port}[/bold]")
+    uvicorn.run(create_app(), host=s.api.host, port=s.api.port, log_level="warning")
+
+
+@app.command("pipeline-loop")
+def pipeline_loop_cmd() -> None:
+    """Run the scheduled pipeline (collect+predict+artifacts) without Telegram."""
+    _setup_logging()
+
+    async def _main() -> None:
+        from lakewind import pipeline_loop
+
+        await pipeline_loop.run_forever()
+
+    import asyncio
+
+    try:
+        asyncio.run(_main())
+    except KeyboardInterrupt:
+        console.print("[yellow]Pipeline loop stopped.[/yellow]")
+
+
+@app.command("precompute")
+def precompute() -> None:
+    """Render heatmap/trend artifacts for the latest stored predictions."""
+    _setup_logging()
+    from lakewind import artifacts
+    from lakewind.db import access as _access
+    from lakewind.utils.timeutil import utcnow as _utcnow
+
+    s = load_settings()
+    point_ids = list(s.operational_point_ids or [vp.id for vp in s.virtual_points])
+    rows = _access.latest_prediction_batch(point_ids, limit=4000)
+    by_point: dict[str, list[dict]] = {}
+    for r in rows:
+        by_point.setdefault(r["point_id"], []).append(r)
+
+    now = _utcnow()
+    preds_by_offset = {}
+    for offset in artifacts.MAP_OFFSET_HOURS:
+        target = (now + timedelta(hours=offset)).replace(tzinfo=None)
+        preds = []
+        for pid in point_ids:
+            best, best_diff = None, None
+            for r in by_point.get(pid, []):
+                vt = r.get("valid_time")
+                if isinstance(vt, str):
+                    vt = datetime.fromisoformat(vt)
+                if vt is None:
+                    continue
+                diff = abs((vt - target).total_seconds())
+                if best_diff is None or diff < best_diff:
+                    best, best_diff = r, diff
+            if best is not None and best_diff <= 5400:
+                preds.append(best)
+        preds_by_offset[offset] = preds
+
+    map_summary = artifacts.precompute_maps(preds_by_offset)
+    trend_summary = artifacts.precompute_trends(point_ids)
+    console.print(
+        f"[green]Maps: {map_summary['maps_rendered']} rendered, "
+        f"trends: {trend_summary['trends_rendered']} rendered.[/green]"
+    )
+    for err in map_summary["errors"] + trend_summary["errors"]:
+        console.print(f"[yellow]  • {err}[/yellow]")
+
+
 @app.command("serve-dashboard")
 def serve_dashboard(
     port: Optional[int] = typer.Option(None, help="Port override"),
@@ -534,8 +636,8 @@ def log_sailing(
     _setup_logging()
     from lakewind.db import access
 
-    start = datetime.utcnow() - timedelta(minutes=duration_min)
-    end = datetime.utcnow()
+    start = utcnow() - timedelta(minutes=duration_min)
+    end = utcnow()
     rid = access.insert_sailing_log(
         {
             "session_start": start,

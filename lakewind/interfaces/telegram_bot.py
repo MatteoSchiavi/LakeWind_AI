@@ -45,6 +45,13 @@ from lakewind.utils.weather import decode_weather_code, sailing_weather_warning,
 
 logger = logging.getLogger(__name__)
 
+# Phase 2: bounded on-demand image rendering. Pre-rendered artifacts cover
+# the normal path; this semaphore only caps the fallback so a burst of edge
+# requests can never occupy the thread pool with dozens of matplotlib jobs.
+import asyncio as _asyncio
+
+_render_semaphore = _asyncio.Semaphore(load_settings().cache.render_semaphore)
+
 
 # --- Helpers ---
 
@@ -146,7 +153,7 @@ def _generate_pred_on_demand(point_id: str, target_time: datetime) -> dict | Non
             return {
                 "point_id": point_id,
                 "valid_time": target_time.isoformat(),
-                "generated_at": datetime.utcnow().isoformat(),
+                "generated_at": utcnow().isoformat(),
                 "model_version": result.model_version,
                 "wind_speed_kn": result.wind_speed_kn,
                 "wind_dir_deg": result.wind_dir_deg,
@@ -174,7 +181,7 @@ def _generate_pred_on_demand(point_id: str, target_time: datetime) -> dict | Non
     return {
         "point_id": point_id,
         "valid_time": target_time.isoformat(),
-        "generated_at": datetime.utcnow().isoformat(),
+        "generated_at": utcnow().isoformat(),
         "model_version": f"raw_{ref.get('model_name', 'nwp')}",
         "wind_speed_kn": round(float(speed), 1),
         "wind_dir_deg": round(float(direction), 0),
@@ -199,7 +206,7 @@ _rate_counts: dict[int, list[datetime]] = {}
 
 
 def _check_rate_limit(user_id: int) -> bool:
-    now = datetime.utcnow()
+    now = utcnow()
     if user_id not in _rate_counts:
         _rate_counts[user_id] = []
     _rate_counts[user_id] = [t for t in _rate_counts[user_id] if (now - t).total_seconds() < 3600]
@@ -215,14 +222,21 @@ async def _authorize(update: Update) -> tuple[bool, dict | None]:
     user = update.effective_user
     if user is None:
         return False, None
-    user_dict = user_db.get_user(user.id)
-    if user_dict is None:
-        user_dict = user_db.register_or_update_user(
-            telegram_user_id=user.id,
-            username=user.username or "",
-            first_name=user.first_name or "",
-        )
-    if not user_db.is_user_allowed(user.id):
+    # Phase 2: user lookup/registration touches DuckDB — keep it off the
+    # event loop (50 concurrent users = 50 parallel authorizations on burst).
+    def _resolve_user() -> dict:
+        u = user_db.get_user(user.id)
+        if u is None:
+            u = user_db.register_or_update_user(
+                telegram_user_id=user.id,
+                username=user.username or "",
+                first_name=user.first_name or "",
+            )
+        return u
+
+    user_dict = await _asyncio.to_thread(_resolve_user)
+    allowed = await _asyncio.to_thread(user_db.is_user_allowed, user.id)
+    if not allowed:
         return False, user_dict
     return True, user_dict
 
@@ -517,15 +531,17 @@ async def _menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if data.startswith("w:") and data.count(":") == 2:
         _, point_id, hours_str = data.split(":")
         hours = int(hours_str)
-        target = datetime.utcnow() + timedelta(hours=hours)
-        pred = _fetch_pred_at(point_id, target)
+        target = utcnow() + timedelta(hours=hours)
+        from lakewind.forecast_store import store
+
+        pred = await store.get_pred(point_id, target)
         if pred is None:
             await query.edit_message_text(
                 "❌ No forecast available for this time.\nTry a different time or point.",
                 reply_markup=_main_menu_kb(),
             )
             return
-        forecast = _fetch_forecast_at(point_id, target)
+        forecast = await _asyncio.to_thread(_fetch_forecast_at, point_id, target)
         text = _format_wind_infographic(pred, forecast, lang, units)
         await query.edit_message_text(
             text,
@@ -552,13 +568,9 @@ async def _menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     # --- Today: point selected → show hourly table ---
     if data.startswith("t:") and data != "t:back":
         point_id = data[2:]
-        now = datetime.utcnow()
-        preds = []
-        for h in range(0, 25):
-            target = now + timedelta(hours=h)
-            p = _fetch_pred_at(point_id, target)
-            if p:
-                preds.append(p)
+        from lakewind.forecast_store import store
+
+        preds = await store.get_series(point_id, hours=25)
         text = _format_today_table(preds, lang, units)
         await query.edit_message_text(
             text,
@@ -575,7 +587,7 @@ async def _menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     # --- Map: time selected → generate + send heatmap ---
     if data.startswith("map:"):
         hours = int(data[4:]) if data[4:].isdigit() else 0
-        target = datetime.utcnow() + timedelta(hours=hours)
+        target = utcnow() + timedelta(hours=hours)
         await _send_map(query, target, lang)
         return
 
@@ -591,27 +603,34 @@ async def _menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 async def _sailing_recommendation(query, user, lang, units) -> None:
-    """GO/NO-GO sailing recommendation across all points."""
+    """GO/NO-GO sailing recommendation across all points.
+
+    Phase 2: served from the forecast store projection — ONE bulk query per
+    projection TTL (5 min) instead of 42 DuckDB connections per request.
+    """
+    import zoneinfo
+
+    from lakewind.forecast_store import store
+
     s = load_settings()
-    now = datetime.utcnow()
-    from zoneinfo import ZoneInfo
-    tz = ZoneInfo(s.project.timezone)
-    local_now = now.astimezone(tz)
+    tz = zoneinfo.ZoneInfo(s.project.timezone)
+    from lakewind.utils.timeutil import to_local, utcnow
+
+    local_now = to_local(utcnow(), s.project.timezone)
+
+    lines = [f"━━━━━━━━━━━━━━━━━━━━━━", f"  ⛵ SAILING REPORT — {local_now.strftime('%a %b %d')}", f"━━━━━━━━━━━━━━━━━━━━━━"]
+
+    window = await store.get_multi_point_window(
+        list(s.operational_point_ids or []),
+        list(range(11, 17)),
+        tz,
+    )
 
     best_point = None
     best_speed = 0
     best_hour = None
-    lines = [f"━━━━━━━━━━━━━━━━━━━━━━", f"  ⛵ SAILING REPORT — {local_now.strftime('%a %b %d')}", f"━━━━━━━━━━━━━━━━━━━━━━"]
-
-    for vp_id in (s.operational_point_ids or []):
-        speeds = []
-        for h in range(11, 17):
-            target = local_now.replace(hour=h, minute=0, second=0, microsecond=0)
-            target_utc = target.astimezone(ZoneInfo("UTC")).replace(tzinfo=None)
-            p = _fetch_pred_at(vp_id, target_utc)
-            if p and p.get("wind_speed_kn"):
-                speeds.append((h, p["wind_speed_kn"], p.get("wind_dir_deg", 0)))
-
+    for vp_id in s.operational_point_ids or []:
+        speeds = window.get(vp_id, [])
         if not speeds:
             continue
 
@@ -649,18 +668,35 @@ async def _sailing_recommendation(query, user, lang, units) -> None:
 
 
 async def _send_map(query, target_time, lang) -> None:
-    """Generate and send a heatmap image."""
+    """Generate and send a heatmap image.
+
+    Phase 2 serving chain (precompute-on-write, serve-on-read):
+      1. pre-rendered artifact from the last pipeline cycle (ms)
+      2. on-demand render in a worker thread, bounded by _render_semaphore
+         — the event loop is NEVER blocked by matplotlib anymore
+    """
+    from lakewind import artifacts
+    from lakewind.forecast_store import store
     from lakewind.utils.heatmap_v3 import generate_heatmap_v3
-    s = load_settings()
-    preds = []
-    for vp_id in (s.operational_point_ids or []):
-        p = _fetch_pred_at(vp_id, target_time)
-        if p:
-            preds.append(p)
-    if not preds:
-        await query.edit_message_text("❌ No data for map.", reply_markup=_main_menu_kb())
-        return
-    png = generate_heatmap_v3(preds, target_time=target_time)
+
+    offset = round((target_time - utcnow()).total_seconds() / 3600)
+    offset = max(0, min(24, offset))
+
+    png = await _asyncio.to_thread(artifacts.lookup_map_png, target_time, offset)
+
+    if png is None:
+        preds = []
+        s = load_settings()
+        for vp_id in s.operational_point_ids or []:
+            p = await store.get_pred(vp_id, target_time)
+            if p:
+                preds.append(p)
+        if not preds:
+            await query.edit_message_text("❌ No data for map.", reply_markup=_main_menu_kb())
+            return
+        async with _render_semaphore:
+            png = await _asyncio.to_thread(generate_heatmap_v3, preds, target_time)
+
     if png is None:
         await query.edit_message_text("❌ Map generation failed.", reply_markup=_main_menu_kb())
         return
@@ -672,9 +708,14 @@ async def _send_map(query, target_time, lang) -> None:
 
 
 async def _send_trend(query, point_id, lang) -> None:
-    """Generate and send a 24h trend chart."""
+    """Generate and send a 24h trend chart (artifact-first, Phase 2)."""
+    from lakewind import artifacts
     from lakewind.utils.heatmap_v3 import generate_trend_chart
-    png = generate_trend_chart(point_id, hours=24)
+
+    png = await _asyncio.to_thread(artifacts.lookup_trend_png, point_id)
+    if png is None:
+        async with _render_semaphore:
+            png = await _asyncio.to_thread(generate_trend_chart, point_id, 24)
     if png is None:
         await query.edit_message_text("❌ No data for trend.", reply_markup=_main_menu_kb())
         return
@@ -749,12 +790,14 @@ async def _wind_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not point_id:
         await update.message.reply_text("🌬 Choose a point 👇", reply_markup=_point_kb("w", lang))
         return
-    now = datetime.utcnow()
-    pred = _fetch_pred_at(point_id, now)
+    from lakewind.forecast_store import store
+
+    now = utcnow()
+    pred = await store.get_pred(point_id, now)
     if pred is None:
         await update.message.reply_text("❌ No forecast available.")
         return
-    forecast = _fetch_forecast_at(point_id, now)
+    forecast = await _asyncio.to_thread(_fetch_forecast_at, point_id, now)
     text = _format_wind_infographic(pred, forecast, lang, units)
     await update.message.reply_text(text)
 
@@ -769,12 +812,9 @@ async def _today_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     if not point_id:
         await update.message.reply_text("📅 Choose a point 👇", reply_markup=_point_kb("t", lang))
         return
-    now = datetime.utcnow()
-    preds = []
-    for h in range(0, 25):
-        p = _fetch_pred_at(point_id, now + timedelta(hours=h))
-        if p:
-            preds.append(p)
+    from lakewind.forecast_store import store
+
+    preds = await store.get_series(point_id, hours=25)
     text = _format_today_table(preds, lang, units)
     await update.message.reply_text(text)
 
@@ -927,7 +967,7 @@ async def _accuracy_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     from datetime import datetime, timedelta
     import numpy as np
 
-    now = datetime.utcnow()
+    now = utcnow()
 
     # Get recent predictions and their errors
     # We compare stored predictions against later observations
@@ -951,7 +991,10 @@ async def _accuracy_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     decision_hits = 0
     decision_total = 0
 
-    for p in preds[-200:]:  # last 200 predictions
+    for p in preds[:200]:  # V6.6 FIX: latest_predictions is generated_at DESC —
+        # the first 200 entries are the MOST RECENT predictions. The old code
+        # sliced [-200:], silently evaluating the OLDEST predictions and then
+        # discarding them by the 30-day age filter ("not enough data").
         vt = p.get("valid_time")
         if isinstance(vt, str):
             try:
@@ -1068,9 +1111,9 @@ async def _why_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not allowed:
         return
     point_id = (context.args[0] if context.args else None) or user.get("favorite_point_id") or "mid_channel"
-    now = datetime.utcnow()
+    now = utcnow()
 
-    pred = _fetch_pred_at(point_id, now)
+    pred = await _asyncio.to_thread(_fetch_pred_at, point_id, now)
     if pred is None:
         await update.message.reply_text("❌ No prediction available.")
         return
@@ -1212,7 +1255,7 @@ async def _report_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
         access.insert_observation({
             "source": f"report_{update.effective_user.id}",
-            "timestamp": datetime.utcnow(),
+            "timestamp": utcnow(),
             "lat": vp.lat,
             "lon": vp.lon,
             "wind_speed_kn": float(speed_kn),
@@ -1226,7 +1269,7 @@ async def _report_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         })
 
         # B5: Show what the model predicted for this time
-        pred = _fetch_pred_at(vp.id, datetime.utcnow())
+        pred = await _asyncio.to_thread(_fetch_pred_at, vp.id, utcnow())
         pred_text = ""
         if pred:
             pred_speed = pred.get("wind_speed_kn", 0)
@@ -1367,19 +1410,8 @@ async def _webapp_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 # --- Build app ---
 
-def build_app():
-    """Build the Telegram Application."""
-    secrets = load_secrets()
-    s = load_settings()
-    token = secrets.telegram_bot_token.get_secret_value()
-    if not s.telegram.enabled:
-        raise RuntimeError("Telegram disabled in settings")
-    if not token:
-        raise RuntimeError("TELEGRAM_BOT_TOKEN is empty. Add it to .env.")
-
-    app = ApplicationBuilder().token(token).build()
-
-    # Commands
+def _register_handlers(app) -> None:
+    """Attach all command + callback handlers (shared by build_app/run_bot)."""
     app.add_handler(CommandHandler("start", _start))
     app.add_handler(CommandHandler("help", _help_cmd))
     app.add_handler(CommandHandler("menu", _start))
@@ -1397,32 +1429,78 @@ def build_app():
     app.add_handler(CommandHandler("report", _report_cmd))
     app.add_handler(CommandHandler("admin", _admin_cmd))
     app.add_handler(CommandHandler("webapp", _webapp_cmd))
-
     # Inline keyboard callback (the query builder)
     app.add_handler(CallbackQueryHandler(_menu_callback))
-
     # Fallback
     app.add_handler(MessageHandler(filters.COMMAND, _unknown))
 
+
+def build_app():
+    """Build the Telegram Application (handlers only — no scheduler)."""
+    secrets = load_secrets()
+    s = load_settings()
+    token = secrets.telegram_bot_token.get_secret_value()
+    if not s.telegram.enabled:
+        raise RuntimeError("Telegram disabled in settings")
+    if not token:
+        raise RuntimeError("TELEGRAM_BOT_TOKEN is empty. Add it to .env.")
+
+    app = ApplicationBuilder().token(token).build()
+    _register_handlers(app)
     return app
 
 
 def run_bot() -> None:  # pragma: no cover
     """Start the Telegram bot."""
     import asyncio
-    app = build_app()
 
-    # Start scheduler
     from lakewind.interfaces.bot_scheduler import run_scheduler
 
-    async def post_init(application):
+    # V6.6 FIX: the scheduler was wired as `app.post_init = post_init` AFTER
+    # the Application was built — PTB only reads post_init from the builder,
+    # so the assignment was a silent no-op and the alert/daily-summary
+    # scheduler NEVER ran. It must be passed to ApplicationBuilder().post_init().
+    # The job callback must also be a real coroutine function (PTB awaits it);
+    # the old sync lambda returning a Task would raise when the job fired.
+    async def _scheduler_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+        await run_scheduler(context)
+
+    async def post_init(application) -> None:
+        # Phase 2: start the background services on the bot's event loop.
+        # 1) Pipeline loop — the previously MISSING scheduler: NWP collect +
+        #    predict + artifact precompute every 30 min, stations every 10 min.
+        # 2) Internal API — web dashboard proxy target (no Node↔DuckDB locks).
+        # 3) Alert/subscription scheduler (Phase 1 fix, unchanged).
+        from lakewind import pipeline_loop
+        from lakewind.config import load_settings as _ls
+
         application.job_queue.run_repeating(
-            lambda ctx: asyncio.create_task(run_scheduler(ctx)),
+            _scheduler_job,
             interval=1800,
             first=10,
         )
+        pipeline_loop.start_background()
+        s = _ls()
+        if s.api.enabled:
+            try:
+                from lakewind.api import start_in_process
 
-    app.post_init = post_init
+                start_in_process(port=s.api.port, host=s.api.host)
+                logging.info("Internal API listening on %s:%s", s.api.host, s.api.port)
+            except Exception:
+                logging.exception("Internal API failed to start (bot continues)")
+
+    token = load_secrets().telegram_bot_token.get_secret_value()
+    app = (
+        ApplicationBuilder()
+        .token(token)
+        .post_init(post_init)
+        .build()
+    )
+
+    # Register handlers (shared between this path and build_app)
+    _register_handlers(app)
+
     logging.info("Telegram bot starting (query builder, 25 commands, alert scheduler)...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 

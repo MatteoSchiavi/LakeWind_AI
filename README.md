@@ -78,6 +78,35 @@ never need to type commands. The flow is:
 
 ---
 
+## Phase 2 Architecture (V7) — precompute-on-write, serve-from-cache
+
+The runtime is one Python process (bot + pipeline + API) with three planes:
+
+1. **Pipeline loop** (`lakewind pipeline-loop`, auto-started by the bot):
+   NWP collect + predict (hourly 0-24h horizons) + artifact precompute every
+   30 min; ground-station collect every 10 min. Overlap-proof, thread-pooled.
+   Previously the pipeline NEVER ran periodically — freshness was manual.
+2. **Forecast store** (`lakewind/forecast_store.py`): in-memory projection of
+   the latest prediction cycle (one bulk query / 5 min TTL) + single-flight
+   coalescing. A 50-user burst costs ONE query, not 50. On-demand inference
+   falls back through the same single-flight (50 cold misses → 1 inference).
+3. **Artifacts** (`lakewind/artifacts.py`): heatmaps (+0/+2/+4/+6h) and 24h
+   trend charts are PRE-RENDERED after every cycle into `data/cache/`.
+   Telegram /map and /trend serve files (milliseconds) instead of rendering
+   matplotlib in the event loop. On-demand renders are semaphore-bounded.
+4. **Internal API** (`lakewind/api.py`, port 8000): FastAPI service consumed
+   by the web dashboard — the Node web-ui no longer opens DuckDB itself
+   (which raced the Python writer for the single-writer file lock).
+5. **API budget**: Open-Meteo fetches are batched (all models in one request
+   per point): 88 → 22 calls/cycle (~4,224 → ~1,056 calls/day), leaving
+   headroom for multi-spot expansion on the free tier.
+
+Load verification (50 concurrent users, see `scripts/phase2_load_check.py`):
+`/wind` burst 23 ms · `/today` ×25h burst 12 ms · cold on-demand burst → 1
+inference · `/map` burst 26 ms with ZERO renders.
+
+---
+
 ## Crash Prevention (V5)
 
 - **Signal handlers**: graceful shutdown on SIGTERM/SIGINT (closes DB, saves state)
@@ -216,7 +245,7 @@ trend charts, data source health, auto-refresh.
 
 ---
 
-## Virtual Points (8 operational + 4 auxiliary)
+## Virtual Points (7 operational + 4 auxiliary)
 
 All coordinates validated by `scripts/validate_points.py` (ray-casting against
 Lake Como water polygon).
@@ -230,9 +259,13 @@ Lake Como water polygon).
 | piona_entrance | 46.1140 | 9.3100 | Mid-lake |
 | dervio_shore | 46.0763 | 9.2980 | Mid-lake |
 | bellano_offshore | 46.0550 | 9.3000 | South |
-| lecco_north | 46.0600 | 9.3000 | South |
 
 Auxiliary: zurich, milano_linate, sondrio, lugano (for pressure gradient features)
+
+> **Timezone convention (V6.6):** all timestamps stored in DuckDB are naive
+> UTC. Collectors request `timezone=UTC` from Open-Meteo so ingested forecast
+> times are true UTC — local-time features (solar geometry, Breva/Tivano
+> windows, sailing-report hours) convert to `Europe/Rome` explicitly.
 
 ---
 

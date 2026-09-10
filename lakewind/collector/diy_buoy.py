@@ -26,6 +26,7 @@ import requests
 from lakewind.collector.base import BaseCollector, apply_physical_limits
 from lakewind.config import load_settings
 from lakewind.db import access
+from lakewind.utils.timeutil import utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +57,7 @@ class DiyBuoyCollector(BaseCollector):
         r = raw["reading"]
         row: dict[str, Any] = {
             "source": self.source_id,
-            "timestamp": datetime.utcnow(),
+            "timestamp": utcnow(),
             "lat": float(r.get("lat", 46.100)),
             "lon": float(r.get("lon", 9.300)),
             "wind_speed_kn": r.get("wind_speed_kn"),

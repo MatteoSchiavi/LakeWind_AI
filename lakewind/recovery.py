@@ -23,6 +23,7 @@ from typing import Any
 
 from lakewind.config import load_settings
 from lakewind.db import access
+from lakewind.utils.timeutil import utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +46,7 @@ def detect_gaps() -> dict[str, dict[str, Any]]:
         }
     }
     """
-    now = datetime.utcnow()
+    now = utcnow()
     result: dict[str, dict[str, Any]] = {}
 
     # --- Check forecast_runs ---
@@ -137,7 +138,7 @@ def recover(
     gaps = detect_gaps()
 
     summary: dict[str, Any] = {
-        "checked_at": datetime.utcnow().isoformat(),
+        "checked_at": utcnow().isoformat(),
         "check_only": check_only,
         "gaps": gaps,
         "recovery": {},
@@ -151,8 +152,8 @@ def recover(
             start = fc_gap["latest"] - timedelta(hours=1)  # slight overlap for safety
         else:
             # No data at all — backfill from max_days ago
-            start = datetime.utcnow() - timedelta(days=max_days)
-        end = datetime.utcnow()
+            start = utcnow() - timedelta(days=max_days)
+        end = utcnow()
 
         gap_days_actual = (end - start).total_seconds() / 86400.0
         logger.info(
@@ -197,8 +198,8 @@ def recover(
         if obs_gap["latest"]:
             start = obs_gap["latest"] - timedelta(hours=1)
         else:
-            start = datetime.utcnow() - timedelta(days=max_days)
-        end = datetime.utcnow()
+            start = utcnow() - timedelta(days=max_days)
+        end = utcnow()
 
         gap_days_actual = (end - start).total_seconds() / 86400.0
         logger.info(
@@ -241,7 +242,7 @@ def recover(
         or summary.get("recovery", {}).get("era5", {}).get("rows_inserted", 0) > 0
     )
     summary["any_recovered"] = any_recovered
-    summary["completed_at"] = datetime.utcnow().isoformat()
+    summary["completed_at"] = utcnow().isoformat()
 
     if any_recovered:
         logger.info("=== Auto-recovery complete: data gaps filled ===")

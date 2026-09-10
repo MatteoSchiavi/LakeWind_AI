@@ -114,6 +114,11 @@ class LgbmParams(BaseModel):
     min_data_in_leaf: int = 30
     verbose: int = -1
     num_iterations: int = 500
+    # Phase 3: regularization depth (used by tuning search too)
+    max_depth: int = -1          # -1 = unlimited (LightGBM default)
+    lambda_l1: float = 0.0
+    lambda_l2: float = 0.0
+    min_gain_to_split: float = 0.0
 
 
 class UpgradeGate(BaseModel):
@@ -137,6 +142,25 @@ class ModelConfig(BaseModel):
     lgbm_params: LgbmParams
     upgrade_gate: UpgradeGate
     walk_forward: WalkForwardConfig
+    # --- Phase 3: training hardening ---
+    # Time-ordered validation slice (last fraction of samples) used for early
+    # stopping and honest out-of-sample metrics. Never a random split.
+    validation_fraction: float = 0.15
+    # Early stopping patience + cap on boosting rounds (early stopping wins).
+    early_stopping_rounds: int = 150
+    max_boost_rounds: int = 3000
+    # Heterogeneous ensemble: train the secondary backend per (target, q)
+    # and average predictions (variance reduction across inductive biases).
+    ensemble: bool = False
+    # Two-phase feature selection: gain-based shortlist + validation-set
+    # permutation pruning, applied on the TRAIN side only (leakage-free).
+    feature_selection: bool = False
+    feature_selection_top_k: int = 120
+    # Terrain channeling: valley axis azimuth (deg FROM north) for the
+    # along/cross-valley wind decomposition. Per-point overrides for other
+    # basins (Phase 6 multi-spot): {point_id: axis_deg}.
+    valley_axis_deg: float = 10.0
+    valley_axis_overrides: dict[str, float] = Field(default_factory=dict)
 
 
 class SuccessCriteria(BaseModel):
@@ -151,6 +175,45 @@ class PipelineConfig(BaseModel):
     target_runtime_seconds: int = 10
     degrade_confidence_per_missing_nwp: float = 5.0
     degrade_confidence_per_missing_station: float = 3.0
+    # Phase 2: prediction horizons generated every cycle. Hourly 0-24 covers
+    # /today (25 rows), /sailing (11-16 local) and the map offsets without
+    # resorting to on-demand inference (which is 20-50x more expensive per
+    # request than reading a stored row).
+    horizons: list[int] = Field(default_factory=lambda: list(range(0, 25)))
+    # Phase 2: pre-render heatmap/trend artifacts after every predict cycle.
+    precompute_maps: bool = True
+
+
+class ApiConfig(BaseModel):
+    """Phase 2: internal FastAPI service consumed by the web dashboard.
+
+    The Node web-ui no longer opens the DuckDB file itself (that caused
+    cross-process lock contention with the Python writer). It proxies to
+    this API, which shares the in-process caches.
+    """
+
+    enabled: bool = True
+    host: str = "0.0.0.0"
+    port: int = 8000
+
+
+class CacheConfig(BaseModel):
+    """Phase 2 cache TTLs (seconds unless noted).
+
+    projection_ttl: in-memory copy of the latest prediction batch — bounded
+    by the 30-min predict cycle; 5 min keeps data at most ~5 min stale while
+    absorbing arbitrary request bursts.
+    prediction_ttl: on-demand (fallback) predictions live shorter, they are
+    not persisted.
+    map_max_age_minutes: a pre-rendered map older than this is considered
+    stale and we fall back to rendering (2 predict cycles + margin).
+    """
+
+    projection_ttl: float = 300.0
+    prediction_ttl: float = 300.0
+    on_demand_ttl: float = 300.0
+    map_max_age_minutes: float = 100.0
+    render_semaphore: int = 2
 
 
 class TelegramConfig(BaseModel):
@@ -201,6 +264,8 @@ class Settings(BaseModel):
     model: ModelConfig
     success_criteria: SuccessCriteria
     pipeline: PipelineConfig
+    api: ApiConfig = Field(default_factory=ApiConfig)
+    cache: CacheConfig = Field(default_factory=CacheConfig)
     telegram: TelegramConfig
     streamlit: StreamlitConfig
     schedule: ScheduleConfig
@@ -220,8 +285,14 @@ class Secrets(BaseSettings):
     arpa_app_token: SecretStr = SecretStr("")
 
 
+@lru_cache(maxsize=1)
 def _project_root() -> Path:
-    """Walk up from this file to find the directory containing settings.yaml."""
+    """Walk up from this file to find the directory containing settings.yaml.
+
+    Phase 3: lru_cache'd — profiling showed ~16 uncached calls per feature
+    sample (every get_db_path() re-walked the tree with 14k stat calls/150
+    samples). The root never changes within a process.
+    """
     here = Path(__file__).resolve()
     for parent in [here.parent, *here.parents]:
         if (parent / "settings.yaml").exists():
@@ -283,4 +354,6 @@ __all__ = [
     "reset_caches",
     "VirtualPoint",
     "GeoPoint",
+    "ApiConfig",
+    "CacheConfig",
 ]

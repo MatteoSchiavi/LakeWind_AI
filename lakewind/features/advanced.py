@@ -47,10 +47,32 @@ from lakewind.db import access
 logger = logging.getLogger(__name__)
 
 
+def _memo_fetch(
+    memo: dict | None,
+    point_id: str,
+    t: datetime,
+    window: int = 120,
+) -> list[dict[str, Any]]:
+    """fetch_forecasts_at with optional call-scoped memo (Phase 3).
+
+    When `build_features_for` passes its memo dict, repeated lookups for the
+    same (point, time, window) — e.g. the 1h/3h/4h lags vs the thermal-inertia
+    history — hit the cache instead of re-querying DuckDB. The memo lives for
+    a single feature-build call, so freshness is unaffected.
+    """
+    if memo is None:
+        return access.fetch_forecasts_at(point_id, t, lead_minutes_window=window)
+    key = (point_id, t, window)
+    if key not in memo:
+        memo[key] = access.fetch_forecasts_at(point_id, t, lead_minutes_window=window)
+    return memo[key]
+
+
 def compute_thermal_inertia(
     valid_time: datetime,
     point_id: str,
     hours: int = 6,
+    memo: dict | None = None,
 ) -> dict[str, float | None]:
     """Thermal inertia of the air mass over the last N hours.
 
@@ -76,7 +98,7 @@ def compute_thermal_inertia(
     solar: list[float] = []
     for h in range(hours):
         t = valid_time - timedelta(hours=h)
-        fc = access.fetch_forecasts_at(point_id, t, lead_minutes_window=120)
+        fc = _memo_fetch(memo, point_id, t, 120)
         if fc:
             # Use icon_eu as reference
             ref = next((f for f in fc if f["model_name"] == "icon_eu"), None) or fc[0]
@@ -121,6 +143,7 @@ def _empty_thermal_inertia() -> dict[str, float | None]:
 
 def compute_macro_area_pressure_differentials(
     valid_time: datetime,
+    memo: dict | None = None,
 ) -> dict[str, float | None]:
     """Pressure differentials between macro-areas surrounding the lake.
 
@@ -142,7 +165,7 @@ def compute_macro_area_pressure_differentials(
     lead = 180  # minutes
 
     def _get_pressure(point_id: str) -> float | None:
-        fc = access.fetch_forecasts_at(point_id, valid_time, lead_minutes_window=lead)
+        fc = _memo_fetch(memo, point_id, valid_time, 180)
         for f in fc:
             if f.get("pressure_msl") is not None:
                 return float(f["pressure_msl"])
@@ -242,6 +265,8 @@ def compute_lake_breeze_potential(
     valid_time: datetime,
     feature_vector: dict[str, Any],
     point_id: str,
+    memo: dict | None = None,
+    observations: list[dict[str, Any]] | None = None,
 ) -> dict[str, float | None]:
     """Lake breeze potential — composite Breva predictor.
 
@@ -273,17 +298,22 @@ def compute_lake_breeze_potential(
 
     # 1. Air-water temp delta
     air_temp = _safe_float(feature_vector.get("fc_icon_eu_temp"))
-    # Look up lake water temp from observations
-    vp = next((p for p in s.virtual_points if p.id == point_id), None)
+    # Phase 3 perf: the caller passes the obs it ALREADY fetched for the
+    # sample (60-min window) instead of issuing its own 3-DAY obs query that
+    # returned ~800 rows per sample just to look for a water-temp reading.
+    # Callers without obs in hand fall back to a short 6 h lookup.
+    obs = observations
+    if obs is None:
+        vp = next((p for p in s.virtual_points if p.id == point_id), None)
+        if vp is not None:
+            obs = access.fetch_latest_observation_near(
+                vp.lat, vp.lon, valid_time, max_age_minutes=360
+            )
     water_temp: float | None = None
-    if vp is not None:
-        obs = access.fetch_latest_observation_near(
-            vp.lat, vp.lon, valid_time, max_age_minutes=72 * 60  # 3 days
-        )
-        for o in obs:
-            if o.get("source") == "lake_water_temp" and o.get("temperature") is not None:
-                water_temp = float(o["temperature"])
-                break
+    for o in (obs or []):
+        if o.get("source") == "lake_water_temp" and o.get("temperature") is not None:
+            water_temp = float(o["temperature"])
+            break
 
     air_water_delta: float | None = None
     if air_temp is not None and water_temp is not None:
@@ -294,7 +324,7 @@ def compute_lake_breeze_potential(
     solar_count = 0
     for h in range(3):
         t = valid_time - timedelta(hours=h)
-        fc = access.fetch_forecasts_at(point_id, t, lead_minutes_window=120)
+        fc = _memo_fetch(memo, point_id, t, 120)
         if fc:
             ref = next((f for f in fc if f["model_name"] == "icon_eu"), None) or fc[0]
             rad = _safe_float(ref.get("shortwave_radiation"))

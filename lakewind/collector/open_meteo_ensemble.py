@@ -24,6 +24,7 @@ import requests
 from lakewind.collector.base import BaseCollector, apply_physical_limits
 from lakewind.config import load_settings
 from lakewind.db import access
+from lakewind.utils.timeutil import utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -71,32 +72,75 @@ class OpenMeteoEnsembleCollector(BaseCollector):
         self.points = s.virtual_points
 
     def fetch_raw(self) -> list[dict[str, Any]]:
+        """One request per point carrying ALL ensemble models (Phase 2 budget fix).
+
+        With several `ensemble_models` requested, the Ensemble API prefixes
+        every variable with the model slug: `gfs_seamless_wind_speed_10m_member01`.
+        We demultiplex the response back into per-model pseudo-items with
+        unprefixed keys (`wind_speed_10m_member01`, control = no suffix), so
+        `to_rows()` behaves exactly as with the old per-model requests.
+        """
         out: list[dict[str, Any]] = []
         session = requests.Session()
+        models = list(self.cfg.ensemble_models)
+        if not models:
+            return out
+        match_order = sorted(models, key=len, reverse=True)
         for pt in self.points:
-            for model_name in self.cfg.ensemble_models:
-                params = {
-                    "latitude": pt.lat,
-                    "longitude": pt.lon,
-                    "hourly": "wind_speed_10m,wind_direction_10m,wind_gusts_10m,pressure_msl",
-                    "models": model_name,
-                    "wind_speed_unit": self.cfg.wind_speed_unit,
-                    "timezone": self.cfg.timezone,
-                    "forecast_days": str(self.cfg.forecast_days),
-                }
-                try:
-                    resp = session.get(self.cfg.ensemble_url, params=params, timeout=30)
-                    if resp.status_code != 200:
-                        logger.warning(
-                            "Ensemble API returned %s for %s/%s: %s",
-                            resp.status_code, pt.id, model_name, resp.text[:200],
-                        )
-                        continue
-                    data = resp.json()
-                except Exception as exc:
-                    logger.warning("Ensemble fetch failed for %s/%s: %s", pt.id, model_name, exc)
+            params = {
+                "latitude": pt.lat,
+                "longitude": pt.lon,
+                "hourly": "wind_speed_10m,wind_direction_10m,wind_gusts_10m,pressure_msl",
+                "ensemble_models": ",".join(models),
+                "wind_speed_unit": self.cfg.wind_speed_unit,
+                "timezone": self.cfg.timezone,
+                "forecast_days": str(self.cfg.forecast_days),
+            }
+            try:
+                resp = session.get(self.cfg.ensemble_url, params=params, timeout=60)
+                if resp.status_code != 200:
+                    logger.warning(
+                        "Ensemble API returned %s for %s: %s",
+                        resp.status_code, pt.id, resp.text[:200],
+                    )
                     continue
-                out.append({"point_id": pt.id, "model_name": model_name, "json": data})
+                data = resp.json()
+            except Exception as exc:
+                logger.warning("Ensemble fetch failed for %s: %s", pt.id, exc)
+                continue
+
+            hourly = data.get("hourly", {}) or {}
+            shared_time = hourly.get("time")
+            per_model: dict[str, dict[str, list]] = {}
+            unprefixed: dict[str, list] = {}
+            for key, values in hourly.items():
+                if key == "time":
+                    continue  # shared axis, attached per emitted model below
+                matched = False
+                for m in match_order:
+                    if key.startswith(m + "_"):
+                        per_model.setdefault(m, {})[key[len(m) + 1:]] = values
+                        matched = True
+                        break
+                if not matched:
+                    unprefixed[key] = values
+
+            if not per_model and unprefixed:
+                # Single-model shape → payload belongs to the first requested model.
+                per_model[models[0]] = dict(unprefixed)
+                unprefixed = {}
+
+            for m in models:
+                mh = per_model.get(m)
+                if not mh:
+                    continue
+                for k, v in unprefixed.items():
+                    mh.setdefault(k, v)
+                if "time" not in mh and shared_time is not None:
+                    mh["time"] = shared_time
+                if not mh.get("time"):
+                    continue
+                out.append({"point_id": pt.id, "model_name": m, "json": {"hourly": mh}})
         return out
 
     def to_rows(self, raw: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -113,7 +157,19 @@ class OpenMeteoEnsembleCollector(BaseCollector):
             ctrl_dir_key = "wind_direction_10m"
             ctrl_gust_key = "wind_gusts_10m"
             ctrl_press_key = "pressure_msl"
-            run_time = datetime.utcnow()  # ensemble runs are issued ~4x daily; we use "now" as approximation
+            # V6.6 FIX: run_time was `datetime.utcnow()` — a NEW value on every
+            # collection cycle. Since (model_name, point_id, run_time, valid_time)
+            # is the UNIQUE key, every cycle inserted a full new copy of the
+            # ensemble block instead of updating the previous one → unbounded
+            # forecast_runs growth (~3.5k rows / 30 min). Snap run_time to the
+            # same 6h synoptic window used by the deterministic collector so
+            # re-collections UPERT instead of accumulating.
+            try:
+                first_valid = datetime.fromisoformat(times[0].replace("Z", "+00:00"))
+            except Exception:
+                first_valid = utcnow()
+            run_hour = (first_valid.hour // 6) * 6
+            run_time = first_valid.replace(hour=run_hour, minute=0, second=0, microsecond=0, tzinfo=None)
 
             for i, t_iso in enumerate(times):
                 try:

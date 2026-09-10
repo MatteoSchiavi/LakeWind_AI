@@ -19,6 +19,7 @@ from lakewind.config import load_settings
 from lakewind.db import access
 from lakewind.db import users as user_db
 from lakewind.db.users import is_in_quiet_hours, mark_alert_triggered, mark_subscription_sent
+from lakewind.utils.timeutil import to_aware_utc, to_local, utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +38,7 @@ async def run_scheduler(ctx) -> None:
 
 async def _check_alerts(ctx) -> None:
     """For each active alert, check if any forecast meets the threshold."""
-    now_utc = datetime.utcnow()
+    now_utc = utcnow()
     alerts = user_db.get_active_alerts()
     if not alerts:
         return
@@ -145,7 +146,7 @@ async def _check_alerts(ctx) -> None:
 
 async def _check_subscriptions(ctx) -> None:
     """Send daily summaries to users whose local time matches."""
-    now_utc = datetime.utcnow()
+    now_utc = utcnow()
     due = user_db.get_due_subscriptions(now_utc)
     if not due:
         return
@@ -165,8 +166,10 @@ async def _check_subscriptions(ctx) -> None:
             tz = user.get("timezone", "Europe/Rome")
 
             # Build daily summary
-            from zoneinfo import ZoneInfo
-            local_now = now_utc.astimezone(ZoneInfo(tz))
+            # V6.6 FIX: now_utc is NAIVE — .astimezone() on a naive datetime
+            # interprets it as system-local time (TZ=Europe/Rome in the Docker
+            # deployment), producing wrong local times. Always attach UTC first.
+            local_now = to_local(now_utc, tz)
             today_str = local_now.strftime("%A, %B %d")
 
             op_ids = s.operational_point_ids or []
@@ -179,7 +182,7 @@ async def _check_subscriptions(ctx) -> None:
             for vp_id in op_ids:
                 for h in range(11, 17):
                     target = local_now.replace(hour=h, minute=0, second=0, microsecond=0)
-                    target_utc = target.astimezone(ZoneInfo("UTC")).replace(tzinfo=None)
+                    target_utc = to_aware_utc(target).replace(tzinfo=None)
                     p = _fetch_pred_at(vp_id, target_utc)
                     if p and p.get("wind_speed_kn"):
                         if p["wind_speed_kn"] > best_speed:
@@ -210,7 +213,7 @@ async def _check_subscriptions(ctx) -> None:
             fav = user.get("favorite_point_id") or op_ids[0]
             for h in range(8, 22):
                 target = local_now.replace(hour=h, minute=0, second=0, microsecond=0)
-                target_utc = target.astimezone(ZoneInfo("UTC")).replace(tzinfo=None)
+                target_utc = to_aware_utc(target).replace(tzinfo=None)
                 p = _fetch_pred_at(fav, target_utc)
                 if p and p.get("wind_speed_kn"):
                     v, u = _convert(p["wind_speed_kn"], units)
@@ -237,6 +240,9 @@ async def _check_subscriptions(ctx) -> None:
 
 
 def _fetch_pred_at(point_id: str, target_time: datetime) -> dict | None:
+    # V6.6 FIX: strip tzinfo consistently (DB returns naive UTC)
+    if target_time.tzinfo is not None:
+        target_time = target_time.replace(tzinfo=None)
     preds = access.latest_predictions(point_id=point_id, limit=200)
     best = None
     best_diff = None
@@ -249,6 +255,8 @@ def _fetch_pred_at(point_id: str, target_time: datetime) -> dict | None:
                 continue
         if vt is None:
             continue
+        if vt.tzinfo is not None:
+            vt = vt.replace(tzinfo=None)
         diff = abs((vt - target_time).total_seconds())
         if best_diff is None or diff < best_diff:
             best = p

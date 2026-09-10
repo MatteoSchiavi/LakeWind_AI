@@ -31,6 +31,7 @@ from bs4 import BeautifulSoup
 from lakewind.collector.base import BaseCollector, apply_physical_limits
 from lakewind.config import load_settings
 from lakewind.db import access
+from lakewind.utils.timeutil import utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -214,7 +215,7 @@ class DomasoCollector(BaseCollector):
 
         row: dict[str, Any] = {
             "source": self.source_name,
-            "timestamp": datetime.utcnow(),
+            "timestamp": utcnow(),
             "lat": DOMASO_LAT,
             "lon": DOMASO_LON,
             "wind_speed_kn": wind_speed_kn,

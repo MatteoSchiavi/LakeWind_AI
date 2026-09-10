@@ -17,6 +17,7 @@ import requests
 from lakewind.collector.base import BaseCollector, apply_physical_limits
 from lakewind.config import load_settings
 from lakewind.db import access
+from lakewind.utils.timeutil import utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -34,38 +35,84 @@ class OpenMeteoCollector(BaseCollector):
     def fetch_raw(self) -> list[dict[str, Any]]:
         """Return a list of dicts, one per (point, model), each holding the JSON payload.
 
-        Open-Meteo's `/v1/forecast` endpoint with `models=A,B,C` returns a SINGLE
-        forecast (the first listed model), not a list. To get every model's
-        forecast we issue one request per model.
+        Phase 2 API-budget fix: Open-Meteo accepts a comma-separated `models`
+        list in ONE request (response variables are then prefixed with the
+        model name, e.g. `icon_d2_wind_speed_10m`). We exploit that to fetch
+        ALL models per point in a single call — 11 calls/cycle instead of 55
+        (~4,224 → ~845 calls/day at the 30-min cadence, and the headroom is
+        what makes Phase 6 multi-spot expansion feasible on the free tier).
+
+        The multi-model response is DEMULTIPLEXED back into per-model
+        pseudo-items shaped exactly like the old single-model responses, so
+        `to_rows()` (and everything downstream) is untouched.
         """
         out: list[dict[str, Any]] = []
         session = requests.Session()
+        models = list(self.cfg.models)
+        # Longest-first so "icon_eu" can't shadow-match a longer slug's prefix
+        # (or vice versa) during demultiplexing.
+        match_order = sorted(models, key=len, reverse=True)
         for pt in self.points:
-            for model_name in self.cfg.models:
-                params = {
-                    "latitude": pt.lat,
-                    "longitude": pt.lon,
-                    "hourly": ",".join(self.cfg.hourly_vars),
-                    "models": model_name,
-                    "wind_speed_unit": self.cfg.wind_speed_unit,
-                    "timezone": self.cfg.timezone,
-                    "forecast_days": str(self.cfg.forecast_days),
-                }
-                try:
-                    resp = session.get(self.cfg.base_url, params=params, timeout=30)
-                    if resp.status_code != 200:
-                        # Open-Meteo returns 400 if the model slug is invalid or
-                        # not available for this region; skip and continue.
-                        logger.warning(
-                            "Open-Meteo returned %s for %s/%s: %s",
-                            resp.status_code, pt.id, model_name, resp.text[:200],
-                        )
-                        continue
-                    data = resp.json()
-                except Exception as exc:
-                    logger.warning("Open-Meteo fetch failed for %s/%s: %s", pt.id, model_name, exc)
+            params = {
+                "latitude": pt.lat,
+                "longitude": pt.lon,
+                "hourly": ",".join(self.cfg.hourly_vars),
+                "models": ",".join(models),
+                "wind_speed_unit": self.cfg.wind_speed_unit,
+                "timezone": self.cfg.timezone,
+                "forecast_days": str(self.cfg.forecast_days),
+            }
+            try:
+                resp = session.get(self.cfg.base_url, params=params, timeout=60)
+                if resp.status_code != 200:
+                    logger.warning(
+                        "Open-Meteo returned %s for %s: %s",
+                        resp.status_code, pt.id, resp.text[:200],
+                    )
                     continue
-                out.append({"point_id": pt.id, "model_name": model_name, "json": data})
+                data = resp.json()
+            except Exception as exc:
+                logger.warning("Open-Meteo fetch failed for %s: %s", pt.id, exc)
+                continue
+
+            hourly = data.get("hourly", {}) or {}
+            shared_time = hourly.get("time")
+            per_model: dict[str, dict[str, list]] = {}
+            unprefixed: dict[str, list] = {}
+            for key, values in hourly.items():
+                if key == "time":
+                    continue  # shared axis, attached per emitted model below
+                matched = False
+                for m in match_order:
+                    if key.startswith(m + "_"):
+                        per_model.setdefault(m, {})[key[len(m) + 1:]] = values
+                        matched = True
+                        break
+                if not matched:
+                    # Fallback: API ignored the models list (single-model
+                    # response shape) — remember these keys.
+                    unprefixed[key] = values
+
+            if not per_model and unprefixed:
+                # Single-model shape: the payload belongs to the FIRST
+                # requested model (Open-Meteo returns the primary model
+                # unprefixed when the models list is not honoured).
+                first = models[0]
+                per_model[first] = dict(unprefixed)
+                unprefixed = {}
+
+            for m in models:
+                mh = per_model.get(m)
+                if not mh:
+                    continue
+                for k, v in unprefixed.items():
+                    mh.setdefault(k, v)
+                if "time" not in mh and shared_time is not None:
+                    mh["time"] = shared_time
+                if not mh.get("time"):
+                    # No time axis → unusable block; skip gracefully.
+                    continue
+                out.append({"point_id": pt.id, "model_name": m, "json": {"hourly": mh}})
         return out
 
     def to_rows(self, raw: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -82,7 +129,7 @@ class OpenMeteoCollector(BaseCollector):
             try:
                 first_valid = datetime.fromisoformat(times[0].replace("Z", "+00:00"))
             except Exception:
-                first_valid = datetime.utcnow()
+                first_valid = utcnow()
             # Approximate run_time: Open-Meteo doesn't expose the actual model init time.
             # Use the nearest 6h synoptic time before first_valid (00/06/12/18 UTC).
             run_hour = (first_valid.hour // 6) * 6

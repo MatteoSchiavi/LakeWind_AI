@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Trap for graceful shutdown
-trap 'echo "Shutting down..."; kill $DASHBOARD_PID $BOT_PID 2>/dev/null; sleep 2; kill -9 $DASHBOARD_PID $BOT_PID 2>/dev/null; pkill -f "lakewind" 2>/dev/null; pkill -f "streamlit" 2>/dev/null; wait; exit 0' SIGTERM SIGINT
+trap 'echo "Shutting down..."; kill $DASHBOARD_PID $BOT_PID $PIPELINE_PID $API_PID 2>/dev/null; sleep 2; kill -9 $DASHBOARD_PID $BOT_PID $PIPELINE_PID $API_PID 2>/dev/null; pkill -f "lakewind" 2>/dev/null; pkill -f "streamlit" 2>/dev/null; wait; exit 0' SIGTERM SIGINT
 
 echo "========================================"
 echo "  LakeWind AI — Docker entrypoint (V2)"
@@ -46,15 +46,23 @@ streamlit run lakewind/interfaces/dashboard.py \
     > /tmp/dashboard.log 2>&1 &
 DASHBOARD_PID=$!
 
-# Start V2 Telegram bot (handles alerts + collect + predict internally via
-# APScheduler — everything in ONE process with ONE DuckDB connection).
+# Start V2 Telegram bot. Phase 2: the bot's post_init starts the pipeline
+# loop (collect + predict + artifact precompute — previously MISSING, data
+# freshness relied on manual runs) and the internal API on port 8000.
 BOT_PID=""
 if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ "$TELEGRAM_BOT_TOKEN" != "your_token_here" ]; then
-    echo "  → V2 Telegram bot (alerts + pipeline)"
+    echo "  → V2 Telegram bot (alerts + pipeline + API)"
     lakewind serve-bot > /tmp/bot.log 2>&1 &
     BOT_PID=$!
 else
-    echo "  → Telegram bot: SKIPPED (no token)"
+    # No Telegram token: run pipeline loop + API standalone so the dashboard
+    # still gets fresh data.
+    echo "  → Pipeline loop (standalone, no Telegram)"
+    lakewind pipeline-loop > /tmp/pipeline.log 2>&1 &
+    PIPELINE_PID=$!
+    echo "  → Internal API on port 8000"
+    lakewind serve-api > /tmp/api.log 2>&1 &
+    API_PID=$!
 fi
 
 echo ""
@@ -79,5 +87,17 @@ while true; do
         echo "WARNING: Bot died. Restarting..."
         lakewind serve-bot > /tmp/bot.log 2>&1 &
         BOT_PID=$!
+    fi
+
+    if [ -n "$PIPELINE_PID" ] && ! kill -0 $PIPELINE_PID 2>/dev/null; then
+        echo "WARNING: Pipeline loop died. Restarting..."
+        lakewind pipeline-loop > /tmp/pipeline.log 2>&1 &
+        PIPELINE_PID=$!
+    fi
+
+    if [ -n "$API_PID" ] && ! kill -0 $API_PID 2>/dev/null; then
+        echo "WARNING: API died. Restarting..."
+        lakewind serve-api > /tmp/api.log 2>&1 &
+        API_PID=$!
     fi
 done

@@ -25,6 +25,7 @@ import requests
 from lakewind.collector.base import BaseCollector, apply_physical_limits
 from lakewind.config import load_settings
 from lakewind.db import access
+from lakewind.utils.timeutil import utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +49,7 @@ class Era5ReanalysisCollector(BaseCollector):
     def fetch_raw(self) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
         session = requests.Session()
-        end_date = datetime.utcnow().date()
+        end_date = utcnow().date()
         start_date = (
             end_date - timedelta(days=self.backfill_days)
             if self.backfill_days > 0
@@ -105,7 +106,7 @@ class Era5ReanalysisCollector(BaseCollector):
                 except Exception:
                     continue
                 # Skip future timestamps (shouldn't happen with ERA5 but defensive)
-                if ts > datetime.utcnow() + timedelta(hours=1):
+                if ts > utcnow() + timedelta(hours=1):
                     continue
                 row: dict[str, Any] = {
                     "source": self.source_name,

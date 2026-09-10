@@ -34,6 +34,7 @@ import requests
 
 from lakewind.config import load_settings
 from lakewind.db import access
+from lakewind.utils.timeutil import utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -57,8 +58,21 @@ ERA5_HOURLY_VARS = [
 ]
 
 
+_CLIMATOLOGY_TABLE_READY = False
+
+
 def ensure_climatology_table() -> None:
-    """Create the v4_climatology table if it doesn't exist."""
+    """Create the v4_climatology table if it doesn't exist (once per process).
+
+    Phase 3 perf: the feature builder calls this ~6x per sample (once per
+    climatology lookup). CREATE TABLE IF NOT EXISTS is a catalog statement —
+    a write transaction inside a read-only hot path. Idempotent, so guarded
+    by a process-level flag; concurrent first-calls are still safe (the
+    statement itself is IF NOT EXISTS).
+    """
+    global _CLIMATOLOGY_TABLE_READY
+    if _CLIMATOLOGY_TABLE_READY:
+        return
     with access.cursor() as conn:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS v4_climatology (
@@ -86,6 +100,7 @@ def ensure_climatology_table() -> None:
             CREATE INDEX IF NOT EXISTS idx_v4_clim_lookup
             ON v4_climatology(point_id, timestamp)
         """)
+    _CLIMATOLOGY_TABLE_READY = True
 
 
 def deep_backfill(
@@ -251,7 +266,7 @@ def incremental_backfill(points: list[str] | None = None) -> dict[str, int]:
     pts = [p for p in pts if p.id in (s.operational_point_ids or [])]
 
     summary: dict[str, int] = {}
-    now = datetime.utcnow()
+    now = utcnow()
 
     for pt in pts:
         # Find the latest timestamp we have for this point

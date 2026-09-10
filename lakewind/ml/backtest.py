@@ -30,6 +30,7 @@ from lakewind.db import access
 from lakewind.features.build import build_features_for
 from lakewind.ml.infer import predict_at
 from lakewind.ml.train import train as train_model
+from lakewind.utils.timeutil import utcnow
 from lakewind.utils.wind import WindVector, circular_direction_error_deg
 
 logger = logging.getLogger(__name__)
@@ -118,7 +119,7 @@ def _materialize_test_samples(
 
             # V5: Track whether the observation is from ERA5 or a real station
             # (Claude audit: separate vs-ERA5 and vs-real-station metrics)
-            obs_source = fr.meta.get("obs_source", "unknown")
+            obs_source = fr.meta.get("obs_source") or "unknown"
             is_era5 = obs_source == "era5_reanalysis"
 
             rows.append(
@@ -160,10 +161,21 @@ def _persistence_prediction(point_id: str, at_time: datetime) -> tuple[float, fl
         SELECT * FROM {s.db.observations_table}
         WHERE timestamp <= ?
           AND timestamp >= ?
+          AND lat BETWEEN ? AND ?
+          AND lon BETWEEN ? AND ?
         ORDER BY timestamp DESC
     """
+    # V6.6 FIX: same 25 km distance cap as fetch_latest_observation_near —
+    # a far-away station is not a valid persistence baseline for this point.
+    import math
+
+    dlat = 25.0 / 111.0 * 1.2
+    dlon = 25.0 / (111.0 * max(0.1, math.cos(math.radians(vp.lat)))) * 1.2
     with access.cursor() as conn:
-        cur = conn.execute(sql, [cutoff_end, cutoff_start])
+        cur = conn.execute(
+            sql,
+            [cutoff_end, cutoff_start, vp.lat - dlat, vp.lat + dlat, vp.lon - dlon, vp.lon + dlon],
+        )
         cols = [d[0] for d in cur.description]
         obs = [dict(zip(cols, row)) for row in cur.fetchall()]
     if not obs:
@@ -209,7 +221,7 @@ def run_backtest(
     production would retrain per window).
     """
     s = load_settings()
-    end = end or datetime.utcnow()
+    end = end or utcnow()
     start = start or (end - timedelta(days=s.model.walk_forward.train_window_days + s.model.walk_forward.test_window_days * 4))
     pts = points or [p.id for p in s.virtual_points]
 
@@ -449,15 +461,19 @@ def maybe_promote(report: BacktestReport, *, force: bool = False) -> bool:
         ),
     )
     if promoted:
-        # Demote existing production
+        # Demote existing production, then upsert this candidate as production.
+        # V6.6 FIX: used register_model() (plain INSERT) on a version that
+        # train() had already registered → PRIMARY KEY violation → the old
+        # production was demoted but the new one never promoted (system left
+        # with no production model). register_or_update_model is idempotent.
         with access.cursor() as conn:
             conn.execute(
                 f"UPDATE {s.db.model_registry_table} SET promoted_to_production = FALSE "
                 "WHERE promoted_to_production = TRUE"
             )
-        access.register_model(
+        access.register_or_update_model(
             model_version=report.candidate_model_version,
-            trained_at=datetime.utcnow(),
+            trained_at=utcnow(),
             feature_set_version=s.model.feature_set_version,
             training_start=None,
             training_end=None,

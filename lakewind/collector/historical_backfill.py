@@ -34,8 +34,71 @@ import requests
 from lakewind.collector.base import apply_physical_limits
 from lakewind.config import load_settings
 from lakewind.db import access
+from lakewind.utils.timeutil import utcnow
 
 logger = logging.getLogger(__name__)
+
+# Phase 3 hardening: shared quota (free tier) returns HTTP 429 "Minutely API
+# request limit exceeded" under load. The original code skipped the ENTIRE
+# 90-day (point, model) chunk on any non-200 response — a transient 429 meant
+# permanently missing training data. Now: retry with backoff, honoring
+# Retry-After when present.
+_HTTP_RETRIES = 6
+_HTTP_BACKOFF_S = 15.0
+
+# Phase 3 FIX: backfill must request ONLY the variables `_parse_to_rows`
+# actually stores. Requesting the full operational hourly_vars list (uv_index,
+# 850hPa/500hPa pressure-level vars, ...) silently CLAMPS the returned window:
+# Open-Meteo's historical archive has limited availability for those vars and
+# responds with a shifted contiguous window instead of an error — a Jan 2026
+# request returned Sep-Dec 2025. The 13 core vars below are exactly the
+# schema columns, available for the whole archive depth. (Bonus: ~3x smaller
+# responses = less quota per call.)
+BACKFILL_HOURLY_VARS = [
+    "wind_speed_10m",
+    "wind_direction_10m",
+    "wind_gusts_10m",
+    "pressure_msl",
+    "temperature_2m",
+    "dew_point_2m",
+    "cloud_cover",
+    "shortwave_radiation",
+    "cape",
+    "boundary_layer_height",
+    "precipitation",
+    "weather_code",
+    "visibility",
+]
+
+
+def _get_with_retry(session: requests.Session, url: str, params: dict, timeout: int = 60) -> requests.Response | None:
+    """GET with 429/5xx retry + exponential backoff. None after giving up."""
+    for attempt in range(_HTTP_RETRIES + 1):
+        try:
+            resp = session.get(url, params=params, timeout=timeout)
+        except requests.RequestException as exc:
+            logger.warning("HTTP error (%s/%s) attempt %d: %s", params.get("models"), params.get("start_date"), attempt + 1, exc)
+            if attempt >= _HTTP_RETRIES:
+                return None
+            time.sleep(_HTTP_BACKOFF_S * (attempt + 1))
+            continue
+        if resp.status_code == 200:
+            return resp
+        if resp.status_code == 429 or resp.status_code >= 500:
+            retry_after = resp.headers.get("Retry-After")
+            wait = float(retry_after) if (retry_after or "").isdigit() else _HTTP_BACKOFF_S * (attempt + 1)
+            logger.warning(
+                "HTTP %s for %s (attempt %d/%d) — backing off %.0fs",
+                resp.status_code, params.get("models"), attempt + 1, _HTTP_RETRIES, wait,
+            )
+            if attempt >= _HTTP_RETRIES:
+                return None
+            time.sleep(wait)
+            continue
+        # 4xx other than 429: permanent — do not retry
+        logger.warning("Historical API %s for %s: %s", resp.status_code, params.get("models"), resp.text[:200])
+        return None
+    return None
 
 
 def _chunk_date_range(start: datetime, end: datetime, chunk_days: int) -> list[tuple[datetime, datetime]]:
@@ -85,22 +148,18 @@ def backfill_forecasts(
                     "longitude": pt.lon,
                     "start_date": c_start.date().isoformat(),
                     "end_date": c_end.date().isoformat(),
-                    "hourly": ",".join(s.open_meteo.hourly_vars),
+                    "hourly": ",".join(BACKFILL_HOURLY_VARS),
                     "models": model_name,
                     "wind_speed_unit": s.open_meteo.wind_speed_unit,
                     "timezone": s.open_meteo.timezone,
                 }
+                resp = _get_with_retry(session, s.open_meteo.historical_forecast_url, params)
+                if resp is None:
+                    continue
                 try:
-                    resp = session.get(s.open_meteo.historical_forecast_url, params=params, timeout=60)
-                    if resp.status_code != 200:
-                        logger.warning(
-                            "Historical forecast API %s for %s/%s: %s",
-                            resp.status_code, pt.id, model_name, resp.text[:200],
-                        )
-                        continue
                     data = resp.json()
                 except Exception as exc:
-                    logger.warning("Historical forecast fetch failed for %s/%s: %s", pt.id, model_name, exc)
+                    logger.warning("Historical forecast parse failed for %s/%s: %s", pt.id, model_name, exc)
                     continue
 
                 rows = _parse_to_rows(data, pt.id, model_name)
@@ -210,14 +269,13 @@ def backfill_era5(*, start: datetime, end: datetime, points: list[str] | None = 
                 "wind_speed_unit": s.open_meteo.wind_speed_unit,
                 "timezone": s.open_meteo.timezone,
             }
+            resp = _get_with_retry(requests.Session(), s.open_meteo.historical_url, params)
+            if resp is None:
+                continue
             try:
-                resp = requests.get(s.open_meteo.historical_url, params=params, timeout=60)
-                if resp.status_code != 200:
-                    logger.warning("ERA5 backfill %s for %s: %s", resp.status_code, pt_id, resp.text[:200])
-                    continue
                 data = resp.json()
             except Exception as exc:
-                logger.warning("ERA5 backfill failed for %s: %s", pt_id, exc)
+                logger.warning("ERA5 backfill parse failed for %s: %s", pt_id, exc)
                 continue
             hourly = data.get("hourly", {})
             times = hourly.get("time", [])
@@ -264,7 +322,7 @@ if __name__ == "__main__":  # pragma: no cover
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
-    end = datetime.strptime(args.end, "%Y-%m-%d") if args.end else datetime.utcnow()
+    end = datetime.strptime(args.end, "%Y-%m-%d") if args.end else utcnow()
     if args.start:
         start = datetime.strptime(args.start, "%Y-%m-%d")
     elif args.days:

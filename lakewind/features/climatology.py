@@ -41,6 +41,9 @@ def _circular_mean(angles_deg: list[float]) -> float | None:
     return (math.degrees(mean_rad) + 360.0) % 360.0
 
 
+_CLIMATOLOGY_TABLE_CHECKED = False
+
+
 def compute_climatology_features(
     valid_time: datetime,
     point_id: str,
@@ -50,13 +53,20 @@ def compute_climatology_features(
 
     Requires the v4_climatology table to be populated (run `lakewind deep-backfill`).
     Falls back to None for all features if no climatology data exists.
+
+    Phase 3 perf: the table-creation check runs once per process (was: a
+    CREATE TABLE IF NOT EXISTS catalog statement per SAMPLE — a write-lock
+    acquisition inside a read-only hot path).
     """
+    global _CLIMATOLOGY_TABLE_CHECKED
     try:
         from lakewind.collector.deep_backfill import ensure_climatology_table, get_climatology_normal
     except ImportError:
         return _empty_climatology()
 
-    ensure_climatology_table()
+    if not _CLIMATOLOGY_TABLE_CHECKED:
+        ensure_climatology_table()
+        _CLIMATOLOGY_TABLE_CHECKED = True
 
     features: dict[str, float | None] = {}
 

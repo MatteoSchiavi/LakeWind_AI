@@ -27,6 +27,7 @@ import requests
 from lakewind.collector.base import BaseCollector, apply_physical_limits
 from lakewind.config import load_secrets, load_settings
 from lakewind.db import access
+from lakewind.utils.timeutil import utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -148,7 +149,7 @@ class ArpaLombardiaCollector(BaseCollector):
         """
         if not sensor_ids:
             return []
-        since = (datetime.utcnow() - timedelta(hours=self.hours_back)).strftime("%Y-%m-%dT%H:%M:%S")
+        since = (utcnow() - timedelta(hours=self.hours_back)).strftime("%Y-%m-%dT%H:%M:%S")
         all_data: list[dict[str, Any]] = []
         chunk_size = 10
 
@@ -213,7 +214,13 @@ class ArpaLombardiaCollector(BaseCollector):
                 continue
 
             try:
-                value = float(srow.get("valore") or 0)
+                # V6.6 FIX: `or 0` turned a missing reading into a 0.0 wind
+                # reading (a physically valid value!), injecting fake calm
+                # observations. Skip rows with no value instead.
+                raw_val = srow.get("valore")
+                if raw_val is None or str(raw_val).strip() == "":
+                    continue
+                value = float(raw_val)
             except (TypeError, ValueError):
                 continue
 

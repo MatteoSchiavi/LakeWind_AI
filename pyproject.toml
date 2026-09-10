@@ -37,6 +37,8 @@ dependencies = [
     "python-telegram-bot>=21.4",
     "apscheduler>=3.10.4",
     "psutil>=5.9",
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
 ]
 
 [project.optional-dependencies]

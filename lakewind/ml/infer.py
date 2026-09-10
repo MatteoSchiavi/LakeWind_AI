@@ -140,6 +140,17 @@ def predict_at(
     # 2) Predict bias
     bp = predict_bias(fr.feature_vector, model_version)
 
+    # V6.6 FIX: quantile crossing was only *logged*, never corrected (the log
+    # message claimed "sorting" but nothing was sorted). Quantile regressors
+    # can produce crossed quantiles; enforce q10 <= q50 <= q90 so that
+    # expected_error (derived from the 90-10 width) stays non-negative.
+    bp.bias_u_q10, bp.bias_u_q50, bp.bias_u_q90 = sorted(
+        (bp.bias_u_q10, bp.bias_u_q50, bp.bias_u_q90)
+    )
+    bp.bias_v_q10, bp.bias_v_q50, bp.bias_v_q90 = sorted(
+        (bp.bias_v_q10, bp.bias_v_q50, bp.bias_v_q90)
+    )
+
     # 3) Reconstruct wind field using fr.meta (no redundant DB query)
     ref_speed = fr.meta.get("ref_speed_kn") or 0.0
     ref_dir = fr.meta.get("ref_dir_deg") or 0.0
@@ -189,7 +200,8 @@ def predict_at(
             logger.warning("Physical sanity: gust %.1f > 3x speed %.1f — clipping", gust, speed)
             gust = speed * 2.5
 
-    # Quantile ordering check (q10 <= q50 <= q90)
+    # Quantile ordering re-check after prediction (informational only —
+    # crossing is now enforced right after predict_bias above).
     if bp.bias_u_q10 > bp.bias_u_q50 or bp.bias_u_q50 > bp.bias_u_q90:
         logger.warning("Quantile crossing detected for U — sorting")
     if bp.bias_v_q10 > bp.bias_v_q50 or bp.bias_v_q50 > bp.bias_v_q90:

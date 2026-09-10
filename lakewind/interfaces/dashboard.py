@@ -16,6 +16,7 @@ import streamlit as st
 
 from lakewind.config import load_settings
 from lakewind.db import access
+from lakewind.utils.timeutil import utcnow
 
 
 def _fmt_cardinal(deg: float) -> str:
@@ -25,7 +26,14 @@ def _fmt_cardinal(deg: float) -> str:
 
 
 def _fetch_pred_at(point_id: str, target_time: datetime) -> dict | None:
-    preds = access.latest_predictions(point_id=point_id, limit=200)
+    """Fetch the stored prediction nearest to target_time.
+
+    Phase 2: every Streamlit rerun used to issue one DuckDB query per call
+    (the "All points" view issues one per point). Results are now cached for
+    60 s — the prediction cycle only regenerates every 30 min, so callers
+    see identical freshness with a fraction of the DB churn.
+    """
+    preds = _cached_recent_preds(point_id)
     best = None
     best_diff = None
     for p in preds:
@@ -46,25 +54,43 @@ def _fetch_pred_at(point_id: str, target_time: datetime) -> dict | None:
     return best
 
 
+@st.cache_data(ttl=60)
+def _cached_recent_preds(point_id: str) -> list[dict]:
+    # cache_data pickles the result; DuckDB rows (datetimes included) are
+    # picklable as-is.
+    return access.latest_predictions(point_id=point_id, limit=200)
+
+
 def _plain_language_explanation(p: dict | None, prev: dict | None) -> str:
     if p is None:
         return "No forecast available for this point/time."
+    # V6.6 FIX: guard against NULL speed/direction rows (older predictions can
+    # have None columns; the f-strings below would raise TypeError).
+    if p.get("wind_speed_kn") is None or p.get("wind_dir_deg") is None:
+        return "Forecast available but incomplete (missing wind speed/direction)."
     if prev is None:
         return (
             f"Wind {p['wind_speed_kn']:.1f}kn from {_fmt_cardinal(p['wind_dir_deg'])}. "
             "No prior hour to compare against."
         )
-    delta = p["wind_speed_kn"] - prev["wind_speed_kn"]
-    if abs(delta) < 0.5:
+    if prev.get("wind_speed_kn") is None:
+        delta = 0.0
         verb = "holding steady at"
-    elif delta > 0:
-        verb = "increasing to"
     else:
-        verb = "decreasing to"
+        delta = p["wind_speed_kn"] - prev["wind_speed_kn"]
+        if abs(delta) < 0.5:
+            verb = "holding steady at"
+        elif delta > 0:
+            verb = "increasing to"
+        else:
+            verb = "decreasing to"
+    gust = p.get("wind_gust_kn") or 0.0
+    conf = p.get("confidence_pct") or 0.0
+    err = p.get("expected_error_kn") or 0.0
     return (
         f"Wind {verb} {p['wind_speed_kn']:.1f}kn from {_fmt_cardinal(p['wind_dir_deg'])} "
-        f"({p['wind_dir_deg']:.0f}°). Gusts around {p['wind_gust_kn']:.1f}kn. "
-        f"Confidence {p['confidence_pct']:.0f}% (expected error ±{p['expected_error_kn']:.1f}kn)."
+        f"({p['wind_dir_deg']:.0f}°). Gusts around {gust:.1f}kn. "
+        f"Confidence {conf:.0f}% (expected error ±{err:.1f}kn)."
     )
 
 
@@ -74,7 +100,7 @@ def main() -> None:  # pragma: no cover - streamlit entry
     st.caption("Hyperlocal wind forecast (MOS bias-corrected) for the sailing corridor")
 
     s = load_settings()
-    now = datetime.utcnow()
+    now = utcnow()
 
     # Timeline slider
     horizon_label = st.radio(

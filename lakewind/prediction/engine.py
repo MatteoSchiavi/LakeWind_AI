@@ -25,6 +25,7 @@ from lakewind.config import load_settings
 from lakewind.db import access
 from lakewind.ml.infer import predict_at
 from lakewind.prediction.forecast import Forecast
+from lakewind.utils.timeutil import utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +41,7 @@ def run_cycle(
     """
     s = load_settings()
     start = time.perf_counter()
-    summary: dict[str, Any] = {"started_at": datetime.utcnow().isoformat()}
+    summary: dict[str, Any] = {"started_at": utcnow().isoformat()}
 
     # Stage 1: Pull latest inputs
     if collect:
@@ -57,9 +58,13 @@ def run_cycle(
 
     # Stage 2: Validate (already done inside collectors via apply_physical_limits)
     # We additionally check that at least one forecast exists for "now".
-    now = datetime.utcnow()
-    horizons = horizons_hours or [0, 1, 3, 6, 24]
+    now = utcnow()
+    # Phase 2: horizons come from settings (hourly 0-24 by default) so that
+    # /today, /sailing and the map offsets are always served from STORED
+    # predictions instead of per-request on-demand inference.
+    horizons = horizons_hours or list(s.pipeline.horizons)
     forecasts: list[Forecast] = []
+    pred_rows: list[dict[str, Any]] = []
 
     # Stage 3+4+5: For each operational virtual point and each horizon, predict
     op_ids = s.operational_point_ids or [vp.id for vp in s.virtual_points]
@@ -90,9 +95,7 @@ def run_cycle(
                 diagnostics=ir.diagnostics,
             )
             forecasts.append(fc)
-
-            # Stage 6: Store prediction
-            access.insert_prediction(
+            pred_rows.append(
                 {
                     "point_id": fc.point_id,
                     "generated_at": fc.generated_at,
@@ -105,6 +108,16 @@ def run_cycle(
                     "expected_error_kn": fc.expected_error_kn,
                 }
             )
+
+    # Stage 6: Store predictions — ONE bulk insert per cycle (Phase 2).
+    # The old path opened one DuckDB connection per (point, horizon) — up to
+    # 175 connections per cycle under hourly horizons.
+    if pred_rows:
+        try:
+            access.insert_predictions_bulk(pred_rows)
+        except Exception as exc:  # noqa: BLE001 — never lose the forecast summary to a DB hiccup
+            logger.exception("Bulk prediction insert failed: %s", exc)
+            summary["prediction_store_error"] = str(exc)
 
     summary["n_forecasts"] = len(forecasts)
     summary["forecasts"] = [fc.to_dict() for fc in forecasts]

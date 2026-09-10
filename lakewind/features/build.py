@@ -35,6 +35,80 @@ from lakewind.utils.wind import WindVector
 
 logger = logging.getLogger(__name__)
 
+# Phase 3 prefetch plan: every forecast lookup this builder performs is for
+# one of these (point, time-offset) combinations. One bulk range query covers
+# the whole span; per-key windows are re-applied in Python with semantics
+# identical to fetch_forecasts_at (latest run per model within the window).
+_AUX_POINT_IDS = ("zurich", "milano_linate", "sondrio", "lugano", "dongo_shore", "bellano_offshore")
+_LAG_OFFSETS_MIN = (0, 15, 60, 180, 240, 360)
+_HISTORY_HOURS = 6  # thermal inertia + lake-breeze solar lookback
+_PREFETCH_WINDOWS = (30, 120, 180)
+
+
+def _prefetch_forecasts(
+    point_id: str,
+    valid_time: datetime,
+    memo: dict[tuple[str, datetime, int], list[dict[str, Any]]],
+) -> None:
+    """Bulk-load the full lookup span into the per-call memo.
+
+    The memo keys mirror fetch_forecasts_at call sites exactly: base features
+    (t, w=30), lags (t−Δ, w=120), thermal/lake-breeze history (t−h, w=120) and
+    aux gradients (aux point, t, w=180). Any key inside the prefetched span is
+    answered from memory; anything outside falls through to the DB.
+    """
+    times = {valid_time - timedelta(minutes=m) for m in _LAG_OFFSETS_MIN}
+    times |= {valid_time - timedelta(hours=h) for h in range(_HISTORY_HOURS)}
+    t_min, t_max = min(times), max(times)
+    # widen the bulk span by the largest window so every (t, window) key is
+    # fully covered and answerable from memory
+    pad = timedelta(minutes=max(_PREFETCH_WINDOWS))
+    try:
+        rows = access.fetch_forecasts_bulk(
+            [point_id, *_AUX_POINT_IDS], t_min - pad, t_max + pad
+        )
+    except Exception as exc:  # bulk failed → per-key DB fallback everywhere
+        logger.debug("Prefetch skipped: %s", exc)
+        return
+
+    by_key: dict[tuple[str, datetime], list[dict[str, Any]]] = {}
+    for r in rows:
+        by_key.setdefault((r["point_id"], r["valid_time"]), []).append(r)
+
+    all_pids = [point_id, *_AUX_POINT_IDS]
+    span_times = sorted({t for (_, t) in by_key} | times)
+
+    def _select(cands: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Latest run per model — same as the SQL ROW_NUMBER in fetch_forecasts_at."""
+        best: dict[str, dict[str, Any]] = {}
+        for r in cands:
+            m = r["model_name"]
+            rt = r.get("run_time")
+            prev = best.get(m)
+            if prev is None or (rt is not None and (prev.get("run_time") is None or rt > prev["run_time"])):
+                best[m] = r
+        return list(best.values())
+
+    for pid in all_pids:
+        for t in times:
+            cands: list[dict[str, Any]] = []
+            for tt in span_times:
+                if abs((tt - t).total_seconds()) <= 180 * 60:
+                    cands.extend(by_key.get((pid, tt), []))
+            for w in _PREFETCH_WINDOWS:
+                key = (pid, t, w)
+                if key in memo:
+                    continue
+                # Only answer from the prefetch when the FULL window lies
+                # inside the PADDED bulk span — otherwise rows just outside
+                # the span could be missed and the memo would diverge from
+                # the SQL.
+                if (t - timedelta(minutes=w)) < (t_min - pad) or (t + timedelta(minutes=w)) > (t_max + pad):
+                    continue
+                within = [r for r in cands
+                          if abs((r["valid_time"] - t).total_seconds()) <= w * 60]
+                memo[key] = _select(within)
+
 
 @dataclass
 class FeatureResult:
@@ -63,11 +137,42 @@ def build_features_for(
     Spec §6 says the bias is `observed - forecast`, so we need to pick a
     reference forecast. Default `icon_eu` per Spec §4.3 (ICON is the most
     important model for Lake Como — Spec v1 §4.2).
+
+    Phase 3: a call-scoped memo deduplicates repeated fetch_forecasts_at
+    lookups within this sample (thermal inertia, lake-breeze, lag and aux
+    fetches overlap heavily) — ~40% fewer queries per sample with identical
+    results, because all fetches inside one sample read the same DB snapshot.
     """
     s = load_settings()
+    memo: dict[tuple[str, datetime, int], list[dict[str, Any]]] = {}
+
+    # Phase 3: one bulk range query covers every forecast lookup this sample
+    # performs (base, lags, thermal history, aux gradients) — the per-key
+    # memo answers from memory; misses fall through to the DB unchanged.
+    _prefetch_forecasts(point_id, valid_time, memo)
+
+    # Obs are fetched ONCE per sample and shared by the ground-station
+    # features (§6), the target construction and the lake-breeze potential
+    # (§3b) — was 2-3 separate queries per sample.
+    vp_early = next((p for p in s.virtual_points if p.id == point_id), None)
+    nearest_obs: list[dict[str, Any]] = []
+    if vp_early is not None:
+        try:
+            nearest_obs = access.fetch_latest_observation_near(
+                vp_early.lat, vp_early.lon, valid_time,
+                max_age_minutes=observation_lookback_minutes,
+            )
+        except Exception as exc:
+            logger.debug("Obs lookup skipped: %s", exc)
+
+    def _fetch(pid: str, t: datetime, window: int) -> list[dict[str, Any]]:
+        key = (pid, t, window)
+        if key not in memo:
+            memo[key] = access.fetch_forecasts_at(pid, t, lead_minutes_window=window)
+        return memo[key]
 
     # 1) FORECAST FEATURES — per model, no averaging
-    forecasts = access.fetch_forecasts_at(point_id, valid_time, lead_minutes_window=30)
+    forecasts = _fetch(point_id, valid_time, 30)
     if not forecasts:
         return None
     by_model: dict[str, dict[str, Any]] = {f["model_name"]: f for f in forecasts}
@@ -175,18 +280,25 @@ def build_features_for(
     fv["foehn_pressure_gradient"] = None
     fv["foehn_likely"] = False
     fv["foehn_strong"] = False
+    # Phase 3: ONE consolidated fetch per auxiliary point (was 8 fetches:
+    # the Foehn block fetched zurich+milano, the macro block refetched them
+    # plus 4 more). Pressures AND temperatures come from the same results —
+    # temperatures feed the V7 thermal-contrast features.
+    aux: dict[str, dict[str, Any]] = {}
     try:
-        zurich_fc = access.fetch_forecasts_at("zurich", valid_time, lead_minutes_window=180)
-        milano_fc = access.fetch_forecasts_at("milano_linate", valid_time, lead_minutes_window=180)
-        z_p = next((f.get("pressure_msl") for f in zurich_fc if f.get("pressure_msl") is not None), None)
-        m_p = next((f.get("pressure_msl") for f in milano_fc if f.get("pressure_msl") is not None), None)
+        for aux_id in ("zurich", "milano_linate", "sondrio", "lugano", "dongo_shore", "bellano_offshore"):
+            rows = _fetch(aux_id, valid_time, 180)
+            if rows:
+                aux[aux_id] = rows[0]
+        z_p = aux.get("zurich", {}).get("pressure_msl")
+        m_p = aux.get("milano_linate", {}).get("pressure_msl")
         if z_p is not None and m_p is not None:
             grad = z_p - m_p
             fv["foehn_pressure_gradient"] = grad
             fv["foehn_likely"] = grad >= s.pressure_gradient.foehn_likely_hpa
             fv["foehn_strong"] = grad >= s.pressure_gradient.foehn_strong_hpa
     except Exception as exc:
-        logger.debug("Pressure gradient DB lookup skipped: %s", exc)
+        logger.debug("Aux pressure/temperature block skipped: %s", exc)
 
     # 3b) V3 ADVANCED FEATURES — thermal inertia, macro-area pressure differentials,
     # stability indices, lake breeze potential, Foehn strength index.
@@ -199,17 +311,20 @@ def build_features_for(
             compute_lake_breeze_potential,
             compute_foehn_strength_index,
         )
-        # Thermal inertia (last 6 hours)
-        ti = compute_thermal_inertia(valid_time, point_id, hours=6)
+        # Thermal inertia (last 6 hours) — memoized (shares lag fetches)
+        ti = compute_thermal_inertia(valid_time, point_id, hours=6, memo=memo)
         fv.update(ti)
-        # Macro-area pressure differentials (6 gradients)
-        mad = compute_macro_area_pressure_differentials(valid_time)
+        # Macro-area pressure differentials (6 gradients) — memoized
+        # (reuses the consolidated aux fetches: zero extra queries)
+        mad = compute_macro_area_pressure_differentials(valid_time, memo=memo)
         fv.update(mad)
         # Stability indices
         si = compute_stability_indices(fv)
         fv.update(si)
-        # Lake breeze potential (the #1 missing feature for Breva)
-        lbp = compute_lake_breeze_potential(valid_time, fv, point_id)
+        # Lake breeze potential (the #1 missing feature for Breva) — memoized,
+        # reuses the sample's obs (no separate 3-day query)
+        lbp = compute_lake_breeze_potential(valid_time, fv, point_id, memo=memo,
+                                            observations=nearest_obs)
         fv.update(lbp)
         # Foehn strength index
         fsi = compute_foehn_strength_index(fv)
@@ -227,6 +342,27 @@ def build_features_for(
         fv.update(clim)
     except Exception as exc:
         logger.debug("V4 climatology features skipped: %s", exc)
+
+    # 3e) V7 PHYSICS FEATURES (Phase 3) — terrain channeling decomposition,
+    # pressure tendency, thermal contrasts, gust factors, cross-model
+    # aggregates, effective insolation, stability interactions.
+    try:
+        from lakewind.features.physics import compute_all_v7_physics
+        alias = {"milano_linate": "milano", "dongo_shore": "dongo"}
+        aux_temps: dict[str, float | None] = {
+            alias.get(k, k): (v.get("temperature_2m") if isinstance(v, dict) else None)
+            for k, v in aux.items()
+        }
+        v7 = compute_all_v7_physics(
+            fv,
+            point_id,
+            aux_temps,
+            axis_deg=getattr(s.model, "valley_axis_deg", 10.0),
+            overrides=getattr(s.model, "valley_axis_overrides", None) or {},
+        )
+        fv.update(v7)
+    except Exception as exc:
+        logger.debug("V7 physics features skipped: %s", exc)
 
     # 3d) V6.2 UPPER-AIR FEATURES (windmojo-inspired)
     # Wind at 850hPa/500hPa, temperature at 850hPa, geopotential at 500hPa
@@ -269,10 +405,11 @@ def build_features_for(
     fv["breva_window"] = "10:00" <= hhmm <= "18:00"
     fv["tivano_window"] = "04:00" <= hhmm <= "09:30"
 
-    # 4) PERSISTENCE / TREND FEATURES (Spec §6 priority 4)
-    for lag_min in (15, 60, 240):
+    # 4) PERSISTENCE / TREND FEATURES (Spec §6 priority 4 + Phase 3: 180/360
+    # min lags give the 3 h/6 h pressure-tendency features their inputs).
+    for lag_min in (15, 60, 180, 240, 360):
         lag_time = valid_time - timedelta(minutes=lag_min)
-        lag_fc = access.fetch_forecasts_at(point_id, lag_time, lead_minutes_window=120)
+        lag_fc = _fetch(point_id, lag_time, 120)
         ref_lag = next((f for f in lag_fc if f["model_name"] == reference_forecast_model), None)
         if ref_lag is None and lag_fc:
             ref_lag = lag_fc[0]
@@ -300,10 +437,8 @@ def build_features_for(
     fv["season"] = _season_index(local_time.month)
     fv["is_weekend"] = local_time.weekday() >= 5
 
-    # 6) GROUND STATION FEATURES (Spec §6 priority 6)
-    nearest_obs = access.fetch_latest_observation_near(
-        vp.lat, vp.lon, valid_time, max_age_minutes=observation_lookback_minutes
-    )
+    # 6) GROUND STATION FEATURES (Spec §6 priority 6) — obs fetched once at
+    # the top of this function (shared with §3b and the target).
     if nearest_obs:
         best = min(
             nearest_obs,
@@ -360,6 +495,12 @@ def build_features_for(
             "n_models": len(by_model),
             "ref_speed_kn": ref.get("wind_speed_kn"),
             "ref_dir_deg": ref.get("wind_dir_deg"),
+            # V6.6 FIX: backtest.py reads meta["obs_source"] to split metrics
+            # into vs-ERA5 and vs-real-station — this key was never set, so
+            # every sample was silently counted as "real". Now the source of
+            # the ground-truth observation is propagated to the backtest.
+            "obs_source": (best.get("source") if nearest_obs else None),
+            "obs_confidence": (best.get("confidence") if nearest_obs else None),
         },
     )
 

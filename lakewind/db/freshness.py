@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from lakewind.db import access
+from lakewind.utils.timeutil import utcnow
 
 
 # Freshness SLA per source (minutes)
@@ -30,7 +31,7 @@ def check_freshness() -> list[dict[str, Any]]:
 
     Each dict has: source, last_data_at, age_minutes, sla_minutes, is_fresh
     """
-    now = datetime.utcnow()
+    now = utcnow()
     results: list[dict[str, Any]] = []
 
     health = access.latest_source_health()

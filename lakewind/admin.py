@@ -20,6 +20,7 @@ from typing import Any
 
 from lakewind.config import load_settings
 from lakewind.db import access
+from lakewind.utils.timeutil import utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +35,7 @@ def is_admin(user_id: int) -> bool:
 
 def get_admin_status() -> str:
     """Generate a comprehensive admin status report."""
-    lines = ["🔧 *ADMIN STATUS REPORT*", f"🕐 {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}", ""]
+    lines = ["🔧 *ADMIN STATUS REPORT*", f"🕐 {utcnow().strftime('%Y-%m-%d %H:%M UTC')}", ""]
 
     # --- User Statistics ---
     lines.append("👥 *Users*")
@@ -49,13 +50,13 @@ def get_admin_status() -> str:
             # Active users (seen in last 24h)
             cur = conn.execute(
                 "SELECT COUNT(*) FROM v2_users WHERE last_seen_at > ?",
-                [datetime.utcnow() - timedelta(hours=24)],
+                [utcnow() - timedelta(hours=24)],
             )
             active_24h = cur.fetchone()[0]
             # Active users (seen in last 7 days)
             cur = conn.execute(
                 "SELECT COUNT(*) FROM v2_users WHERE last_seen_at > ?",
-                [datetime.utcnow() - timedelta(days=7)],
+                [utcnow() - timedelta(days=7)],
             )
             active_7d = cur.fetchone()[0]
             # Alerts count

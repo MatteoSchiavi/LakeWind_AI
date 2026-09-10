@@ -17,6 +17,7 @@ from datetime import datetime
 from typing import Any
 
 from lakewind.db import access
+from lakewind.utils.timeutil import utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +29,7 @@ class CollectResult:
     ok: bool = True
     latency_ms: float = 0.0
     error_msg: str = ""
-    fetched_at: datetime = field(default_factory=datetime.utcnow)
+    fetched_at: datetime = field(default_factory=utcnow)
     attempts: int = 1
 
     def __len__(self) -> int:  # pragma: no cover - trivial

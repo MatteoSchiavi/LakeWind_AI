@@ -5,11 +5,14 @@ services:
     restart: always
     ports:
       - "8501:8501"
+      - "8000:8000"   # Phase 2: internal API (web dashboard proxy target)
     volumes:
       - ./settings.yaml:/app/settings.yaml:ro
       - ./data:/app/data
-      - ./data/models:/app/models
       - ./lakewind:/app/lakewind:ro
+      # V6.6: removed `./data/models:/app/models` — the code reads model
+      # artifacts from /app/data/models (MODELS_DIR in ml/train.py); the
+      # /app/models mount was never referenced.
     env_file:
       - .env
     environment:

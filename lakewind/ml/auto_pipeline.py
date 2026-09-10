@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from lakewind.config import load_settings
+from lakewind.utils.timeutil import utcnow
 from lakewind.db import access
 
 logger = logging.getLogger(__name__)
@@ -55,7 +56,7 @@ def log_step(step: str, status: str, details: dict[str, Any], duration: float) -
             INSERT INTO v4_pipeline_log (id, run_at, step, status, details, duration_seconds)
             VALUES (?, ?, ?, ?, ?, ?)
             """,
-            [uuid.uuid1().int >> 65, datetime.utcnow(), step, status,
+            [uuid.uuid1().int >> 65, utcnow(), step, status,
              json.dumps(details, default=str), duration],
         )
 
@@ -64,7 +65,7 @@ def run_pipeline(*, check_only: bool = False, force: bool = False) -> dict[str, 
     """Run the full automated pipeline. Returns a summary dict."""
     import time
     summary: dict[str, Any] = {
-        "started_at": datetime.utcnow().isoformat(),
+        "started_at": utcnow().isoformat(),
         "check_only": check_only,
         "force": force,
         "steps": [],
@@ -121,7 +122,7 @@ def run_pipeline(*, check_only: bool = False, force: bool = False) -> dict[str, 
         logger.exception("Retrain check failed")
 
     if not should_retrain:
-        summary["completed_at"] = datetime.utcnow().isoformat()
+        summary["completed_at"] = utcnow().isoformat()
         summary["status"] = "skipped_retrain"
         return summary
 
@@ -130,7 +131,7 @@ def run_pipeline(*, check_only: bool = False, force: bool = False) -> dict[str, 
     logger.info("Step 3: Training new model...")
     try:
         from lakewind.ml.train import train
-        end = datetime.utcnow()
+        end = utcnow()
         start = end - timedelta(days=s.model.walk_forward.train_window_days)
         if check_only:
             train_result = None
@@ -163,12 +164,12 @@ def run_pipeline(*, check_only: bool = False, force: bool = False) -> dict[str, 
         })
         log_step("train", "error", {"error": str(exc)}, duration)
         logger.exception("Training failed")
-        summary["completed_at"] = datetime.utcnow().isoformat()
+        summary["completed_at"] = utcnow().isoformat()
         summary["status"] = "train_failed"
         return summary
 
     if not train_result:
-        summary["completed_at"] = datetime.utcnow().isoformat()
+        summary["completed_at"] = utcnow().isoformat()
         summary["status"] = "no_train"
         return summary
 
@@ -179,7 +180,7 @@ def run_pipeline(*, check_only: bool = False, force: bool = False) -> dict[str, 
     logger.info("Step 4: CPCV backtest on new model...")
     try:
         from lakewind.ml.cpcv_backtest import run_cpcv_backtest
-        end = datetime.utcnow()
+        end = utcnow()
         start = end - timedelta(days=30)  # 30-day test window for speed
         if check_only:
             report = None
@@ -221,31 +222,24 @@ def run_pipeline(*, check_only: bool = False, force: bool = False) -> dict[str, 
         log_step("cpcv_backtest", "error", {"error": str(exc)}, duration)
         logger.exception("CPCV backtest failed")
 
-    # --- Step 5: Auto-promote if criteria met ---
+    # --- Step 5: Promotion RECOMMENDATION (V4 policy: never auto-promote) ---
     t0 = time.perf_counter()
     logger.info("Step 5: Auto-promote check...")
     try:
         promoted = False
         if report and report.is_significant and report.improvement_vs_nwp_pct > 15:
-            if not check_only:
-                # Demote current production
-                with access.cursor() as conn:
-                    conn.execute(
-                        f"UPDATE {s.db.model_registry_table} SET promoted_to_production = FALSE "
-                        "WHERE promoted_to_production = TRUE"
-                    )
-                access.register_model(
-                    model_version=new_model_version,
-                    trained_at=datetime.utcnow(),
-                    feature_set_version=s.model.feature_set_version,
-                    training_start=None, training_end=None,
-                    backtest_mae_kn=report.candidate_mae_mean,
-                    backtest_dir_error_deg=report.candidate_dir_mean,
-                    promoted=True,
-                    notes=f"V4 RECOMMENDED for promotion (human review required): : CPCV improvement={report.improvement_vs_nwp_pct:.1f}%",
-                )
-                promoted = False  # V4: never auto-promote
-            reason = "CPCV improvement > 15% and statistically significant"
+            # V6.6 FIX: the old code DEMOTED the current production model and
+            # re-registered the candidate with promoted=True, then set
+            # promoted=False and claimed "never auto-promote". The demote+insert
+            # was a real promotion (and crashed on the PK conflict with the row
+            # train() had already written, leaving the system with NO production
+            # model). Per Spec §7.3 the pipeline now only RECORDS a
+            # recommendation — promotion stays a human decision via
+            # `lakewind promote <version>` or `lakewind backtest --promote`.
+            reason = (
+                "CPCV improvement > 15% and statistically significant — "
+                "RECOMMENDED for promotion (human review required)"
+            )
         else:
             reason = f"CPCV improvement {report.improvement_vs_nwp_pct if report else 0:.1f}% below 15% threshold or not significant"
         duration = time.perf_counter() - t0
@@ -253,6 +247,7 @@ def run_pipeline(*, check_only: bool = False, force: bool = False) -> dict[str, 
             "step": "auto_promote",
             "status": "ok",
             "promoted": promoted,
+            "recommended": bool(report and report.is_significant and report.improvement_vs_nwp_pct > 15),
             "reason": reason,
             "duration_seconds": round(duration, 2),
         })
@@ -267,13 +262,16 @@ def run_pipeline(*, check_only: bool = False, force: bool = False) -> dict[str, 
         log_step("auto_promote", "error", {"error": str(exc)}, duration)
         logger.exception("Auto-promote failed")
 
-    # --- Step 6: Train conformal calibrators ---
-    if promoted:
+    # --- Step 6: Train conformal calibrators for the new model ---
+    # V6.6 FIX: this step was gated on `promoted`, which is always False under
+    # the V4 no-auto-promote policy — conformal calibration never ran. It now
+    # runs whenever a new model was trained.
+    if train_result:
         t0 = time.perf_counter()
         logger.info("Step 6: Training conformal calibrators...")
         try:
             from lakewind.ml.conformal import train_conformal_calibrator
-            end = datetime.utcnow()
+            end = utcnow()
             start = end - timedelta(days=30)
             calibrators_trained = 0
             if not check_only:
@@ -303,7 +301,7 @@ def run_pipeline(*, check_only: bool = False, force: bool = False) -> dict[str, 
             log_step("conformal_calibration", "error", {"error": str(exc)}, duration)
             logger.exception("Conformal calibration failed")
 
-    summary["completed_at"] = datetime.utcnow().isoformat()
+    summary["completed_at"] = utcnow().isoformat()
     summary["status"] = "promoted" if promoted else "trained_not_promoted"
     return summary
 

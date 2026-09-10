@@ -2,14 +2,15 @@
 
 Adds:
   lakewind init-db-v2          - extend V1 schema with V2 tables
-  lakewind predict-v2          - run V2 prediction cycle (Kalman+LGB blend)
-  lakewind train-regime        - train the regime classifier
-  lakewind update-kalman       - manually update Kalman state from latest obs
   lakewind user-add <tg_id>    - whitelist a Telegram user
   lakewind user-list           - list whitelisted users
   lakewind user-block <tg_id>  - block a user
   lakewind serve-bot-v2        - run the V2 Telegram bot (22 commands + alerts)
   lakewind alerts-check        - manually run alert checks (debug)
+
+V6.6 (Phase 1): removed `predict-v2` (called run_cycle_v2 which was deleted in
+V6.5 → NameError at runtime) and `train-regime` (the V2 regime classifier was
+deleted in V4; the stub only returned False).
 """
 from __future__ import annotations
 
@@ -22,6 +23,7 @@ from rich.console import Console
 from rich.table import Table
 
 from lakewind.config import load_settings
+from lakewind.utils.timeutil import utcnow
 
 console = Console()
 
@@ -34,57 +36,6 @@ def register_v2_commands(app: typer.Typer) -> None:
         """Extend V1 schema with V2 tables (users, alerts, subscriptions, etc.)."""
         from lakewind.db.schema_v2 import extend_schema_v2
         extend_schema_v2()
-
-    @app.command("predict-v2")
-    def predict_v2(
-        horizons: Optional[str] = typer.Option(None, help="Comma-separated hours"),
-        no_collect: bool = typer.Option(False, help="Skip collector step"),
-        no_kalman: bool = typer.Option(False, help="Skip Kalman state update"),
-    ) -> None:
-        """Run V2 prediction cycle (Kalman+LGB blend)."""
-        logging.basicConfig(level=logging.INFO,
-                            format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
-        # V2 engine removed in V6.5
-        hrs = [int(x) for x in horizons.split(",")] if horizons else None
-        summary = run_cycle_v2(collect=not no_collect, horizons_hours=hrs,
-                               update_kalman=not no_kalman)
-        console.print(f"[bold]Status:[/bold] {summary['status']}")
-        console.print(f"[bold]Runtime:[/bold] {summary.get('runtime_seconds', 'n/a')}s")
-        console.print(f"[bold]Engine:[/bold] {summary.get('engine', 'v2')}")
-        console.print(f"[bold]Forecasts:[/bold] {summary.get('n_forecasts', 0)}")
-        if summary.get("forecasts"):
-            table = Table(title="V2 Forecasts")
-            table.add_column("Point")
-            table.add_column("Valid")
-            table.add_column("Speed (kn)")
-            table.add_column("Dir (°)")
-            table.add_column("Conf (%)")
-            for fc in summary["forecasts"]:
-                table.add_row(
-                    fc["point_id"],
-                    str(fc["valid_time"]),
-                    f"{fc['wind_speed_kn']:.1f}",
-                    f"{fc['wind_dir_deg']:.0f}",
-                    f"{fc['confidence_pct']:.0f}",
-                )
-            console.print(table)
-
-    @app.command("train-regime")
-    def train_regime(
-        days: int = typer.Option(60, help="Training window in days"),
-    ) -> None:
-        """Train the V2 regime classifier."""
-        logging.basicConfig(level=logging.INFO,
-                            format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
-        from lakewind.ml.regime import train_regime_classifier
-        end = datetime.utcnow()
-        start = end - timedelta(days=days)
-        ok = train_regime_classifier(start, end)
-        if ok:
-            console.print("[green]Regime classifier trained.[/green]")
-        else:
-            console.print("[red]Failed (not enough data).[/red]")
-            raise typer.Exit(1)
 
     @app.command("user-add")
     def user_add(
@@ -193,7 +144,7 @@ def register_v2_commands(app: typer.Typer) -> None:
                             format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
         from datetime import datetime as dt, timedelta
         from lakewind.collector.deep_backfill import deep_backfill
-        end_dt = dt.strptime(end, "%Y-%m-%d") if end else dt.utcnow()
+        end_dt = dt.strptime(end, "%Y-%m-%d") if end else utcnow()
         if start:
             start_dt = dt.strptime(start, "%Y-%m-%d")
         else:
@@ -216,7 +167,7 @@ def register_v2_commands(app: typer.Typer) -> None:
                             format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
         from datetime import datetime as dt, timedelta
         from lakewind.ml.cpcv_backtest import run_cpcv_backtest
-        end = dt.utcnow()
+        end = utcnow()
         start = end - timedelta(days=days)
         report = run_cpcv_backtest(
             start=start, end=end, model_version=candidate,
@@ -239,7 +190,7 @@ def register_v2_commands(app: typer.Typer) -> None:
                             format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
         from datetime import datetime as dt, timedelta
         from lakewind.ml.conformal import train_conformal_calibrator
-        end = dt.utcnow()
+        end = utcnow()
         start = end - timedelta(days=days)
         n = 0
         for target in ("u", "v"):
@@ -279,7 +230,7 @@ def register_v2_commands(app: typer.Typer) -> None:
         logging.basicConfig(level=logging.WARNING)
         from lakewind.features.build import build_features_for
         from datetime import datetime as dt
-        fr = build_features_for(point, dt.utcnow())
+        fr = build_features_for(point, utcnow())
         if fr is None:
             console.print("[red]No data for this point.[/red]")
             raise typer.Exit(1)
@@ -337,7 +288,7 @@ def register_v2_commands(app: typer.Typer) -> None:
                             format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
         from datetime import datetime as dt, timedelta
         from lakewind.features.spatial_grid import run_feature_discovery
-        end = dt.utcnow()
+        end = utcnow()
         start = end - timedelta(days=days)
         console.print(f"[bold]Phase 1: Feature discovery ({start.date()} to {end.date()})[/bold]")
         top_features = run_feature_discovery(start, end, top_n=top_n)
@@ -378,7 +329,7 @@ def register_v2_commands(app: typer.Typer) -> None:
         from lakewind.config import load_settings
 
         s = load_settings()
-        now = dt.utcnow()
+        now = utcnow()
         start = now - timedelta(days=days)
 
         # Get predictions

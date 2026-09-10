@@ -19,6 +19,7 @@ from datetime import datetime
 from typing import Any
 
 import numpy as np
+from lakewind.utils.timeutil import utcnow
 
 # ---------------------------------------------------------------------------
 # OpenStreetMap tile fetcher (zero external deps — just urllib + PIL)
@@ -396,7 +397,7 @@ def generate_heatmap(
     # --- Title ---
     if title is None:
         if target_time is None:
-            target_time = datetime.utcnow()
+            target_time = utcnow()
         title = (
             f"LakeWind — Dongo/Dervio Wind Heatmap\n"
             f"{target_time.strftime('%Y-%m-%d %H:%M UTC')}"

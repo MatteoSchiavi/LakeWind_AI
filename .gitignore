@@ -39,3 +39,9 @@ data/cache/
 # OS
 .DS_Store
 Thumbs.db
+
+# Node / Next.js (web-ui)
+node_modules/
+web-ui/.next/
+web-ui/out/
+next-env.d.ts

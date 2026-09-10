@@ -25,27 +25,11 @@ import numpy as np
 
 # V6: Load shoreline from geojson via shoreline module
 from lakewind.utils.shoreline import get_shoreline as _get_shoreline
+from lakewind.utils.timeutil import utcnow
+
 _LAKE_POLYGON = list(_get_shoreline())
-# Legacy fallback (used if geojson not found):
-_LAKE_POLYGON_FALLBACK = [
-    (9.302, 46.160), (9.298, 46.158), (9.292, 46.156), (9.288, 46.154),
-    (9.284, 46.151), (9.281, 46.148), (9.280, 46.143), (9.281, 46.139),
-    (9.281, 46.135), (9.281, 46.130), (9.281, 46.127), (9.281, 46.123),
-    (9.282, 46.120), (9.282, 46.117), (9.283, 46.114), (9.283, 46.111),
-    (9.284, 46.108), (9.284, 46.105), (9.285, 46.102), (9.285, 46.098),
-    (9.285, 46.094), (9.286, 46.091), (9.286, 46.088), (9.286, 46.085),
-    (9.286, 46.083), (9.287, 46.080), (9.287, 46.077), (9.288, 46.074),
-    (9.288, 46.071), (9.289, 46.068), (9.289, 46.065), (9.290, 46.062),
-    (9.292, 46.058), (9.294, 46.055), (9.298, 46.052), (9.302, 46.050),
-    (9.306, 46.050), (9.309, 46.051), (9.311, 46.053), (9.314, 46.056),
-    (9.316, 46.060), (9.317, 46.064), (9.318, 46.068), (9.319, 46.072),
-    (9.320, 46.076), (9.320, 46.080), (9.321, 46.084), (9.322, 46.088),
-    (9.322, 46.092), (9.323, 46.096), (9.323, 46.100), (9.323, 46.104),
-    (9.324, 46.108), (9.324, 46.112), (9.324, 46.116), (9.324, 46.120),
-    (9.324, 46.124), (9.324, 46.128), (9.324, 46.132), (9.323, 46.136),
-    (9.323, 46.140), (9.323, 46.144), (9.322, 46.148), (9.321, 46.152),
-    (9.319, 46.155), (9.315, 46.158), (9.310, 46.160),
-]
+# (V6.6: removed _LAKE_POLYGON_FALLBACK — dead code; the shoreline module
+# ships its own identical fallback when the geojson is missing.)
 
 _TOWNS_V3 = [
     (9.278, 46.125, "Dongo", "right"),      # on west shore
@@ -457,7 +441,7 @@ def generate_heatmap_v3(
         PNG image bytes, or None if no valid predictions.
     """
     if target_time is None:
-        target_time = datetime.utcnow()
+        target_time = utcnow()
 
     try:
         import matplotlib.font_manager as fm

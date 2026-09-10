@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 
 from lakewind.config import load_settings
 from lakewind.db import access
+from lakewind.utils.timeutil import to_local, utcnow
 
 
 # --- Users ---
@@ -31,7 +32,7 @@ def register_or_update_user(
             "SELECT * FROM v2_users WHERE telegram_user_id = ?",
             [telegram_user_id],
         ).fetchall()
-        now = datetime.utcnow()
+        now = utcnow()
         if not existing:
             conn.execute(
                 """
@@ -142,7 +143,7 @@ def create_alert(
             [
                 aid, telegram_user_id, point_id, threshold_kn,
                 min_duration_minutes, lead_window_hours, label,
-                datetime.utcnow(),
+                utcnow(),
             ],
         )
     return aid
@@ -186,7 +187,7 @@ def mark_alert_triggered(alert_id: int) -> None:
     with access.cursor(read_only=False) as conn:
         conn.execute(
             "UPDATE v2_alerts SET last_triggered_at = ? WHERE id = ?",
-            [datetime.utcnow(), alert_id],
+            [utcnow(), alert_id],
         )
 
 
@@ -208,7 +209,7 @@ def create_subscription(
             VALUES (?, ?, ?, ?, NULL, TRUE, ?, ?)
             """,
             [sid, telegram_user_id, kind, local_time,
-             json.dumps(payload or {}), datetime.utcnow()],
+             json.dumps(payload or {}), utcnow()],
         )
     return sid
 
@@ -251,18 +252,25 @@ def get_due_subscriptions(now_utc: datetime) -> list[dict[str, Any]]:
         tz_name = s.get("timezone", "Europe/Rome")
         try:
             tz = ZoneInfo(tz_name)
-            local_now = now_utc.astimezone(tz)
+            # V6.6 FIX: now_utc is naive UTC — attach UTC explicitly before
+            # converting (naive .astimezone() assumed system-local time).
+            local_now = to_local(now_utc, tz_name)
             target_hhmm = s["local_time"]
             target_h, target_m = target_hhmm.split(":")
             target_h, target_m = int(target_h), int(target_m)
-            # Within 30 min of target time, AND not already sent today
-            diff_min = abs((local_now.hour - target_h) * 60 + (local_now.minute - target_m))
+            # Within 30 min of target time (circular diff — handles midnight
+            # wrap, e.g. target 23:50 vs now 00:10 → 20 min, not 1420).
+            now_min = local_now.hour * 60 + local_now.minute
+            target_min = target_h * 60 + target_m
+            diff_min = abs(now_min - target_min)
+            diff_min = min(diff_min, 1440 - diff_min)
             if diff_min > 30:
                 continue
             # Already sent today?
             if s["last_sent_at"] is not None:
-                last_local = s["last_sent_at"].astimezone(tz) if s["last_sent_at"].tzinfo else s["last_sent_at"]
-                if hasattr(last_local, "date") and last_local.date() == local_now.date():
+                last = s["last_sent_at"]
+                last_local = to_local(last, tz_name) if hasattr(last, "hour") else None
+                if last_local is not None and last_local.date() == local_now.date():
                     continue
             due.append(s)
         except Exception:
@@ -274,7 +282,7 @@ def mark_subscription_sent(sub_id: int) -> None:
     with access.cursor(read_only=False) as conn:
         conn.execute(
             "UPDATE v2_subscriptions SET last_sent_at = ? WHERE id = ?",
-            [datetime.utcnow(), sub_id],
+            [utcnow(), sub_id],
         )
 
 
@@ -285,8 +293,9 @@ def is_in_quiet_hours(user: dict[str, Any], now_utc: datetime) -> bool:
     """Check if user is in their quiet-hours window."""
     tz_name = user.get("timezone", "Europe/Rome")
     try:
-        tz = ZoneInfo(tz_name)
-        local = now_utc.astimezone(tz)
+        # V6.6 FIX: attach UTC explicitly (naive .astimezone() assumed the
+        # naive value was in the system-local timezone).
+        local = to_local(now_utc, tz_name)
     except Exception:
         return False
     start = user.get("quiet_hours_start", "22:00")
@@ -324,7 +333,7 @@ def submit_feedback(
              predicted_speed_kn, observed_speed_kn, notes)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            [fid, telegram_user_id, datetime.utcnow(), point_id, valid_time,
+            [fid, telegram_user_id, utcnow(), point_id, valid_time,
              predicted_speed_kn, observed_speed_kn, notes],
         )
     return fid
@@ -344,7 +353,7 @@ def list_feedback(limit: int = 100) -> list[dict[str, Any]]:
 
 
 def cache_image(cache_key: str, image_bytes: bytes, ttl_minutes: int = 30) -> None:
-    now = datetime.utcnow()
+    now = utcnow()
     expires = now + timedelta(minutes=ttl_minutes)
     with access.cursor(read_only=False) as conn:
         conn.execute(
@@ -359,7 +368,7 @@ def cache_image(cache_key: str, image_bytes: bytes, ttl_minutes: int = 30) -> No
 
 def get_cached_image(cache_key: str) -> bytes | None:
     """Return cached image bytes if still valid, else None."""
-    now = datetime.utcnow()
+    now = utcnow()
     with access.cursor(read_only=True) as conn:
         cur = conn.execute(
             "SELECT image_bytes, expires_at FROM v2_image_cache WHERE cache_key = ?",

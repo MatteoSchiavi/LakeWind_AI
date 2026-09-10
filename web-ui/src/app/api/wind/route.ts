@@ -1,22 +1,20 @@
 /**
- * LakeWind API — reads wind forecasts from the DuckDB database.
+ * LakeWind API — wind forecast proxy (Phase 2 architecture).
  *
- * This route queries the LakeWind DuckDB file directly (read-only) and returns
- * JSON for the Next.js dashboard to consume.
+ * HISTORY: this route opened a fresh read-write `duckdb.Database` per request
+ * in the Node process, racing the Python writer for DuckDB's single-writer
+ * file lock (intermittent "Could not set lock on file" errors under load and
+ * duplicated page-cache). Phase 2 introduced an internal FastAPI service
+ * inside the Python process; this route now proxies to it and benefits from
+ * the same in-memory forecast cache as the Telegram bot.
  *
- * The DuckDB file lives at /app/data/lakewind.duckdb inside the LakeWind
- * Docker container. For development, we point to a local path.
+ * Config: LAKEWIND_API_URL (default http://127.0.0.1:8000).
  */
 import { NextRequest, NextResponse } from 'next/server';
-import duckdb from 'duckdb';
 
-// Path to the DuckDB file — configurable via env var
-const DB_PATH = process.env.LAKEWIND_DB_PATH || '/app/data/lakewind.duckdb';
+export const dynamic = 'force-dynamic';
 
-function getDb(): duckdb.Database {
-  // Open connection (Node duckdb doesn't support readonly option reliably)
-  return new duckdb.Database(DB_PATH);
-}
+const API_URL = process.env.LAKEWIND_API_URL || 'http://127.0.0.1:8000';
 
 interface Prediction {
   point_id: string;
@@ -30,73 +28,53 @@ interface Prediction {
   expected_error_kn: number | null;
 }
 
-interface PointInfo {
-  id: string;
-  lat: number;
-  lon: number;
-  is_operational: boolean;
-}
-
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
-  const horizon = searchParams.get('horizon') || '0'; // hours ahead
+  const horizon = searchParams.get('horizon') || '0';
   const pointId = searchParams.get('point');
 
+  const targetTime = new Date(Date.now() + parseInt(horizon, 10) * 3600 * 1000);
+
   try {
-    const db = getDb();
-    const horizonHours = parseInt(horizon, 10) || 0;
+    const upstream = new URL(`${API_URL}/api/wind`);
+    if (pointId) upstream.searchParams.set('point', pointId);
+    upstream.searchParams.set('horizon', String(parseInt(horizon, 10) || 0));
 
-    // Target time = now + horizon hours
-    const now = new Date();
-    const targetTime = new Date(now.getTime() + horizonHours * 3600 * 1000);
-
-    // Query: latest prediction for each operational point near target time
-    let sql: string;
-    let params: unknown[];
-
-    if (pointId) {
-      sql = `
-        SELECT point_id, generated_at::TEXT as generated_at, valid_time::TEXT as valid_time,
-               model_version, wind_speed_kn, wind_dir_deg, wind_gust_kn,
-               confidence_pct, expected_error_kn
-        FROM predictions
-        WHERE point_id = ?
-          AND ABS(EXTRACT(EPOCH FROM (valid_time - ?::TIMESTAMP))) < 3600
-        ORDER BY generated_at DESC
-        LIMIT 1
-      `;
-      params = [pointId, targetTime.toISOString()];
-    } else {
-      // Get the latest prediction for each operational point
-      sql = `
-        WITH ranked AS (
-          SELECT point_id, generated_at::TEXT as generated_at, valid_time::TEXT as valid_time,
-                 model_version, wind_speed_kn, wind_dir_deg, wind_gust_kn,
-                 confidence_pct, expected_error_kn,
-            ROW_NUMBER() OVER (PARTITION BY point_id ORDER BY generated_at DESC) as rn
-          FROM predictions
-          WHERE ABS(EXTRACT(EPOCH FROM (valid_time - ?::TIMESTAMP))) < 3600
-        )
-        SELECT point_id, generated_at, valid_time, model_version,
-               wind_speed_kn, wind_dir_deg, wind_gust_kn, confidence_pct, expected_error_kn
-        FROM ranked WHERE rn = 1
-      `;
-      params = [targetTime.toISOString()];
+    const res = await fetch(upstream.toString(), { cache: 'no-store' });
+    if (!res.ok) {
+      const detail = await res.text();
+      console.error('LakeWind upstream error:', res.status, detail.slice(0, 200));
+      return NextResponse.json(
+        {
+          status: 'error',
+          error: `LakeWind API returned ${res.status}`,
+          target_time: targetTime.toISOString(),
+          predictions: [],
+        },
+        { status: 502 }
+      );
     }
 
-    const predictions: Prediction[] = await new Promise((resolve, reject) => {
-      db.all(sql, ...params, (err: Error | null, rows: unknown[]) => {
-        if (err) reject(err);
-        else resolve(rows as Prediction[]);
-      });
+    const payload = (await res.json()) as Record<string, unknown>;
+    const predictions: Prediction[] = Object.entries(payload).map(([pid, row]) => {
+      const r = row as Record<string, unknown>;
+      return {
+        point_id: pid,
+        generated_at: String(r.generated_at ?? ''),
+        valid_time: String(r.valid_time ?? ''),
+        model_version: String(r.model_version ?? ''),
+        wind_speed_kn: (r.wind_speed_kn as number | null) ?? null,
+        wind_dir_deg: (r.wind_dir_deg as number | null) ?? null,
+        wind_gust_kn: (r.wind_gust_kn as number | null) ?? null,
+        confidence_pct: (r.confidence_pct as number | null) ?? null,
+        expected_error_kn: (r.expected_error_kn as number | null) ?? null,
+      };
     });
-
-    db.close();
 
     return NextResponse.json({
       status: 'ok',
       target_time: targetTime.toISOString(),
-      horizon_hours: horizonHours,
+      horizon_hours: parseInt(horizon, 10) || 0,
       predictions,
     });
   } catch (error) {
@@ -107,7 +85,7 @@ export async function GET(request: NextRequest) {
         error: error instanceof Error ? error.message : 'Unknown error',
         predictions: [],
       },
-      { status: 500 }
+      { status: 502 }
     );
   }
 }

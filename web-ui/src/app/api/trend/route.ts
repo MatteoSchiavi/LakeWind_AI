@@ -1,7 +1,26 @@
+/**
+ * LakeWind API — trend series proxy (Phase 2 architecture).
+ *
+ * Previously opened a read-write DuckDB handle per request (lock contention
+ * with the Python writer). Now proxies to the internal FastAPI service,
+ * which serves from the in-memory forecast store.
+ */
 import { NextRequest, NextResponse } from 'next/server';
-import duckdb from "duckdb";
 
-const DB_PATH = process.env.LAKEWIND_DB_PATH || '/app/data/lakewind.duckdb';
+export const dynamic = 'force-dynamic';
+
+const API_URL = process.env.LAKEWIND_API_URL || 'http://127.0.0.1:8000';
+
+interface TrendRow {
+  point_id: string;
+  valid_time: string;
+  wind_speed_kn: number | null;
+  wind_dir_deg: number | null;
+  wind_gust_kn: number | null;
+  confidence_pct: number | null;
+  expected_error_kn: number | null;
+  time: number;
+}
 
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
@@ -9,49 +28,41 @@ export async function GET(request: NextRequest) {
   const hours = parseInt(searchParams.get('hours') || '24', 10);
 
   try {
-    const db = new duckdb.Database(DB_PATH);
+    const upstream = new URL(`${API_URL}/api/trend`);
+    upstream.searchParams.set('point', pointId);
+    upstream.searchParams.set('hours', String(Math.min(Math.max(hours, 1), 48)));
 
-    const rows: Array<{
-      point_id: string;
-      valid_time: string;
-      wind_speed_kn: number | null;
-      wind_dir_deg: number | null;
-      wind_gust_kn: number | null;
-      confidence_pct: number | null;
-      expected_error_kn: number | null;
-    }> = await new Promise((resolve, reject) => {
-      db.all(
-        `SELECT point_id, valid_time::TEXT as valid_time, wind_speed_kn, wind_dir_deg,
-                wind_gust_kn, confidence_pct, expected_error_kn
-         FROM predictions
-         WHERE point_id = ?
-           AND valid_time >= NOW() - INTERVAL '${hours + 1} hours'
-           AND valid_time <= NOW() + INTERVAL '${hours} hours'
-         ORDER BY valid_time ASC`,
-        pointId,
-        (err: Error | null, rows: unknown[]) => {
-          if (err) reject(err);
-          else resolve(rows as typeof rows);
-        }
+    const res = await fetch(upstream.toString(), { cache: 'no-store' });
+    if (!res.ok) {
+      const detail = await res.text();
+      console.error('LakeWind upstream error:', res.status, detail.slice(0, 200));
+      return NextResponse.json(
+        { status: 'error', error: `LakeWind API returned ${res.status}`, data: [] },
+        { status: 502 }
       );
-    });
+    }
 
-    db.close();
+    // Upstream shape: { "<point_id>": [prediction rows sorted by valid_time] }
+    const payload = (await res.json()) as Record<string, Array<Record<string, unknown>>>;
+    const rows = payload[pointId] ?? [];
 
-    return NextResponse.json({
-      status: 'ok',
+    const data: TrendRow[] = rows.map((r) => ({
       point_id: pointId,
-      hours,
-      data: rows.map((r) => ({
-        ...r,
-        time: new Date(r.valid_time).getTime(),
-      })),
-    });
+      valid_time: String(r.valid_time ?? ''),
+      wind_speed_kn: (r.wind_speed_kn as number | null) ?? null,
+      wind_dir_deg: (r.wind_dir_deg as number | null) ?? null,
+      wind_gust_kn: (r.wind_gust_kn as number | null) ?? null,
+      confidence_pct: (r.confidence_pct as number | null) ?? null,
+      expected_error_kn: (r.expected_error_kn as number | null) ?? null,
+      time: new Date(String(r.valid_time ?? '')).getTime(),
+    }));
+
+    return NextResponse.json({ status: 'ok', point_id: pointId, hours, data });
   } catch (error) {
     console.error('Trend API error:', error);
     return NextResponse.json(
       { status: 'error', error: error instanceof Error ? error.message : 'Unknown error', data: [] },
-      { status: 500 }
+      { status: 502 }
     );
   }
 }
