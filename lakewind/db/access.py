@@ -585,17 +585,25 @@ def insert_prediction(row: dict[str, Any]) -> int:
     return rid
 
 
-def latest_predictions(point_id: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+def latest_predictions(
+    point_id: str | None = None,
+    limit: int = 100,
+    start_time: datetime | None = None,
+) -> list[dict[str, Any]]:
     s = load_settings()
     sql = f"""
         SELECT * FROM {s.db.predictions_table}
-        {('WHERE point_id = ?' if point_id else '')}
+        WHERE 1=1
+        {('AND point_id = ?' if point_id else '')}
+        {('AND valid_time >= ?' if start_time is not None else '')}
         ORDER BY generated_at DESC, valid_time ASC
         LIMIT ?
     """
     params: list[Any] = []
     if point_id:
         params.append(point_id)
+    if start_time is not None:
+        params.append(start_time)
     params.append(limit)
     with cursor(read_only=True) as conn:
         cur = conn.execute(sql, params)

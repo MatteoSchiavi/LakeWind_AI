@@ -666,6 +666,38 @@ def dump_forecasts(
     print(json.dumps(preds, default=str, indent=2))
 
 
+@app.command("coverage-report")
+def coverage_report_cmd(
+    weeks: int = typer.Option(8, help="Weeks of predictions to evaluate"),
+) -> None:
+    """Realized vs nominal interval coverage per ISO week (Deep Audit R4).
+
+    The conformal layer enforces the 80% band contract at serving time; this
+    report measures whether served predictions actually realize it, so
+    calibration drift becomes visible instead of silent.
+    """
+    _setup_logging()
+    from lakewind.ml.coverage import coverage_alert, coverage_report
+
+    rows = coverage_report(weeks=weeks)
+    if not rows:
+        console.print("[yellow]No matched predictions yet — coverage measurable "
+                      "once predictions and observations overlap.[/yellow]")
+        return
+    table = Table(title="Interval coverage (nominal 80%)")
+    table.add_column("Week start")
+    table.add_column("Matched")
+    table.add_column("Coverage")
+    table.add_column("Mean |err| kn")
+    for r in rows:
+        table.add_row(str(r["week_start"]), str(r["n_matched"]),
+                      f"{r['coverage'] * 100:.1f}%", f"{r['mean_error_kn']:.2f}")
+    console.print(table)
+    alert = coverage_alert()
+    if alert:
+        console.print(f"[bold red]ALERT: {alert}[/bold red]")
+
+
 @app.command("maintenance")
 def maintenance(
     compact_raw_json: bool = typer.Option(

@@ -56,6 +56,71 @@ class InferenceResult:
     diagnostics: dict[str, Any]
 
 
+# --- Deep Audit R4: conformal calibration in the serving path ---
+
+# The split-conformal calibrators were trained by the auto-pipeline since V4
+# but NEVER referenced by engine.py/infer.py/forecast_store.py — the audit
+# measured the consequence: interval coverage stuck at ~74-76% against the
+# 80% contract. predict_at now rescales the 90-10 band around its median so
+# its width equals the conformal quantile of the calibration errors.
+
+_CALIB_CACHE: dict[str, dict[str, Any]] = {}
+
+
+def _get_conformal_calibrators(model_version: str) -> dict[str, Any]:
+    """Cached per-target conformal calibrators for a model version."""
+    if model_version in _CALIB_CACHE:
+        return _CALIB_CACHE[model_version]
+    cals: dict[str, Any] = {}
+    try:
+        from lakewind.ml.conformal import load_conformal_calibrator
+
+        for t in ("u", "v"):
+            # q10 and q90 calibrators mirror each other (both scored |y-pred|);
+            # either carries the band's half-width.
+            cal = load_conformal_calibrator(model_version, t, 0.1) or \
+                load_conformal_calibrator(model_version, t, 0.9)
+            if cal is not None:
+                cals[t] = cal
+    except Exception as exc:
+        logger.debug("Conformal calibrators unavailable for %s: %s", model_version, exc)
+    _CALIB_CACHE[model_version] = cals
+    return cals
+
+
+def apply_conformal_band(bp: "BiasPrediction", model_version: str) -> "BiasPrediction":
+    """Rescale the 90-10 bias band to the split-conformal interval (R4).
+
+    For each target the band is re-centred on the median with half-width
+    q_hat — the (1-alpha)-quantile of |y_true - y_pred| on the calibration
+    set — which is exactly the split-conformal guarantee for that nominal
+    level (settings model.conformal_alpha; 0.2 matches the 80% band).
+    Guards: disabled via settings when no calibrator exists; the band is
+    never tightened below 25% of the model's own width (protects against a
+    calibration window unrepresentative of current conditions); quantile
+    ordering is preserved by construction (centred on the median).
+    """
+    s = load_settings()
+    if not getattr(s.model, "conformal_enabled", False):
+        return bp
+    cals = _get_conformal_calibrators(model_version)
+    if not cals:
+        return bp
+    for t in ("u", "v"):
+        cal = cals.get(t)
+        if cal is None:
+            continue
+        q10 = float(getattr(bp, f"bias_{t}_q10"))
+        q50 = float(getattr(bp, f"bias_{t}_q50"))
+        q90 = float(getattr(bp, f"bias_{t}_q90"))
+        half = (q90 - q10) / 2.0
+        new_half = float(cal.q_hat)
+        new_half = max(new_half, 0.25 * half)  # no over-tightening guard
+        setattr(bp, f"bias_{t}_q10", q50 - new_half)
+        setattr(bp, f"bias_{t}_q90", q50 + new_half)
+    return bp
+
+
 def _row_to_matrix(feature_vector: dict[str, Any], feature_cols: list[str]) -> pd.DataFrame:
     """Construct a single-row DataFrame with the exact columns the model expects.
 
@@ -150,6 +215,10 @@ def predict_at(
     bp.bias_v_q10, bp.bias_v_q50, bp.bias_v_q90 = sorted(
         (bp.bias_v_q10, bp.bias_v_q50, bp.bias_v_q90)
     )
+
+    # Deep Audit R4: rescale the band to the conformal interval BEFORE any
+    # downstream consumer (expected_error, confidence) reads its width.
+    bp = apply_conformal_band(bp, model_version)
 
     # 3) Reconstruct wind field using fr.meta (no redundant DB query)
     ref_speed = fr.meta.get("ref_speed_kn") or 0.0

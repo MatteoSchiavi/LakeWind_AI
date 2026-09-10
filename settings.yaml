@@ -210,6 +210,13 @@ model:
   recency_half_life_days: 90.0
   windy_sample_upweight: 2.5
   windy_threshold_kn: 8.0
+  # --- Deep Audit R4: conformal calibration in the serving path ---
+  # predict_at rescales the 90-10 band to the split-conformal interval so the
+  # 80% coverage contract is actually enforced (Phase-3 eval measured 74-76%).
+  # alpha is the miscoverage rate: 0.2 -> 80% intervals. The auto-pipeline
+  # trains the calibrators with this alpha on every retrain.
+  conformal_enabled: true
+  conformal_alpha: 0.2
   # Section 7.2 — upgrade gate. Do not add a second model unless these are met.
   upgrade_gate:
     min_mae_improvement_kn: 0.2

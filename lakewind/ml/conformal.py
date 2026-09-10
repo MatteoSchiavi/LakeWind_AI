@@ -42,7 +42,11 @@ from lakewind.features.build import build_features_for
 
 logger = logging.getLogger(__name__)
 
-MODELS_DIR = Path("data/models")
+# Deep Audit R4 FIX: this was Path("data/models") — CWD-relative, so the
+# auto-pipeline (run from an arbitrary working directory) SAVED calibrators
+# somewhere the serving path could never LOAD them. train.py resolves the
+# same directory from the module location; conformal must agree.
+MODELS_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "models"
 
 
 @dataclass

@@ -200,6 +200,11 @@ class ModelConfig(BaseModel):
     # calm-imbalanced.
     windy_sample_upweight: float = 2.5
     windy_threshold_kn: float = 8.0
+    # --- Deep Audit R4: conformal calibration in the serving path ---
+    # The split-conformal band replaces the raw quantile width at serving
+    # time; alpha is the miscoverage rate (0.2 -> the 80% band contract).
+    conformal_enabled: bool = True
+    conformal_alpha: float = 0.2
 
 
 class SuccessCriteria(BaseModel):

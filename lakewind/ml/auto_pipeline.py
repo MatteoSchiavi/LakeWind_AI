@@ -275,11 +275,13 @@ def run_pipeline(*, check_only: bool = False, force: bool = False) -> dict[str, 
             start = end - timedelta(days=30)
             calibrators_trained = 0
             if not check_only:
+                from lakewind.config import load_settings as _ls
+                cal_alpha = float(getattr(_ls().model, "conformal_alpha", 0.2))
                 for target in ("u", "v"):
                     for q in [0.1, 0.5, 0.9]:
                         cal = train_conformal_calibrator(
                             new_model_version, target, q,
-                            start=start, end=end, alpha=0.1,
+                            start=start, end=end, alpha=cal_alpha,
                         )
                         if cal is not None:
                             calibrators_trained += 1
