@@ -294,7 +294,10 @@ def test_open_meteo_demux_multi_model_response(temp_db, monkeypatch):
     # ONE HTTP call per point (all models batched), N per-model pseudo-items out
     models_emitted = {item["model_name"] for item in raw}
     assert {"icon_d2", "icon_eu", "ecmwf_ifs025"} <= models_emitted
-    assert captured["params"]["models"] == "icon_d2,icon_eu,ecmwf_ifs025,gfs_seamless,italia_meteo_arpae_icon_2i"
+    # Deep Audit R5: the model list is settings-driven (MeteoSwiss members
+    # joined) — derive the expected param instead of hardcoding slugs.
+    from lakewind.config import load_settings as _ls
+    assert captured["params"]["models"] == ",".join(_ls().open_meteo.models)
 
     # Demuxed items must carry UNPREFIXED keys (to_rows contract unchanged)
     icon_d2 = next(i for i in raw if i["model_name"] == "icon_d2")

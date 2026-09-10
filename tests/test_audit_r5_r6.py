@@ -141,7 +141,7 @@ class TestArpaHydroToRows:
         r = rows[0]
         assert r["source"] == "lake_water_temp"
         assert r["temperature"] == 22.5
-        assert r["wind_speed_kn"] is None or r.get("wind_speed_kn") is None  # no wind components — never a wind target
+        assert r.get("wind_speed_kn") is None  # no wind components — never a wind target
 
     def test_implausible_temperature_rejected(self):
         from lakewind.collector.arpa_hydro import ArpaHydroCollector
