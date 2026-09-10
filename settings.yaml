@@ -55,9 +55,18 @@ open_meteo:
   historical_forecast_url: "https://historical-forecast-api.open-meteo.com/v1/forecast"
   previous_runs_url: "https://previous-runs-api.open-meteo.com/v1/forecast"
   # Verify slugs against https://open-meteo.com/en/docs before each release.
+  # Deep Audit R5: MeteoSwiss ICON-CH1/CH2 verified live on 2026-09-10 at the
+  # operational coordinates (1 km / 2 km, lake-grid cell at 197 m elevation,
+  # full multi-level variable parity incl. 80 m + 850 hPa) — the highest-
+  # resolution guidance that has ever covered this lake. CH1-EPS (11 members,
+  # 1 km) verified on the Ensemble API. Cost: ZERO extra calls — the multi-
+  # model fetch is one request per point regardless of the model count, and
+  # the R3 payload pruning funds the response growth at net-zero quota.
   models:
     - icon_d2
     - icon_eu
+    - meteoswiss_icon_ch1
+    - meteoswiss_icon_ch2
     - ecmwf_ifs025
     - gfs_seamless
     - italia_meteo_arpae_icon_2i
@@ -65,6 +74,7 @@ open_meteo:
     - icon_seamless
     - gfs_seamless
     - ecmwf_ifs025
+    - meteoswiss_icon_ch1_eps
   # Deep Audit R3 (V8) — pruned fetch list. The former 31-var payload spent
   # ~1/3 of its bytes on variables nothing ever consumed: 120 m winds and the
   # 500 hPa fields (their feature families are retired — 80 m and 850 hPa
@@ -137,6 +147,16 @@ arpa_lombardia:
   bbox_padding_deg: 0.15
   # Default rate-limit guidance: be polite, no key required for low volume.
   app_token_env: "ARPA_APP_TOKEN"
+
+# Deep Audit R6 — lake water temperature (the #1 Breva driver, dead since V3).
+# Reuses the verified ARPA slugs above; water-temp sensors are selected by
+# tipologia. If ARPA moves hydro sensors to a dedicated dataset, set
+# hydro_sensor_dataset to the verified slug (config-only change).
+arpa_hydro:
+  enabled: true
+  source_id: "lake_water_temp"
+  registry_dataset: null       # null -> arpa_lombardia.station_dataset
+  hydro_sensor_dataset: null   # null -> arpa_lombardia.sensor_dataset
 
 # Section 4.1 — DIY buoy ingestion endpoint (Phase 3 — disabled until hardware exists)
 diy_buoy:

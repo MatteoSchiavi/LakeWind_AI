@@ -50,7 +50,7 @@ _state: dict[str, Any] = {
 }
 
 # Collectors that poll ground stations (cheap, high cadence).
-_STATION_COLLECTORS = ("domaso_live", "arpa_lombardia")
+_STATION_COLLECTORS = ("domaso_live", "arpa_lombardia", "arpa_hydro")
 
 
 def status() -> dict[str, Any]:

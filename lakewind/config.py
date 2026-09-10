@@ -101,6 +101,21 @@ class ArpaConfig(BaseModel):
     app_token_env: str = "ARPA_APP_TOKEN"
 
 
+class ArpaHydroConfig(BaseModel):
+    """Deep Audit R6: lake water-temperature collection.
+
+    Reuses the VERIFIED ARPA Socrata slugs (meteo station registry + sensor
+    readings) and selects water-temperature sensors by tipologia. A
+    dedicated hydro dataset slug can be configured once verified on the
+    portal — no code change needed.
+    """
+
+    enabled: bool = True
+    source_id: str = "lake_water_temp"
+    registry_dataset: str | None = None    # None -> arpa_lombardia.station_dataset
+    hydro_sensor_dataset: str | None = None  # None -> arpa_lombardia.sensor_dataset
+
+
 class DiyBuoyConfig(BaseModel):
     enabled: bool = False
     ingestion_url: str
@@ -304,6 +319,7 @@ class Settings(BaseModel):
     domaso: DomasoConfig
     cml: CmlConfig
     arpa_lombardia: ArpaConfig
+    arpa_hydro: ArpaHydroConfig = Field(default_factory=ArpaHydroConfig)
     diy_buoy: DiyBuoyConfig
     model: ModelConfig
     success_criteria: SuccessCriteria

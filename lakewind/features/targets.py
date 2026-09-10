@@ -30,7 +30,10 @@ from typing import Any
 # --- Source tier classification -------------------------------------------
 
 # Tier 0: real anemometers. These are the ground truth the product promises.
-STATION_SOURCE_PREFIXES = ("arpa_", "domaso", "diy_buoy", "netatmo")
+# 'lake_water_temp' is station-class too (R6) — it can never become a wind
+# target (no wind components) but is classified as a real sensor for
+# reporting and confidence semantics.
+STATION_SOURCE_PREFIXES = ("arpa_", "domaso", "diy_buoy", "netatmo", "lake_water_temp")
 # Tier 1: regional reanalysis — intermediate ground truth for the transition
 # period while the station ledger grows (CERRA at 5.5 km resolves the valley
 # far better than ERA5's 0.25deg; candidate evaluation R2 follow-up).

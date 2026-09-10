@@ -10,12 +10,14 @@ import logging
 from dataclasses import asdict
 from typing import Any
 
+from lakewind.collector.arpa_hydro import ArpaHydroCollector
 from lakewind.collector.arpa_lombardia import ArpaLombardiaCollector
 from lakewind.collector.base import BaseCollector, CollectResult
 from lakewind.collector.diy_buoy import DiyBuoyCollector
 from lakewind.collector.domaso_station import DomasoCollector
 from lakewind.collector.era5_reanalysis import Era5ReanalysisCollector
 from lakewind.collector.open_meteo import OpenMeteoCollector
+from lakewind.config import load_settings
 from lakewind.collector.open_meteo_ensemble import OpenMeteoEnsembleCollector
 
 logger = logging.getLogger(__name__)
@@ -27,7 +29,7 @@ def all_collectors() -> list[BaseCollector]:
     Spec §11 Phase 0: collectors run unattended. Each one's failure is logged
     but never blocks the others.
     """
-    return [
+    collectors: list[BaseCollector] = [
         # Tier 1 — primary NWP (Spec §4.3)
         OpenMeteoCollector(),
         # Ensemble spread for uncertainty features (Spec §4.3)
@@ -35,10 +37,16 @@ def all_collectors() -> list[BaseCollector]:
         # Tier 0/1 — ground truth (Spec §4.1, §4.2)
         DomasoCollector(),
         ArpaLombardiaCollector(),
+        # Lake water temperature (Deep Audit R6) — feeds lake_breeze_* features
+        ArpaHydroCollector(),
         Era5ReanalysisCollector(),
         # Tier 0 — DIY buoy (Spec §4.1, disabled until hardware exists)
         DiyBuoyCollector(),
     ]
+    # Deep Audit R6: honor the arpa_hydro.enabled flag (discovery returning
+    # zero sensors is normal, but the operator may switch the source off).
+    hydro = load_settings().arpa_hydro
+    return [c for c in collectors if not isinstance(c, ArpaHydroCollector) or hydro.enabled]
 
 
 def run_all_collectors() -> list[dict[str, Any]]:
