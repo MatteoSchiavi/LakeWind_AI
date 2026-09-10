@@ -30,6 +30,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from datetime import datetime, timedelta
 from typing import Any
 
 from lakewind.config import load_settings
@@ -145,6 +146,48 @@ async def precompute_artifacts() -> dict[str, Any]:
     return {"maps": map_summary, "trends": trend_summary}
 
 
+def _next_maintenance_monotonic() -> float:
+    """Monotonic deadline for the next 04:30 Europe/Rome pass (R11)."""
+    from zoneinfo import ZoneInfo
+
+    s = load_settings()
+    tz = ZoneInfo(s.project.timezone)
+    now_local = datetime.now(tz)
+    run_today = now_local.replace(hour=4, minute=30, second=0, microsecond=0)
+    target = run_today if now_local < run_today else run_today + timedelta(days=1)
+    return time.monotonic() + (target - now_local).total_seconds()
+
+
+async def _nightly_maintenance(retention_days: int) -> None:
+    """R11: consistent backup + retention prune; failures never stop the loop."""
+    from pathlib import Path
+
+    from lakewind.config import get_db_path
+    from lakewind.db import access
+
+    def _run() -> dict[str, Any]:
+        s = load_settings()
+        out: dict[str, Any] = {}
+        try:
+            out["retention"] = access.apply_retention_policy(
+                operational_forecast_days=retention_days,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Retention pass failed: %s", exc)
+        try:
+            offsite = getattr(s.db, "backup_offsite_dir", None)
+            target = access.backup_database(
+                Path(s.db.backup_dest_dir), Path(offsite) if offsite else None
+            )
+            out["backup"] = str(target)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Backup failed: %s", exc)
+        return out
+
+    _state["last_maintenance"] = await asyncio.to_thread(_run)
+    logger.info("Nightly maintenance done: %s", _state["last_maintenance"])
+
+
 async def _loop(stop: asyncio.Event) -> None:
     s = load_settings()
     nwp_every = max(5, s.schedule.collectors_nwp_minutes) * 60
@@ -157,6 +200,10 @@ async def _loop(stop: asyncio.Event) -> None:
     # a full interval.
     next_nwp = 0.0
     next_station = 0.0
+    # Deep Audit R11: nightly maintenance (backup + retention) at the first
+    # tick after 04:30 local. Never blocks the collection cycle.
+    next_maintenance = _next_maintenance_monotonic()
+    retention_days = int(getattr(s.db, "retention_operational_forecast_days", 90) or 90)
 
     cycle_lock = asyncio.Lock()
 
@@ -166,6 +213,9 @@ async def _loop(stop: asyncio.Event) -> None:
         station_due = now_s >= next_station
 
         if not (nwp_due or station_due):
+            if time.monotonic() >= next_maintenance:
+                await _nightly_maintenance(retention_days)
+                next_maintenance = _next_maintenance_monotonic()
             await asyncio.sleep(min(next_nwp, next_station) - now_s)
             continue
 

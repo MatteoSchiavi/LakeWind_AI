@@ -50,10 +50,30 @@ def create_app() -> FastAPI:
     app = FastAPI(title="LakeWind API", version="2.0", lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],  # local dashboard + LAN; token auth is Phase 5+ scope
-        allow_methods=["GET"],
+        allow_origins=["*"],  # local dashboard + LAN; GET-only + bearer gate below
+        allow_methods=["GET", "POST", "DELETE"],
         allow_headers=["*"],
     )
+
+    # --- Deep Audit R13: bearer-token gate on mutating endpoints ----------
+    # GET stays open (read-only dashboard on the LAN); when api.auth_token
+    # is configured, every other method must present
+    # 'Authorization: Bearer <token>'. This is the minimum viable gate for
+    # the Phase-6 multi-user ambition without breaking the local dashboard.
+    from starlette.middleware.base import BaseHTTPMiddleware
+    from starlette.requests import Request
+    from starlette.responses import Response as _Resp
+
+    class _BearerGate(BaseHTTPMiddleware):
+        async def dispatch(self, request: Request, call_next):
+            token = _settings().api.auth_token
+            if token and request.method not in ("GET", "HEAD", "OPTIONS"):
+                supplied = request.headers.get("authorization", "")
+                if supplied != f"Bearer {token}":
+                    return _Resp("unauthorized", status_code=401)
+            return await call_next(request)
+
+    app.add_middleware(_BearerGate)
 
     # --- helpers ---------------------------------------------------------
 
@@ -147,6 +167,19 @@ def create_app() -> FastAPI:
     @app.get("/api/pipeline")
     async def pipeline() -> JSONResponse:
         return JSONResponse(_pipeline_status())
+
+    @app.get("/api/alerts")
+    async def alerts() -> JSONResponse:
+        """Deep Audit R13: the three operational alerts, visible to monitoring."""
+        from lakewind.monitoring import operational_alerts
+        from lakewind.utils.timeutil import utcnow
+
+        try:
+            found = await asyncio.to_thread(operational_alerts)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("alerts evaluation failed: %s", exc)
+            found = []
+        return JSONResponse({"alerts": found, "checked_at": _jsonify(utcnow())})
 
     @app.get("/api/map.png")
     async def map_png(

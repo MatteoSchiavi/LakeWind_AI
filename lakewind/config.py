@@ -253,11 +253,17 @@ class ApiConfig(BaseModel):
     The Node web-ui no longer opens the DuckDB file itself (that caused
     cross-process lock contention with the Python writer). It proxies to
     this API, which shares the in-process caches.
+
+    Deep Audit R13: auth_token (from env, via ${...} substitution or set in
+    the environment) — when configured, every NON-GET request must carry
+    'Authorization: Bearer <token>'. GET stays open on the LAN (dashboard
+    is read-only); this is the minimum viable multi-user gate.
     """
 
     enabled: bool = True
     host: str = "0.0.0.0"
     port: int = 8000
+    auth_token: str | None = None
 
 
 class CacheConfig(BaseModel):
@@ -305,6 +311,9 @@ class DbConfig(BaseModel):
     predictions_table: str = "predictions"
     model_registry_table: str = "model_registry"
     sailing_log_table: str = "sailing_log"
+    # Deep Audit R11: nightly consistent backup with optional offsite copy.
+    backup_dest_dir: str = "data/backups"
+    backup_offsite_dir: str | None = None
 
 
 class LoggingConfig(BaseModel):

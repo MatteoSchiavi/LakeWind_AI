@@ -703,22 +703,68 @@ def maintenance(
     compact_raw_json: bool = typer.Option(
         False, "--compact-raw-json", help="Rewrite legacy full-payload raw_json rows to compact provenance (Deep Audit R1)"
     ),
+    retention: bool = typer.Option(
+        False, "--retention", help="Apply the R11 retention policy (prunes operational forecasts > 90d, predictions > 18mo)"
+    ),
     dry_run: bool = typer.Option(False, "--dry-run", help="Report what would change without writing"),
 ) -> None:
-    """Database maintenance (R1 bloat cleanup; R11 retention shares this entry)."""
+    """Database maintenance (R1 bloat cleanup, R11 retention)."""
     _setup_logging()
     from lakewind.db import access
 
-    if not compact_raw_json:
-        console.print("Nothing to do — pass --compact-raw-json (see --help).")
-        return
-    stats = access.compact_bloated_raw_json(dry_run=dry_run)
-    label = "would compact" if dry_run else "compacted"
-    console.print(
-        f"[green]raw_json cleanup: {label} {stats['compacted']} rows; "
-        f"payload {stats['bytes_before'] / 1e6:.1f} MB -> {stats['bytes_after'] / 1e6:.1f} MB. "
-        f"done={stats['done']}[/green]"
+    did_something = False
+    if compact_raw_json:
+        did_something = True
+        stats = access.compact_bloated_raw_json(dry_run=dry_run)
+        label = "would compact" if dry_run else "compacted"
+        console.print(
+            f"[green]raw_json cleanup: {label} {stats['compacted']} rows; "
+            f"payload {stats['bytes_before'] / 1e6:.1f} MB -> {stats['bytes_after'] / 1e6:.1f} MB. "
+            f"done={stats['done']}[/green]"
+        )
+    if retention:
+        did_something = True
+        stats = access.apply_retention_policy(dry_run=dry_run)
+        label = "would delete" if dry_run else "deleted"
+        console.print(
+            f"[green]retention: {label} {stats['forecasts_deleted']} operational forecast rows "
+            f"and {stats['predictions_deleted']} prediction rows (backfill training data kept).[/green]"
+        )
+    if not did_something:
+        console.print("Nothing to do — pass --compact-raw-json and/or --retention (see --help).")
+
+
+@app.command("backup")
+def backup_cmd(
+    dest: Optional[Path] = typer.Option(None, "--dest", help="Backup directory (default settings db.backup.dest_dir)"),
+) -> None:
+    """Timestamped consistent DuckDB backup with optional offsite copy (R11)."""
+    _setup_logging()
+    from pathlib import Path as _Path
+
+    from lakewind.db import access
+
+    s = load_settings()
+    dest_dir = _Path(dest) if dest else _Path(getattr(s.db, "backup_dest_dir", "data/backups"))
+    offsite = getattr(s.db, "backup_offsite_dir", None)
+    target = access.backup_database(
+        dest_dir, _Path(offsite) if offsite else None
     )
+    console.print(f"[bold green]Backup written: {target}[/bold green]")
+
+
+@app.command("alerts")
+def alerts_cmd() -> None:
+    """Run the three operational alerts (station silence, quota, data starvation)."""
+    _setup_logging()
+    from lakewind.monitoring import operational_alerts
+
+    found = operational_alerts()
+    if not found:
+        console.print("[bold green]All clear — no operational alerts.[/bold green]")
+        return
+    for a in found:
+        console.print(f"[bold red]ALERT[/bold red] {a}")
 
 
 # --- V2 commands (registered on the same Typer app) ---

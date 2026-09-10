@@ -13,11 +13,12 @@ import json
 import logging
 import math
 import threading
+import shutil
 import time
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 import duckdb
@@ -407,6 +408,97 @@ def compact_bloated_raw_json(
         stats["bytes_after"] = int(row[0]) if row else 0
         stats["done"] = stats["compacted"] < (max_batches * batch_size) or stats["compacted"] == 0
     return stats
+
+
+def apply_retention_policy(
+    dry_run: bool = False,
+    operational_forecast_days: int = 90,
+    predictions_days: int = 545,
+) -> dict[str, Any]:
+    """Bounded-disk retention (Deep Audit R11 / audit ch. 6).
+
+    forecast_runs grows unbounded because every 30-min cycle stores a full
+    multi-model, multi-day block for every point. The historical-BACKFILL
+    rows (raw_json source = 'historical_forecast_api') are the irreplaceable
+    training asset and are KEPT; operational rows older than
+    `operational_forecast_days` are training-redundant (the backfill covers
+    the same valid_times) and are deleted. Predictions older than
+    `predictions_days` (~18 months) are dropped; observations are forever.
+
+    Returns counts ({forecasts_deleted, predictions_deleted}) and honours
+    dry_run.
+    """
+    s = load_settings()
+    stats = {
+        "forecasts_deleted": 0,
+        "predictions_deleted": 0,
+        "dry_run": dry_run,
+        "operational_forecast_days": operational_forecast_days,
+        "predictions_days": predictions_days,
+    }
+    fc_cutoff = utcnow() - timedelta(days=operational_forecast_days)
+    pred_cutoff = utcnow() - timedelta(days=predictions_days)
+    with cursor() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT count(*) FROM {s.db.forecast_table}
+            WHERE valid_time < ?
+              AND coalesce(json_extract_string(raw_json, '$.source'), '') <> 'historical_forecast_api'
+            """,
+            [fc_cutoff],
+        ).fetchone()
+        stats["forecasts_deleted"] = int(rows[0]) if rows else 0
+        rows = conn.execute(
+            f"SELECT count(*) FROM {s.db.predictions_table} WHERE valid_time < ?",
+            [pred_cutoff],
+        ).fetchone()
+        stats["predictions_deleted"] = int(rows[0]) if rows else 0
+        if not dry_run:
+            conn.execute(
+                f"""
+                DELETE FROM {s.db.forecast_table}
+                WHERE valid_time < ?
+                  AND coalesce(json_extract_string(raw_json, '$.source'), '') <> 'historical_forecast_api'
+                """,
+                [fc_cutoff],
+            )
+            conn.execute(
+                f"DELETE FROM {s.db.predictions_table} WHERE valid_time < ?",
+                [pred_cutoff],
+            )
+            conn.execute("CHECKPOINT")
+    return stats
+
+
+def backup_database(dest_dir: Path, offsite_dir: Path | None = None) -> Path:
+    """Timestamped consistent backup of the DuckDB file (Deep Audit R11).
+
+    CHECKPOINT flushes the WAL into the main file, then an atomic copy is
+    taken. An optional offsite directory receives the same archive (rsync /
+    mount point on the T420). Returns the backup path. The database is the
+    irreplaceable historical training asset — this closes the only
+    unrecoverable-failure class the system has.
+    """
+    s = load_settings()
+    db_path = get_db_path()
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    stamp = utcnow().strftime("%Y%m%d_%H%M%S")
+    target = dest_dir / f"lakewind_backup_{stamp}.duckdb"
+    with cursor() as conn:
+        conn.execute("CHECKPOINT")
+    shutil.copy2(db_path, target)
+    if offsite_dir is not None:
+        offsite_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(target, offsite_dir / target.name)
+    # retain the 14 most recent local backups
+    backups = sorted(dest_dir.glob("lakewind_backup_*.duckdb"))
+    for old in backups[:-14]:
+        try:
+            old.unlink()
+        except OSError:  # pragma: no cover
+            pass
+    logger.info("Database backup written: %s", target)
+    return target
 
 
 # --- observations ---
