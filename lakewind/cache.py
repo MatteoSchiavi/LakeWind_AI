@@ -12,7 +12,7 @@ Three building blocks that every hot path in LakeWind is built on:
    single DuckDB query / single model inference instead of 50.
 
 3. `SyncSingleFlight` — the threading equivalent for sync contexts
-   (Streamlit reruns, CLI, collectors).
+   (CLI runs, collectors).
 
 Design notes
 ------------
@@ -190,7 +190,7 @@ class SingleFlight[V]:
 
 
 class SyncSingleFlight[V]:
-    """Thread-based coalescing for sync callers (Streamlit / CLI / tests).
+    """Thread-based coalescing for sync callers (CLI / tests).
 
     Concurrent threads calling `run(key, fn)` with the same key execute `fn`
     exactly once; the others block on the same result.

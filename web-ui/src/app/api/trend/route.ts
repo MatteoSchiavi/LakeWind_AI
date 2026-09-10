@@ -19,6 +19,9 @@ interface TrendRow {
   wind_gust_kn: number | null;
   confidence_pct: number | null;
   expected_error_kn: number | null;
+  wind_speed_q10_kn?: number | null;
+  wind_speed_q90_kn?: number | null;
+  regime?: string | null;
   time: number;
 }
 
@@ -54,6 +57,10 @@ export async function GET(request: NextRequest) {
       wind_gust_kn: (r.wind_gust_kn as number | null) ?? null,
       confidence_pct: (r.confidence_pct as number | null) ?? null,
       expected_error_kn: (r.expected_error_kn as number | null) ?? null,
+      // Phase 4 (W1): calibrated 80% band + regime pass through untouched
+      wind_speed_q10_kn: (r.wind_speed_q10_kn as number | null) ?? null,
+      wind_speed_q90_kn: (r.wind_speed_q90_kn as number | null) ?? null,
+      regime: r.regime ? String(r.regime) : null,
       time: new Date(String(r.valid_time ?? '')).getTime(),
     }));
 

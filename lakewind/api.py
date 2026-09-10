@@ -142,6 +142,43 @@ def create_app() -> FastAPI:
             series[pid] = [_jsonify(p) for p in preds]
         return JSONResponse(series)
 
+    @app.get("/api/decision")
+    async def decision(
+        point: str | None = Query(default=None),
+        hours: int = Query(default=14, ge=4, le=24),
+    ) -> JSONResponse:
+        """Phase 4 (W2): sailing-decision surface for the web hero card.
+
+        Serves the shared decision module (`lakewind/prediction/decision.py`)
+        from the same forecast-store rows the bot's /sailing uses — ONE
+        source of truth for the GO/MARGINAL/NO-GO math.
+        """
+        import zoneinfo
+
+        from lakewind.forecast_store import store
+        from lakewind.prediction.decision import compute_decision
+        from lakewind.utils.timeutil import utcnow
+
+        s = _settings()
+        tz = zoneinfo.ZoneInfo(s.project.timezone)
+        wanted = [point] if point else _point_ids()
+
+        out: dict[str, Any] = {}
+        for pid in wanted:
+            rows = await store.get_series(pid, hours=hours)
+            dec = compute_decision(rows, tz=tz)
+            d = dec.to_dict()
+            d["point_id"] = pid
+            out[pid] = d
+        return JSONResponse(
+            {
+                "generated_at": _jsonify(utcnow()),
+                "timezone": s.project.timezone,
+                "thresholds": {"go_kn": 8.0, "strong_kn": 12.0},
+                "decisions": out,
+            }
+        )
+
     @app.get("/api/health")
     async def health() -> JSONResponse:
         from lakewind import artifacts
@@ -192,7 +229,17 @@ def create_app() -> FastAPI:
         target = utcnow() + timedelta(hours=offset)
         png = await asyncio.to_thread(artifacts.lookup_map_png, target, offset)
         if png is not None:
-            return Response(content=png, media_type="image/png", headers={"X-Cache": "hit"})
+            # Phase 4: provenance headers — the web dashboard shows WHERE the
+            # map came from and for WHICH valid time (freshness stamp).
+            return Response(
+                content=png,
+                media_type="image/png",
+                headers={
+                    "X-Cache": "hit",
+                    "X-Map-Source": "artifact",
+                    "X-Map-Valid-Time": target.isoformat(),
+                },
+            )
 
         # Fallback: render on demand from store rows (bounded by bot semaphore).
         target_naive = target.replace(tzinfo=None)
@@ -206,7 +253,15 @@ def create_app() -> FastAPI:
         png = await asyncio.to_thread(heatmap_v3.generate_heatmap_v3, preds, target)
         if png is None:
             raise HTTPException(status_code=503, detail="Map rendering failed")
-        return Response(content=png, media_type="image/png", headers={"X-Cache": "miss"})
+        return Response(
+            content=png,
+            media_type="image/png",
+            headers={
+                "X-Cache": "miss",
+                "X-Map-Source": "on-demand",
+                "X-Map-Valid-Time": target.isoformat(),
+            },
+        )
 
     return app
 

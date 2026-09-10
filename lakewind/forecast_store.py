@@ -228,37 +228,9 @@ class ForecastStore:
                 out.append(p)
         return out
 
-    async def get_multi_point_window(
-        self,
-        point_ids: list[str],
-        local_hours: list[int],
-        tz,
-    ) -> dict[str, list[tuple[int, float, float]]]:
-        """Sailing-window style lookup: {point: [(local_hour, speed, dir)]}.
-
-        One projection serves every (point, hour) pair.
-        """
-        from lakewind.utils.timeutil import to_aware_utc
-
-        now = utcnow()
-        if not self._projection_fresh():
-            await self.refresh_projection()
-        out: dict[str, list[tuple[int, float, float]]] = {}
-        for vp_id in point_ids:
-            rows = self._projection.get(vp_id) or []
-            speeds: list[tuple[int, float, float]] = []
-            for h in local_hours:
-                local_target = now.astimezone(tz).replace(
-                    hour=h, minute=0, second=0, microsecond=0
-                )
-                target = _naive(to_aware_utc(local_target))
-                p = self._match_in(rows, target, max_match_age_s=3600.0)
-                if p is None:
-                    p = await self.get_pred(vp_id, target)
-                if p and p.get("wind_speed_kn") is not None:
-                    speeds.append((h, float(p["wind_speed_kn"]), float(p.get("wind_dir_deg") or 0.0)))
-            out[vp_id] = speeds
-        return out
+    # (Phase 4: get_multi_point_window removed — its only caller was the
+    # bot's /sailing, which now uses get_series + the shared decision module
+    # so the calibrated band columns reach the decision math.)
 
     # --- internals ---------------------------------------------------------
 

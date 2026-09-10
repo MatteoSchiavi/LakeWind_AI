@@ -39,6 +39,7 @@ from telegram.ext import (
 from lakewind.config import load_secrets, load_settings
 from lakewind.db import access
 from lakewind.db import users as user_db
+from lakewind.utils.palette import speed_emoji_kn
 from lakewind.utils.timeutil import to_local, utcnow
 from lakewind.utils.weather import decode_weather_code, sailing_weather_warning
 
@@ -81,15 +82,10 @@ def _speed_bar(speed: float, max_speed: float = 30.0) -> str:
 
 
 def _speed_color_emoji(speed: float) -> str:
-    if speed < 5:
-        return "🔵"  # calm
-    elif speed < 10:
-        return "🟢"  # sailing
-    elif speed < 16:
-        return "🟡"  # good
-    elif speed < 22:
-        return "🟠"  # strong
-    return "🔴"  # very strong
+    # Phase 4 (W5): the bot now shares ONE speed-band mapping with the web
+    # map, the v3 heatmap and the decision module — the thresholds encode
+    # the sailing decisions (8 kn GO / 12 kn strong), see utils/palette.py.
+    return speed_emoji_kn(speed)
 
 
 def _get_user_lang(user: dict | None) -> str:
@@ -159,6 +155,11 @@ def _generate_pred_on_demand(point_id: str, target_time: datetime) -> dict | Non
                 "wind_gust_kn": result.wind_gust_kn,
                 "confidence_pct": result.confidence_pct,
                 "expected_error_kn": result.expected_error_kn,
+                # Phase 4 (W1/W2): on-demand rows carry the calibrated band
+                # and regime too, so decision/infographic paths never branch.
+                "wind_speed_q10_kn": result.wind_speed_q10_kn,
+                "wind_speed_q90_kn": result.wind_speed_q90_kn,
+                "regime": result.regime,
             }
     except Exception as exc:
         logger.debug("On-demand model prediction failed: %s — using raw NWP", exc)
@@ -319,10 +320,19 @@ def _format_wind_infographic(pred: dict, forecast: dict | None, lang: str, units
     gust = pred.get("wind_gust_kn") or 0
     conf = pred.get("confidence_pct") or 0
     err = pred.get("expected_error_kn") or 0
+    q10 = pred.get("wind_speed_q10_kn")
+    q90 = pred.get("wind_speed_q90_kn")
     point = pred.get("point_id", "?").replace("_", " ").title()
 
     v, u = _convert_speed(speed, units)
     gv, _ = _convert_speed(gust, units)
+    # Phase 4 (W1): the calibrated 80% band, converted to user units.
+    if q10 is not None and q90 is not None:
+        qv10, _ = _convert_speed(float(q10), units)
+        qv90, _ = _convert_speed(float(q90), units)
+        band_line = f"  Range:   {qv10:.1f}–{qv90:.1f} {u} (80%)"
+    else:
+        band_line = None
 
     # Weather
     weather_code = forecast.get("weather_code") if forecast else None
@@ -360,6 +370,8 @@ def _format_wind_infographic(pred: dict, forecast: dict | None, lang: str, units
         f"  Conf:    {_conf_bar(conf)}",
         f"  Error:   ±{err:.1f} {u}",
     ]
+    if band_line:
+        lines.append(band_line)
 
     if temp is not None:
         lines.append(f"  Temp:    {temp:.0f}°C")
@@ -428,12 +440,83 @@ def _format_today_table(preds: list[dict], lang: str, units: str) -> str:
 
 # --- Command handlers ---
 
+# Phase 4 (W4): first-run onboarding — language → units → favorite point.
+# Triggered by /start when the user has never picked a favorite point (new
+# accounts AND legacy accounts get exactly one guided pass). Stateless: each
+# inline keyboard carries its own "ob:<step>:<value>" callback.
+
+
+def _onboarding_kb_lang() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("🇬🇧 English", callback_data="ob:lang:en"),
+        InlineKeyboardButton("🇮🇹 Italiano", callback_data="ob:lang:it"),
+    ]])
+
+
+def _onboarding_kb_units() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("KN — nodi", callback_data="ob:units:kn"),
+        InlineKeyboardButton("M/S", callback_data="ob:units:ms"),
+        InlineKeyboardButton("KM/H", callback_data="ob:units:kmh"),
+    ]])
+
+
+def _onboarding_kb_fav(lang: str) -> InlineKeyboardMarkup:
+    s = load_settings()
+    buttons = []
+    row = []
+    for vp_id in (s.operational_point_ids or []):
+        row.append(InlineKeyboardButton(
+            vp_id.replace("_", " ").title(), callback_data=f"ob:fav:{vp_id}",
+        ))
+        if len(row) == 2:
+            buttons.append(row)
+            row = []
+    if row:
+        buttons.append(row)
+    skip = "Skip" if lang == "en" else "Salta"
+    buttons.append([InlineKeyboardButton(f"« {skip}", callback_data="ob:skip")])
+    return InlineKeyboardMarkup(buttons)
+
+
+_ONBOARDING_TEXTS = {
+    "en": {
+        "welcome": "🌊 Welcome to LakeWind AI!\n\nHyperlocal wind forecasts for Dongo-Dervio, Lake Como.\nLet's set you up — three quick questions.",
+        "lang": "1/3 · What language should I speak?",
+        "units": "2/3 · Which units do you prefer?",
+        "fav": "3/3 · Which is your favorite spot?",
+        "done": "✅ All set! Tip: /sailing answers \"can I go out this afternoon?\" in one tap.",
+    },
+    "it": {
+        "welcome": "🌊 Benvenuto su LakeWind AI!\n\nPrevisioni del vento iperlocali per Dongo-Dervio, Lago di Como.\nConfiguriamoti — tre domande rapide.",
+        "lang": "1/3 · Che lingua preferisci?",
+        "units": "2/3 · Quali unità di misura?",
+        "fav": "3/3 · Qual è il tuo spot preferito?",
+        "done": "✅ Tutto pronto! Sugo: /sailing risponde a \"si esce questo pomeriggio?\" con un tocco.",
+    },
+}
+
+
+def _ob_text(lang: str, key: str) -> str:
+    return _ONBOARDING_TEXTS.get(lang, _ONBOARDING_TEXTS["en"])[key]
+
+
 async def _start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     allowed, user = await _authorize(update)
     if not allowed:
         await update.message.reply_text("⛔ You're not on the whitelist.")
         return
-    _get_user_lang(user)
+    # Phase 4 (W4): one-time guided onboarding. favorite_point_id is NULL
+    # exactly when the user never went through it (or skipped every step —
+    # skip records the default so the prompt never repeats).
+    if not user or not user.get("favorite_point_id"):
+        tg_lang = (update.effective_user.language_code or "en")[:2]
+        lang = "it" if tg_lang == "it" else "en"
+        await update.message.reply_text(
+            _ob_text(lang, "welcome") + "\n\n" + _ob_text(lang, "lang"),
+            reply_markup=_onboarding_kb_lang(),
+        )
+        return
     welcome = (
         "🌊 LakeWind AI\n\n"
         "Hyperlocal wind forecasts for Dongo-Dervio, Lake Como.\n"
@@ -446,6 +529,8 @@ async def _help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     allowed, _ = await _authorize(update)
     if not allowed:
         return
+    # Phase 4 (W4): /why, /accuracy and /report existed but were absent from
+    # the help text — users had no way to discover them.
     await update.message.reply_text(
         "Tap /start to open the menu.\n"
         "Or use commands directly:\n"
@@ -455,7 +540,12 @@ async def _help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "  /sailing — GO/NO-GO recommendation\n"
         "  /trend [point] — 24h trend chart\n"
         "  /alert — manage wind alerts\n"
-        "  /status — data source health",
+        "  /status — data source health\n"
+        "  /accuracy [point] — model skill vs reality\n"
+        "  /why [point] — WHY this forecast (SHAP explainability)\n"
+        "  /report — model quality report\n"
+        "  /webapp — open the web dashboard\n"
+        "  /language en|it · /units kn|ms|kmh — preferences",
         reply_markup=_main_menu_kb(),
     )
 
@@ -473,6 +563,40 @@ async def _menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
     lang = _get_user_lang(user)
     units = _get_user_units(user)
+
+    # --- Onboarding flow (Phase 4 / W4): ob:<step>:<value> ----------------
+    # Stateless steps; each button click stores the preference and shows
+    # the next question. "ob:skip" records the current defaults so the
+    # guided flow never re-triggers on the next /start.
+    if data.startswith("ob:"):
+        uid = update.effective_user.id
+        if data.startswith("ob:lang:"):
+            picked = data.split(":", 2)[2]
+            user_db.set_user_preference(uid, "language", picked)
+            await query.edit_message_text(
+                _ob_text(picked, "units"), reply_markup=_onboarding_kb_units(),
+            )
+            return
+        if data.startswith("ob:units:"):
+            picked = data.split(":", 2)[2]
+            user_db.set_user_preference(uid, "units", picked)
+            await query.edit_message_text(
+                _ob_text(lang, "fav"), reply_markup=_onboarding_kb_fav(lang),
+            )
+            return
+        if data.startswith("ob:fav:"):
+            picked = data.split(":", 2)[2]
+            user_db.set_user_preference(uid, "favorite_point_id", picked)
+            await query.edit_message_text(_ob_text(lang, "done"), reply_markup=_main_menu_kb())
+            return
+        if data == "ob:skip":
+            # Skip = adopt current defaults as-is; mark the favorite with the
+            # first operational point so /start doesn't re-run the flow.
+            s = load_settings()
+            first = (s.operational_point_ids or ["mid_channel"])[0]
+            user_db.set_user_preference(uid, "favorite_point_id", first)
+            await query.edit_message_text(_ob_text(lang, "done"), reply_markup=_main_menu_kb())
+            return
 
     # --- Main menu actions ---
     if data == "m:back":
@@ -606,10 +730,17 @@ async def _sailing_recommendation(query, user, lang, units) -> None:
 
     Phase 2: served from the forecast store projection — ONE bulk query per
     projection TTL (5 min) instead of 42 DuckDB connections per request.
+    Phase 4 (W2): the verdict/probability math moved to the SHARED decision
+    module (`lakewind/prediction/decision.py`) so the bot, the API and the
+    web "Go sailing?" card all answer with the SAME numbers. The window
+    rule is preserved (>=2 sailable hours => GO) but hour counting is now
+    probability-based: P(>=8 kn) >= 0.5 from the calibrated band.
     """
     import zoneinfo
 
     from lakewind.forecast_store import store
+    from lakewind.prediction.decision import compute_decision
+    from lakewind.utils.timeutil import to_aware_utc
 
     s = load_settings()
     tz = zoneinfo.ZoneInfo(s.project.timezone)
@@ -618,41 +749,50 @@ async def _sailing_recommendation(query, user, lang, units) -> None:
 
     lines = ["━━━━━━━━━━━━━━━━━━━━━━", f"  ⛵ SAILING REPORT — {local_now.strftime('%a %b %d')}", "━━━━━━━━━━━━━━━━━━━━━━"]
 
-    window = await store.get_multi_point_window(
-        list(s.operational_point_ids or []),
-        list(range(11, 17)),
-        tz,
-    )
+    # Phase 4 (W2): decision window = today 11:00-16:00 local (the historical
+    # /sailing window). Once the afternoon is over, the report targets
+    # TOMORROW's window instead of hours already past.
+    window_start_local = local_now.replace(hour=11, minute=0, second=0, microsecond=0)
+    if local_now.hour >= 17:
+        window_start_local += timedelta(days=1)
+    window_start_utc = to_aware_utc(window_start_local).replace(tzinfo=None)
 
     best_point = None
-    best_speed = 0
-    best_hour = None
+    best_dec = None
     for vp_id in s.operational_point_ids or []:
-        speeds = window.get(vp_id, [])
-        if not speeds:
+        rows = await store.get_series(vp_id, hours=17, start=window_start_utc)
+        if not rows:
+            continue
+        dec = compute_decision(rows, tz=tz)
+        if not dec.hours:
             continue
 
-        max_speed = max(s for _, s, _ in speeds)
-        avg_speed = sum(s for _, s, _ in speeds) / len(speeds)
+        # 11-16h subset for the per-point line (max/avg/sailable hours).
+        win_hours = [h for h in dec.hours if h.hour is not None and 11 <= h.hour <= 16]
+        if not win_hours:
+            win_hours = dec.hours[:6]
+        max_speed = max(h.speed_kn for h in win_hours)
+        avg_speed = sum(h.speed_kn for h in win_hours) / len(win_hours)
         v_max, u = _convert_speed(max_speed, units)
         v_avg, _ = _convert_speed(avg_speed, units)
 
-        # Count sailing hours (>=8kn)
-        sail_hours = sum(1 for _, s, _ in speeds if s >= 8.0)
+        # Sailable hours: P(>=8 kn) >= 0.5 (calibrated band, shared module)
+        sail_hours = sum(1 for h in win_hours if h.p_go >= 0.5)
 
-        if max_speed > best_speed and sail_hours >= 2:
-            best_speed = max_speed
+        if dec.verdict == "go" and (best_dec is None or dec.peak_p_go > best_dec.peak_p_go):
+            best_dec = dec
             best_point = vp_id
-            best_hour = max(speeds, key=lambda x: x[1])[0]
 
         mark = "✅" if sail_hours >= 2 else "⚠️" if sail_hours >= 1 else "❌"
         lines.append(f"  {mark} {vp_id.replace('_',' ').title():<20} max {v_max:.1f}{u} avg {v_avg:.1f}{u} ({sail_hours}h ≥8kn)")
 
-    if best_point:
-        v, u = _convert_speed(best_speed, units)
+    if best_point and best_dec is not None:
+        v, u = _convert_speed(best_dec.best_speed_kn or 0.0, units)
         lines.append("━━━━━━━━━━━━━━━━━━━━━━")
-        lines.append(f"  🏆 BEST: {best_point.replace('_',' ').title()} @ {best_hour}:00")
-        lines.append(f"  🌬 Peak: {v:.1f} {u}")
+        lines.append(f"  🏆 BEST: {best_point.replace('_',' ').title()} @ {best_dec.best_hour or '--'}:00")
+        lines.append(f"  🌬 Peak: {v:.1f} {u} · P(≥8kn) {best_dec.peak_p_go:.0%}")
+        if best_dec.regime:
+            lines.append(f"  🌡 Regime: {best_dec.regime}")
         lines.append("  ⛵ GO SAILING!" if lang == "en" else "  ⛵ VAI!")
     else:
         lines.append("━━━━━━━━━━━━━━━━━━━━━━")
@@ -1365,31 +1505,50 @@ async def _webapp_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     webapp_url = os.environ.get("LAKEWIND_WEBAPP_URL", "")
 
+    if webapp_url:
+        # Phase 4 (W4/F7): deep links per point — the dashboard reads
+        # ?point=<id> and preselects it, so the bot can hand over context.
+        base = webapp_url.rstrip("/")
+        s = load_settings()
+        rows = []
+        row = []
+        for vp_id in (s.operational_point_ids or [])[:7]:
+            row.append(InlineKeyboardButton(
+                vp_id.replace("_", " ").title(),
+                url=f"{base}/?point={vp_id}",
+            ))
+            if len(row) == 2:
+                rows.append(row)
+                row = []
+        if row:
+            rows.append(row)
+        keyboard = InlineKeyboardMarkup(rows)
+    else:
+        keyboard = None
+
     if webapp_url and webapp_url.startswith("https://"):
         # HTTPS available — can use WebAppInfo (mini app inside Telegram)
         from telegram import WebAppInfo
-        keyboard = InlineKeyboardMarkup([[
-            InlineKeyboardButton(
-                "🌐 Open LakeWind Dashboard",
-                web_app=WebAppInfo(url=webapp_url),
-            ),
-        ]])
         await update.message.reply_text(
             "🌐 LakeWind Web App\n\n"
-            "Tap the button below to open the dashboard inside Telegram.",
+            "Tap the button below to open the dashboard inside Telegram.\n"
+            "Or pick a spot below to open it pre-selected.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton(
+                    "🌐 Open LakeWind Dashboard",
+                    web_app=WebAppInfo(url=webapp_url),
+                ),
+            ]]),
+        )
+        await update.message.reply_text(
+            "📍 Open a spot directly:",
             reply_markup=keyboard,
         )
     elif webapp_url:
         # Non-HTTPS URL — send as regular link (opens in browser)
-        keyboard = InlineKeyboardMarkup([[
-            InlineKeyboardButton(
-                "🌐 Open Dashboard in Browser",
-                url=webapp_url,
-            ),
-        ]])
         await update.message.reply_text(
             "🌐 LakeWind Web App\n\n"
-            "Tap the button to open the dashboard in your browser.\n"
+            "Tap a spot below to open the dashboard in your browser.\n"
             "Note: For in-app Telegram mini app, set LAKEWIND_WEBAPP_URL to an HTTPS URL.",
             reply_markup=keyboard,
         )

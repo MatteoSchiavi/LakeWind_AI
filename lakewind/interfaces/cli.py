@@ -10,7 +10,6 @@ lakewind retrain      # train a new candidate, write result to model_registry
 lakewind promote      # human-reviewed promotion of a candidate to production
 lakewind status       # data source health + last predictions summary
 lakewind serve-bot    # run the Telegram bot (long-running)
-lakewind serve-dashboard  # run the Streamlit dashboard
 lakewind log-sailing  # add a sailing session entry (interactive)
 ```
 """
@@ -18,7 +17,6 @@ from __future__ import annotations
 
 import json
 import logging
-import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -602,32 +600,6 @@ def precompute() -> None:
     )
     for err in map_summary["errors"] + trend_summary["errors"]:
         console.print(f"[yellow]  • {err}[/yellow]")
-
-
-@app.command("serve-dashboard")
-def serve_dashboard(
-    port: int | None = typer.Option(None, help="Port override"),
-) -> None:
-    """Run the Streamlit dashboard (long-running)."""
-    _setup_logging()
-    import subprocess
-
-    s = load_settings()
-    p = port or s.streamlit.port
-    dashboard_path = Path(__file__).parent / "dashboard.py"
-    console.print(f"[bold]Starting Streamlit on port {p}...[/bold]")
-    subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "streamlit",
-            "run",
-            str(dashboard_path),
-            "--server.port",
-            str(p),
-        ],
-        check=False,
-    )
 
 
 @app.command("log-sailing")

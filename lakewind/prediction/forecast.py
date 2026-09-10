@@ -35,6 +35,13 @@ class Forecast:
     model_version: str
     top_contributors: list[tuple[str, float]] = field(default_factory=list)
     diagnostics: dict[str, Any] = field(default_factory=dict)
+    # Phase 4 (W1): calibrated 80% band + regime, persisted with the row so
+    # every surface (web/bot/API) can render uncertainty. Optional with
+    # defaults so historic call sites constructing a Forecast without them
+    # stay valid.
+    wind_speed_q10_kn: float | None = None
+    wind_speed_q90_kn: float | None = None
+    regime: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -49,6 +56,9 @@ class Forecast:
             "model_version": self.model_version,
             "top_contributors": self.top_contributors,
             "diagnostics": self.diagnostics,
+            "wind_speed_q10_kn": self.wind_speed_q10_kn,
+            "wind_speed_q90_kn": self.wind_speed_q90_kn,
+            "regime": self.regime,
         }
 
 

@@ -104,7 +104,12 @@ CREATE TABLE IF NOT EXISTS predictions (
     wind_dir_deg DOUBLE,
     wind_gust_kn DOUBLE,
     confidence_pct DOUBLE,
-    expected_error_kn DOUBLE
+    expected_error_kn DOUBLE,
+    -- Phase 4 (W1/W2): calibrated 80% speed band + weather regime, so the
+    -- uncertainty the conformal layer produces is visible on every surface.
+    wind_speed_q10_kn DOUBLE,
+    wind_speed_q90_kn DOUBLE,
+    regime VARCHAR
 );
 
 -- Lightweight model registry (replaces v1.0 separate experiment manager)
@@ -166,6 +171,7 @@ def init_db(path=None, echo: bool = True) -> None:
         conn.execute(SCHEMA_SQL)
         conn.execute(INDEXES_SQL)
         apply_v8_migration(conn)
+        apply_p4_migration(conn)
     if echo:
         console.print(f"[green]DuckDB initialized[/green] at {db_path}")
 
@@ -186,6 +192,22 @@ def apply_v8_migration(conn: duckdb.DuckDBPyConnection) -> None:
     """Add the V8 multi-level scalar columns to an existing forecast_runs table."""
     for col, typ in V8_MULTILEVEL_COLUMNS:
         conn.execute(f"ALTER TABLE forecast_runs ADD COLUMN IF NOT EXISTS {col} {typ}")
+
+
+# Phase 4 (W1/W2): calibrated band + regime on the operational predictions.
+# Same rationale as the V8 migration: CREATE TABLE IF NOT EXISTS cannot
+# upgrade an existing database.
+P4_PREDICTION_COLUMNS = (
+    ("wind_speed_q10_kn", "DOUBLE"),
+    ("wind_speed_q90_kn", "DOUBLE"),
+    ("regime", "VARCHAR"),
+)
+
+
+def apply_p4_migration(conn: duckdb.DuckDBPyConnection) -> None:
+    """Add the Phase 4 band/regime columns to an existing predictions table."""
+    for col, typ in P4_PREDICTION_COLUMNS:
+        conn.execute(f"ALTER TABLE predictions ADD COLUMN IF NOT EXISTS {col} {typ}")
 
 
 def connect() -> duckdb.DuckDBPyConnection:

@@ -55,6 +55,16 @@ class InferenceResult:
     model_version: str
     top_contributors: list[tuple[str, float]]
     diagnostics: dict[str, Any]
+    # Phase 4 (W1): the calibrated 80% band in SPEED space. q10/q90 are the
+    # reference-vector + conformal-bias-quantile reconstructions, so the band
+    # inherits the R4 conformal calibration exactly like expected_error_kn.
+    wind_speed_q10_kn: float | None = None
+    wind_speed_q90_kn: float | None = None
+    # Phase 4 (W2): weather-regime label at valid_time (breva/tivano/foehn/
+    # storm/calm) — read straight from the feature vector the model just
+    # used, so the decision surfaces can badge conditions without rebuilding
+    # features. None when the feature path skipped regime classification.
+    regime: str | None = None
 
 
 # --- Deep Audit R4: conformal calibration in the serving path ---
@@ -181,6 +191,24 @@ def predict_bias(
         bias_v_q50=pv.get(0.5, 0.0),
         bias_v_q90=pv.get(0.9, 0.0),
     )
+
+
+def band_speeds_kn(ref_u: float, ref_v: float, bp: BiasPrediction) -> tuple[float, float]:
+    """Calibrated 80% band in SPEED space (Phase 4 / W1).
+
+    Reconstructs the q10/q90 speeds exactly like the median speed: applies
+    the (already conformal-rescaled) bias quantiles to the reference (u, v)
+    components via WindVector.from_uv — the same reconstruction bias_correct
+    uses for the median. Vector norms are not monotone in the bias, so
+    ordering is enforced afterwards; a crossing only shrinks/grows the band
+    and never affects the served median. Extracted as a pure function so the
+    band math is unit-testable without a trained model.
+    """
+    speed_q10 = WindVector.from_uv(ref_u + bp.bias_u_q10, ref_v + bp.bias_v_q10).speed_kn
+    speed_q90 = WindVector.from_uv(ref_u + bp.bias_u_q90, ref_v + bp.bias_v_q90).speed_kn
+    if speed_q10 > speed_q90:
+        speed_q10, speed_q90 = speed_q90, speed_q10
+    return speed_q10, speed_q90
 
 
 def predict_at(
@@ -324,6 +352,18 @@ def predict_at(
     if speed < 0:
         speed = 0.0
 
+    # --- Phase 4 (W1): calibrated band in SPEED space ---------------------
+    speed_q10, speed_q90 = band_speeds_kn(ref_u, ref_v, bp)
+    speed_q10 = max(0.0, speed_q10)
+    speed_q90 = max(0.0, speed_q90)
+
+    # --- Phase 4 (W2): regime label straight from the feature vector ------
+    regime_label: str | None = None
+    for label in ("storm", "foehn", "breva", "tivano", "calm"):
+        if fr.feature_vector.get(f"regime_{label}") == 1:
+            regime_label = label
+            break
+
     return InferenceResult(
         point_id=point_id,
         valid_time=valid_time,
@@ -334,6 +374,9 @@ def predict_at(
         expected_error_kn=round(expected_err, 2),
         model_version=model_version,
         top_contributors=top_contribs,
+        wind_speed_q10_kn=round(speed_q10, 2),
+        wind_speed_q90_kn=round(speed_q90, 2),
+        regime=regime_label,
         diagnostics={
             "ref_model": ref_fc,
             "ref_speed_kn": ref_speed,
@@ -385,5 +428,5 @@ def _xgboost_top_contribs(model: Any, X: pd.DataFrame, feat_names: list[str]) ->
     return [(n, round(v, 3)) for n, v in pairs[:5] if abs(v) > 1e-6]
 
 
-__all__ = ["predict_at", "predict_bias", "InferenceResult", "BiasPrediction"]
+__all__ = ["predict_at", "predict_bias", "band_speeds_kn", "InferenceResult", "BiasPrediction"]
 

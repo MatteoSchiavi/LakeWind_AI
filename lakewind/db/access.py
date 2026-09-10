@@ -659,8 +659,9 @@ def insert_prediction(row: dict[str, Any]) -> int:
             INSERT INTO {s.db.predictions_table}
             (id, point_id, generated_at, valid_time, model_version,
              wind_speed_kn, wind_dir_deg, wind_gust_kn,
-             confidence_pct, expected_error_kn)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             confidence_pct, expected_error_kn,
+             wind_speed_q10_kn, wind_speed_q90_kn, regime)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 rid,
@@ -673,6 +674,11 @@ def insert_prediction(row: dict[str, Any]) -> int:
                 row["wind_gust_kn"],
                 row["confidence_pct"],
                 row["expected_error_kn"],
+                # Phase 4 (W1/W2): calibrated band + regime (optional keys —
+                # legacy callers simply persist NULLs).
+                row.get("wind_speed_q10_kn"),
+                row.get("wind_speed_q90_kn"),
+                row.get("regime"),
             ),
         )
     return rid
@@ -728,6 +734,10 @@ def insert_predictions_bulk(rows: list[dict[str, Any]]) -> int:
             r["wind_gust_kn"],
             r["confidence_pct"],
             r["expected_error_kn"],
+            # Phase 4 (W1/W2): calibrated band + regime.
+            r.get("wind_speed_q10_kn"),
+            r.get("wind_speed_q90_kn"),
+            r.get("regime"),
         )
         for r in rows
     ]
@@ -737,8 +747,9 @@ def insert_predictions_bulk(rows: list[dict[str, Any]]) -> int:
             INSERT INTO {s.db.predictions_table}
             (id, point_id, generated_at, valid_time, model_version,
              wind_speed_kn, wind_dir_deg, wind_gust_kn,
-             confidence_pct, expected_error_kn)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             confidence_pct, expected_error_kn,
+             wind_speed_q10_kn, wind_speed_q90_kn, regime)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             payload,
         )

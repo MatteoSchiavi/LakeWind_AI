@@ -2,9 +2,32 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Design tokens — light theme (default) */
 :root {
+  --background: #f1f5f9;
+  --foreground: #0f172a;
+  --card: #ffffff;
+  --card-foreground: #0f172a;
+  --muted: #e2e8f0;
+  --muted-foreground: #64748b;
+  --border: #dbe3ec;
+  --primary: #0284c7;
+  --primary-foreground: #ffffff;
+  --ring: #0284c7;
+}
+
+/* Design tokens — dark theme (toggled via .dark on <html>, W4) */
+.dark {
   --background: #0b1220;
   --foreground: #e7edf5;
+  --card: #111a2c;
+  --card-foreground: #e7edf5;
+  --muted: #1c2942;
+  --muted-foreground: #94a3b8;
+  --border: #24334d;
+  --primary: #38bdf8;
+  --primary-foreground: #0b1220;
+  --ring: #38bdf8;
 }
 
 html,
@@ -20,7 +43,17 @@ body {
     "Helvetica Neue", Arial, sans-serif;
 }
 
-/* Leaflet fixes inside dark dashboard */
+/* Leaflet: keep the tile area neutral in both themes */
 .leaflet-container {
+  background: #dfe6ef;
+}
+.dark .leaflet-container {
   background: #0b1220;
+}
+
+/* Leaflet popups follow the theme instead of hard-coded white */
+.leaflet-popup-content-wrapper,
+.leaflet-popup-tip {
+  background: var(--card);
+  color: var(--card-foreground);
 }

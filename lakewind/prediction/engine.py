@@ -7,7 +7,7 @@ Six-stage cycle, same sequence every time, target end-to-end runtime < 10s:
     3. Build feature vector (identical function used in training)
     4. Run inference (LightGBM, CPU-only)
     5. Reconstruct wind field: bias-corrected U/V -> speed/direction/gust per virtual point
-    6. Store prediction + push to Telegram/Streamlit/CLI
+    6. Store prediction + push to Telegram/Web dashboard/CLI
 
 Spec §8 graceful degradation rules:
 - One NWP model unavailable -> continue with remaining models, reduce confidence.
@@ -93,6 +93,9 @@ def run_cycle(
                 model_version=ir.model_version,
                 top_contributors=ir.top_contributors,
                 diagnostics=ir.diagnostics,
+                wind_speed_q10_kn=getattr(ir, "wind_speed_q10_kn", None),
+                wind_speed_q90_kn=getattr(ir, "wind_speed_q90_kn", None),
+                regime=getattr(ir, "regime", None),
             )
             forecasts.append(fc)
             pred_rows.append(
@@ -106,6 +109,10 @@ def run_cycle(
                     "wind_gust_kn": fc.wind_gust_kn,
                     "confidence_pct": fc.confidence_pct,
                     "expected_error_kn": fc.expected_error_kn,
+                    # Phase 4 (W1/W2): persist the calibrated band + regime
+                    "wind_speed_q10_kn": fc.wind_speed_q10_kn,
+                    "wind_speed_q90_kn": fc.wind_speed_q90_kn,
+                    "regime": fc.regime,
                 }
             )
 

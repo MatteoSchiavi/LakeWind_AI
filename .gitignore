@@ -45,3 +45,4 @@ node_modules/
 web-ui/.next/
 web-ui/out/
 next-env.d.ts
+*.tsbuildinfo

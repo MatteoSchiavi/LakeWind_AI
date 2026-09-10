@@ -299,9 +299,6 @@ telegram:
   token_env: "TELEGRAM_BOT_TOKEN"
   allowed_user_ids: []   # empty = open; populate to restrict
 
-streamlit:
-  port: 8501
-  title: "LakeWind — Dongo-Dervio"
 
 # Section 11 — scheduler (Phase 0 cron-like behavior)
 schedule:

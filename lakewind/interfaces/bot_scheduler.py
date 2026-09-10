@@ -24,6 +24,46 @@ from lakewind.utils.timeutil import to_aware_utc, to_local, utcnow
 logger = logging.getLogger(__name__)
 
 
+# --- Phase 4 (W4/F5): user-language texts for push notifications --------
+# The verification pass removed dead `lang` variables from exactly these two
+# code paths: the user's language was fetched and then DISCARDED — daily
+# summaries and alerts were hard-coded English. The strings below complete
+# the i18n pass (en/it, matching the bot's per-user language setting).
+
+_TEXTS = {
+    "en": {
+        "alert_title": "🔔 *Wind alert!*",
+        "threshold": "🌬 Threshold: {th:.1f} {u} for ≥{dur} min",
+        "within": "⏰ Within next {lead}h",
+        "peak": "📈 Peak: *{peak:.1f} {u}* expected at {time}",
+        "details": "Use /wind {point} for details.",
+        "daily_title": "🌅 *LakeWind Daily — {date}*\n",
+        "go_sail": "💡 *Go sailing!* Best at {point} {time} — {v:.1f} {u}",
+        "weak_wind": "📉 Weak wind today. Peak {v:.1f} {u} at {point} {time}.",
+        "no_forecast": "📉 No forecast available.",
+        "hourly": "*Hourly forecast (favorite point):*",
+        "daily_footer": "Use /map for visual, /today for full hour-by-hour.",
+    },
+    "it": {
+        "alert_title": "🔔 *Allerta vento!*",
+        "threshold": "🌬 Soglia: {th:.1f} {u} per ≥{dur} min",
+        "within": "⏰ Entro le prossime {lead}h",
+        "peak": "📈 Picco: *{peak:.1f} {u}* previsto alle {time}",
+        "details": "Usa /wind {point} per i dettagli.",
+        "daily_title": "🌅 *LakeWind Giornaliero — {date}*\n",
+        "go_sail": "💡 *Si esce!* Meglio alle {time} a {point} — {v:.1f} {u}",
+        "weak_wind": "📉 Vento debole oggi. Picco {v:.1f} {u} a {point} alle {time}.",
+        "no_forecast": "📉 Nessuna previsione disponibile.",
+        "hourly": "*Previsione oraria (punto preferito):*",
+        "daily_footer": "Usa /map per la mappa, /today per l'andamento ora per ora.",
+    },
+}
+
+
+def _t(lang: str, key: str) -> str:
+    return _TEXTS.get(lang, _TEXTS["en"]).get(key, _TEXTS["en"][key])
+
+
 async def run_scheduler(ctx) -> None:
     """Main scheduler entry point — called every 30 min by the bot's job_queue."""
     try:
@@ -107,9 +147,9 @@ async def _check_alerts(ctx) -> None:
             if not met:
                 continue
 
-            # Send alert
+            # Send alert (Phase 4 W4: honor the user's language)
             user = user_db.get_user(user_id)
-            user.get("language", "en") if user else "en"
+            lang = (user.get("language", "en") if user else "en") or "en"
             units = user.get("units", "kn") if user else "kn"
             peak = max(spd for _, spd in future_preds)
             peak_time = max(future_preds, key=lambda x: x[1])[0]
@@ -123,14 +163,14 @@ async def _check_alerts(ctx) -> None:
 
             peak_v, peak_u = _convert(peak, units)
             thresh_v, _ = _convert(threshold, units)
-            msg = (
-                f"🔔 *Wind alert!*\n\n"
-                f"📍 {point_id}\n"
-                f"🌬 Threshold: {thresh_v:.1f} {peak_u} for ≥{min_dur} min\n"
-                f"⏰ Within next {lead_h}h\n"
-                f"📈 Peak: *{peak_v:.1f} {peak_u}* expected at {peak_time.strftime('%H:%M UTC')}\n\n"
-                f"Use /wind {point_id} for details."
-            )
+            msg = "\n\n".join([
+                _t(lang, "alert_title"),
+                f"📍 {point_id}",
+                _t(lang, "threshold").format(th=thresh_v, u=peak_u, dur=min_dur),
+                _t(lang, "within").format(lead=lead_h),
+                _t(lang, "peak").format(peak=peak_v, u=peak_u, time=peak_time.strftime("%H:%M UTC")),
+                _t(lang, "details").format(point=point_id),
+            ])
             try:
                 await bot.send_message(
                     chat_id=user_id, text=msg, parse_mode="Markdown"
@@ -161,7 +201,9 @@ async def _check_subscriptions(ctx) -> None:
             user = user_db.get_user(user_id)
             if not user:
                 continue
-            user.get("language", "en")
+            # Phase 4 (W4/F5): the user's language now DRIVES the summary
+            # text (it was fetched and discarded before — hard-coded EN).
+            lang = (user.get("language", "en") or "en")
             units = user.get("units", "kn")
             tz = user.get("timezone", "Europe/Rome")
 
@@ -173,7 +215,7 @@ async def _check_subscriptions(ctx) -> None:
             today_str = local_now.strftime("%A, %B %d")
 
             op_ids = s.operational_point_ids or []
-            lines = [f"🌅 *LakeWind Daily — {today_str}*\n"]
+            lines = [_t(lang, "daily_title").format(date=today_str)]
 
             # Find best window of the day (11:00-16:00 local)
             best_speed = 0.0
@@ -199,17 +241,22 @@ async def _check_subscriptions(ctx) -> None:
 
             if best_point and best_speed >= 8.0:
                 v, u = _convert(best_speed, units)
-                lines.append(f"💡 *Go sailing!* Best at {best_point} "
-                             f"{best_time.strftime('%H:%M')} — {v:.1f} {u}")
+                lines.append(_t(lang, "go_sail").format(
+                    point=best_point.replace("_", " ").title(),
+                    time=best_time.strftime("%H:%M"), v=v, u=u,
+                ))
             elif best_point:
                 v, u = _convert(best_speed, units)
-                lines.append(f"📉 Weak wind today. Peak {v:.1f} {u} at {best_point} "
-                             f"{best_time.strftime('%H:%M')}.")
+                lines.append(_t(lang, "weak_wind").format(
+                    v=v, u=u,
+                    point=best_point.replace("_", " ").title(),
+                    time=best_time.strftime("%H:%M"),
+                ))
             else:
-                lines.append("📉 No forecast available.")
+                lines.append(_t(lang, "no_forecast"))
 
             lines.append("")
-            lines.append("*Hourly forecast (favorite point):*")
+            lines.append(_t(lang, "hourly"))
             fav = user.get("favorite_point_id") or op_ids[0]
             for h in range(8, 22):
                 target = local_now.replace(hour=h, minute=0, second=0, microsecond=0)
@@ -220,7 +267,7 @@ async def _check_subscriptions(ctx) -> None:
                     lines.append(f"  {h:02d}:00  {v:.1f} {u} {_cardinal(p['wind_dir_deg'])}")
 
             lines.append("")
-            lines.append("Use /map for visual, /today for full hour-by-hour.")
+            lines.append(_t(lang, "daily_footer"))
 
             msg = "\n".join(lines)
             if len(msg) > 4000:

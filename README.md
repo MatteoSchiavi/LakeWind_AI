@@ -30,7 +30,7 @@ lakewind promote <model_version>
 lakewind predict               # generate forecasts
 
 lakewind serve-bot       # Telegram bot with query builder
-lakewind serve-dashboard  # Streamlit dashboard
+lakewind serve-api       # internal FastAPI (web dashboard proxy target)
 ```
 
 ---
@@ -147,9 +147,9 @@ inference · `/map` burst 26 ms with ZERO renders.
          │
     Interfaces
     ├── CLI (collect, predict, backtest, retrain, recover, ...)
-    ├── Telegram bot (25 commands, multi-user, alerts, daily summaries)
-    ├── Streamlit dashboard
-    └── Next.js web UI (interactive Leaflet map)
+    ├── Telegram bot (multi-user, alerts, daily summaries, onboarding)
+    ├── Internal FastAPI (JSON/PNG contract for the web UI)
+    └── Next.js web UI (interactive map, uncertainty bands, decision card)
 ```
 
 ---
@@ -188,7 +188,7 @@ Data:
 
 Interfaces:
   lakewind serve-bot            # Telegram bot (25 commands)
-  lakewind serve-dashboard      # Streamlit dashboard
+  lakewind serve-api            # internal FastAPI for the web dashboard
 
 Advanced:
   lakewind cpcv-backtest        # Combinatorial Purged CV (López de Prado)
@@ -230,18 +230,22 @@ sudo systemctl start lakewind
 
 ## Web UI (optional, separate Next.js project)
 
-The `web-ui/` directory contains a professional Next.js dashboard with an
-interactive Leaflet map. Requires `bun` or `node` (separate from Python).
+The `web-ui/` directory contains a professional Next.js dashboard. Since the
+Phase 2 architecture it NEVER opens DuckDB itself — every request proxies to
+the internal FastAPI service (`lakewind serve-api`), which serves from the
+same in-memory forecast cache as the Telegram bot.
 
 ```bash
 cd web-ui
 bun install    # or npm install
-echo "LAKEWIND_DB_PATH=../data/lakewind.duckdb" >> .env
+echo "LAKEWIND_API_URL=http://127.0.0.1:8000" >> .env
 bun run dev    # open http://localhost:3000
 ```
 
-Features: interactive map, color-coded wind circles, direction arrows, 24h
-trend charts, data source health, auto-refresh.
+Features (Phase 4): "Go sailing?" decision card with per-hour P(≥8 kn) bars,
+interactive Leaflet map + precomputed model heatmap tab, calibrated 80%
+uncertainty bands on every number, shareable URL state (?point=&h=), light/dark
+theme, English/Italian, loading/error/stale states, PWA installability.
 
 ---
 

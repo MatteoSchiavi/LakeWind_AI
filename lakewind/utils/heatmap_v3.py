@@ -1,7 +1,8 @@
 """V3 enhanced heatmap — professional-grade wind map with more data overlays.
 
 V3 improvements over V2:
-1. Uses all 15 virtual points (vs V2's 7) for finer spatial resolution
+1. Uses all operational virtual points (11 as of the V6 configuration — the
+   old "15 points" claim rotted when V4/V5 pruned near-duplicate pairs)
 2. Gaussian Process interpolation with anisotropic kernel (elongated lake)
 3. Data overlays: pressure gradient arrows, temperature labels, regime badge
 4. Better graphics: OSM-style tile background option, refined color palette
@@ -24,6 +25,7 @@ from typing import Any
 import numpy as np
 
 # V6: Load shoreline from geojson via shoreline module
+from lakewind.utils.palette import SPEED_COLORS
 from lakewind.utils.shoreline import get_shoreline as _get_shoreline
 from lakewind.utils.timeutil import utcnow
 
@@ -343,11 +345,19 @@ def _draw_panel_v3(
                 point_lons, point_lats, point_speeds, lon_min, lon_max, lat_min, lat_max,
                 resolution=150,  # higher resolution
             )
-            colors = [
-                (0.000, "#1a5f8a"), (0.100, "#2b83ba"), (0.200, "#80cfa9"),
-                (0.350, "#abdda4"), (0.500, "#ffffbf"), (0.650, "#fdae61"),
-                (0.800, "#f46d43"), (0.900, "#d73027"), (1.000, "#800026"),
-            ]
+            # Phase 4 (W5): the colormap is anchored to the SHARED speed
+            # palette — the same band hexes the web map and the bot use, at
+            # the decision thresholds (5/8/12/16 kn) on a 0-30 kn scale.
+            # Band centers sit at the midpoints of their kn ranges so a
+            # "sailable green" pixel genuinely reads 8-12 kn. LinearSegmented-
+            # Colormap requires anchors spanning [0, 1]: the first/last band
+            # colors hold the ranges below 2.5 kn and above 22 kn.
+            band_mids = [2.5, 6.5, 10.0, 14.0, 22.0]  # midpoints of the 5 bands
+            colors = (
+                [(0.0, SPEED_COLORS[0])]
+                + [(mid / 30.0, SPEED_COLORS[i]) for i, mid in enumerate(band_mids)]
+                + [(1.0, SPEED_COLORS[-1])]
+            )
             cmap = LinearSegmentedColormap.from_list("wind_v3", colors)
 
             # Constant vmax=30 for cross-time comparability

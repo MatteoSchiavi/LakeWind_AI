@@ -33,7 +33,6 @@ dependencies = [
     "shapely>=2.0",
     "typer>=0.12",
     "rich>=13.7",
-    "streamlit>=1.36",
     "plotly>=5.22",
     "python-telegram-bot>=21.4",
     "psutil>=5.9",

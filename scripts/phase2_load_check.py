@@ -20,10 +20,9 @@ from types import SimpleNamespace
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import duckdb
-import pytest
 
 from lakewind.db import access as db_access
-from lakewind.db.schema import SCHEMA_SQL, INDEXES_SQL
+from lakewind.db.schema import INDEXES_SQL, SCHEMA_SQL
 from lakewind.db.schema_v2 import V2_SCHEMA_SQL
 from lakewind.utils.timeutil import utcnow
 
@@ -41,9 +40,8 @@ async def main() -> None:
         conn.execute(V2_SCHEMA_SQL)
     db_access.get_db_path = lambda: db_file
 
-    from lakewind import forecast_store
-    from lakewind.forecast_store import store
     from lakewind.config import load_settings
+    from lakewind.forecast_store import store
 
     store.reset()
 
@@ -140,7 +138,7 @@ async def main() -> None:
     bot._generate_pred_on_demand = fake_gen
 
     queries["inference"] = 0
-    cold_target = now + timedelta(hours=30)  # beyond seeded horizon → on-demand
+    # cold target = now + 30h — beyond the seeded horizon → on-demand path
 
     t0 = time.perf_counter()
     await asyncio.gather(*(wind_query("zurich") for _ in range(N_USERS)))
@@ -157,7 +155,6 @@ async def main() -> None:
               "wind_gust_kn": 12.0, "confidence_pct": 75.0,
               "valid_time": now.isoformat()} for i in range(len(real_points))]
     render_count = {"n": 0}
-    real_heatmap = None
     import lakewind.utils.heatmap_v3 as hv3
     def counting_heatmap(*a, **k):
         render_count["n"] += 1
@@ -166,10 +163,6 @@ async def main() -> None:
     summary = artifacts.precompute_maps({0: preds}, base_time=now)
     assert summary["maps_rendered"] == 1
     render_count["n"] = 0
-
-    # Patch the bot's fallback render path to count invocations
-    hv3_generate = hv3.generate_heatmap_v3
-    bot_render_target = "lakewind.utils.heatmap_v3.generate_heatmap_v3"
 
     from lakewind.utils.heatmap_v3 import generate_heatmap_v3 as _real_gen_fn
 

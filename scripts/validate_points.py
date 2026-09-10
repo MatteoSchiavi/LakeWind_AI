@@ -5,12 +5,13 @@ V6: Uses the real shoreline from lakewind/data/lake_como_shoreline.geojson
 via lakewind.utils.shoreline (single source of truth).
 """
 import sys
-import yaml
 from pathlib import Path
+
+import yaml
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from lakewind.utils.shoreline import get_shoreline, point_on_water, distance_to_shore
+from lakewind.utils.shoreline import distance_to_shore, point_on_water
 
 
 def main():

@@ -470,6 +470,10 @@ async def test_run_cycle_uses_settings_horizons_and_bulk_insert(temp_db, monkeyp
             model_version="fake-v1",
             top_contributors=[],
             diagnostics={},
+            # Phase 4 (W1/W2) contract: calibrated band + regime
+            wind_speed_q10_kn=5.8,
+            wind_speed_q90_kn=8.2,
+            regime="breva",
         )
 
     monkeypatch.setattr(engine, "predict_at", fake_predict_at)

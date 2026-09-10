@@ -295,11 +295,6 @@ class TelegramConfig(BaseModel):
     allowed_user_ids: list[int] = Field(default_factory=list)
 
 
-class StreamlitConfig(BaseModel):
-    port: int = 8501
-    title: str = "LakeWind — Dongo-Dervio"
-
-
 class ScheduleConfig(BaseModel):
     collectors_nwp_minutes: int = 30
     collectors_stations_minutes: int = 10
@@ -344,7 +339,6 @@ class Settings(BaseModel):
     api: ApiConfig = Field(default_factory=ApiConfig)
     cache: CacheConfig = Field(default_factory=CacheConfig)
     telegram: TelegramConfig
-    streamlit: StreamlitConfig
     schedule: ScheduleConfig
     db: DbConfig
     logging: LoggingConfig
