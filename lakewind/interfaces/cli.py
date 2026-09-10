@@ -377,9 +377,15 @@ def backtest_cmd(
 
 @app.command("retrain")
 def retrain(
-    days: int = typer.Option(60, help="Training window in days"),
+    days: int = typer.Option(60, help="Training window in days (default 60-day EVALUATION window; production regime uses model.train_window_days)"),
     backend: Optional[str] = typer.Option(
         None, help="Backend: 'lightgbm' or 'xgboost_gpu' (default: from settings.yaml)"
+    ),
+    production_window: bool = typer.Option(
+        False, "--production-window", help="Use model.train_window_days (12-18 months) instead of --days"
+    ),
+    disable_model: list[str] = typer.Option(
+        [], "--disable-model", help="Drop a model's features for the ABLATION run (R14), e.g. --disable-model gfs_seamless"
     ),
 ) -> None:
     """Train a new candidate, write result to model_registry."""
@@ -387,8 +393,11 @@ def retrain(
     from lakewind.ml.train import train
 
     end = utcnow()
-    start = end - timedelta(days=days)
-    result = train(start=start, end=end, backend=backend)
+    start = end - timedelta(days=days) if not production_window else None
+    result = train(
+        start=start, end=end, backend=backend,
+        disable_models=list(disable_model) or None,
+    )
     if result is None:
         console.print("[red]Not enough training data. Run `lakewind collect` or `lakewind backfill` first.[/red]")
         raise typer.Exit(code=1)

@@ -224,6 +224,10 @@ class ModelConfig(BaseModel):
     # lead_hours, spot one-hots, real obs lags + trend, online rolling bias,
     # time harmonics, regime one-hots, ramp shape (features/feature_pack.py).
     feature_pack_enabled: bool = True
+    # --- Deep Audit R14: per-regime direction correction ---
+    # Serving applies the per-regime signed direction residual (train-time
+    # artifact, min 50 samples/regime) as a small rotation.
+    regime_direction_correction: bool = True
 
 
 class SuccessCriteria(BaseModel):

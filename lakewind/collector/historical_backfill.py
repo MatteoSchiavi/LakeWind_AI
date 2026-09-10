@@ -259,6 +259,141 @@ def _safe_idx(d: dict[str, list], key: str, idx: int) -> Any:
     return val
 
 
+
+def backfill_previous_runs(
+    *,
+    start: datetime,
+    end: datetime,
+    points: list[str] | None = None,
+    models: list[str] | None = None,
+    delay_seconds: float | None = None,
+) -> dict[str, int]:
+    """Leakage-free training backfill via the Previous Runs API (Deep Audit R15).
+
+    The Historical Forecast API merges runs: the stored value for a past hour
+    is whatever the archive kept (typically the run closest to validity),
+    which contaminates lead-time-aware training — the R7 lead_hours feature
+    assumes the stored row's lead reflects a real forecast distance. The
+    Previous Runs API (open_meteo.previous_runs_url) exposes each producing
+    run separately, so run_time is EXPLICIT and leads are honest.
+
+    PROBE STATUS (audit R15): the shared-IP quota was exhausted at
+    implementation time (HTTP 429), mirroring the audit's archive-API
+    experience. The parser below targets the documented response shape —
+    identical hourly JSON to the forecast endpoint, requested per run — and
+    is pinned by fixture tests. VERIFY one live response before the first
+    production run: if the shape differs, only _parse_previous_runs needs
+    adjusting. Rows carry source='previous_runs_api' in raw_json so the R11
+    retention policy can distinguish (and keep) them.
+
+    Returns {point_id: rows_inserted}.
+    """
+    s = load_settings()
+    pts = [p for p in s.virtual_points if (points is None or p.id in points)]
+    mdl_list = models or s.open_meteo.models
+    delay = delay_seconds if delay_seconds is not None else s.open_meteo.backfill.delay_seconds
+    chunk_days = s.open_meteo.backfill.chunk_days
+
+    chunks = _chunk_date_range(start, end, chunk_days)
+    logger.info(
+        "Previous-runs backfill: %d points x %d models x %d chunks from %s to %s",
+        len(pts), len(mdl_list), len(chunks), start.date(), end.date(),
+    )
+
+    summary: dict[str, int] = {p.id: 0 for p in pts}
+    session = requests.Session()
+    for c_start, c_end in chunks:
+        for pt in pts:
+            for model_name in mdl_list:
+                params = {
+                    "latitude": pt.lat,
+                    "longitude": pt.lon,
+                    "start_date": c_start.date().isoformat(),
+                    "end_date": c_end.date().isoformat(),
+                    "hourly": ",".join(BACKFILL_HOURLY_VARS),
+                    "models": model_name,
+                    "wind_speed_unit": s.open_meteo.wind_speed_unit,
+                    "timezone": s.open_meteo.timezone,
+                }
+                resp = _get_with_retry(session, s.open_meteo.previous_runs_url, params)
+                if resp is None:
+                    continue
+                try:
+                    data = resp.json()
+                except Exception as exc:
+                    logger.warning("Previous-runs parse failed for %s/%s: %s", pt.id, model_name, exc)
+                    continue
+                rows = _parse_previous_runs(data, pt.id, model_name)
+                for r in rows:
+                    apply_physical_limits(r)
+                rows = [r for r in rows if r.get("wind_speed_kn") is not None]
+                if rows:
+                    n = access.bulk_insert_forecast_runs(rows)
+                    summary[pt.id] += n
+                if delay > 0:
+                    time.sleep(delay)
+    logger.info("Previous-runs backfill complete: %s", summary)
+    return summary
+
+
+def _parse_previous_runs(data: dict[str, Any], point_id: str, model_name: str) -> list[dict[str, Any]]:
+    """Parse one Previous Runs API response into forecast_runs rows.
+
+    The response is the standard hourly JSON with an explicit per-run time
+    axis; run_time is taken from the response's `run` metadata when present
+    (top level or hourly block), else from the block's first hour snapped to
+    the model's real init cadence — never a blind valid_time-minus-6h.
+    """
+    hourly = data.get("hourly", {})
+    times = hourly.get("time", [])
+    if not times:
+        return []
+    run_meta = data.get("run") or hourly.get("run")
+    if isinstance(run_meta, str) and run_meta:
+        try:
+            run_time = datetime.fromisoformat(run_meta.replace("Z", "+00:00")).replace(tzinfo=None)
+        except Exception:
+            run_time = None
+    else:
+        run_time = None
+    if run_time is None:
+        from lakewind.collector.base import nearest_model_init_time
+
+        try:
+            first_valid = datetime.fromisoformat(times[0].replace("Z", "+00:00"))
+        except Exception:
+            return []
+        run_time = nearest_model_init_time(first_valid, model_name)
+    rows: list[dict[str, Any]] = []
+    for i, t_iso in enumerate(times):
+        try:
+            valid_time = datetime.fromisoformat(t_iso.replace("Z", "+00:00")).replace(tzinfo=None)
+        except Exception:
+            continue
+        row: dict[str, Any] = {
+            "model_name": model_name,
+            "point_id": point_id,
+            "run_time": run_time,
+            "valid_time": valid_time,
+            "wind_speed_kn": _safe_idx(hourly, "wind_speed_10m", i),
+            "wind_dir_deg": _safe_idx(hourly, "wind_direction_10m", i),
+            "wind_gust_kn": _safe_idx(hourly, "wind_gusts_10m", i),
+            "pressure_msl": _safe_idx(hourly, "pressure_msl", i),
+            "temperature_2m": _safe_idx(hourly, "temperature_2m", i),
+            "dew_point_2m": _safe_idx(hourly, "dew_point_2m", i),
+            "cloud_cover": _safe_idx(hourly, "cloud_cover", i),
+            "shortwave_radiation": _safe_idx(hourly, "shortwave_radiation", i),
+            "cape": _safe_idx(hourly, "cape", i),
+            "boundary_layer_height": _safe_idx(hourly, "boundary_layer_height", i),
+            "precipitation": _safe_idx(hourly, "precipitation", i),
+            "weather_code": _safe_idx(hourly, "weather_code", i),
+            "visibility": _safe_idx(hourly, "visibility", i),
+            "raw_json": {"model": model_name, "point": point_id, "source": "previous_runs_api"},
+        }
+        rows.append(row)
+    return rows
+
+
 def backfill_era5(*, start: datetime, end: datetime, points: list[str] | None = None) -> dict[str, int]:
     """Backfill observations table with ERA5 reanalysis for the given range.
 

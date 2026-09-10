@@ -5,6 +5,7 @@ Spec §7.1 expected_error_kn = half the predicted 90-10 quantile interval.
 """
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime
@@ -86,6 +87,24 @@ def _get_conformal_calibrators(model_version: str) -> dict[str, Any]:
         logger.debug("Conformal calibrators unavailable for %s: %s", model_version, exc)
     _CALIB_CACHE[model_version] = cals
     return cals
+
+
+_REGIME_DIR_CACHE: dict[str, dict[str, Any] | None] = {}
+
+
+def _load_regime_dir_artifact(model_version: str) -> dict[str, Any] | None:
+    """Per-regime direction-rotation artifact from the latest training (R14)."""
+    if model_version in _REGIME_DIR_CACHE:
+        return _REGIME_DIR_CACHE[model_version]
+    artifact: dict[str, Any] | None = None
+    p = MODELS_DIR / f"{model_version}_regime_dir.json"
+    if p.exists():
+        try:
+            artifact = json.loads(p.read_text())
+        except Exception as exc:
+            logger.debug("Regime dir artifact unreadable: %s", exc)
+    _REGIME_DIR_CACHE[model_version] = artifact
+    return artifact
 
 
 def apply_conformal_band(bp: "BiasPrediction", model_version: str) -> "BiasPrediction":
@@ -226,6 +245,31 @@ def predict_at(
     ref_fc = fr.meta.get("reference_model", "icon_eu")
     ref_u, ref_v = WindVector(speed_kn=ref_speed, direction_deg=ref_dir).to_uv()
     final = bias_correct(ref_u, ref_v, bp.bias_u_q50, bp.bias_v_q50)
+
+    # Deep Audit R14 (5.5): regime-conditional direction correction. Breva /
+    # Tivano / Foehn have distinct direction-error signatures; when the
+    # training pipeline produced a per-regime residual artifact with enough
+    # support (n >= 50), apply the small rotation for the active regime.
+    if getattr(load_settings().model, "regime_direction_correction", True):
+        try:
+            artifact = _load_regime_dir_artifact(model_version)
+            if artifact:
+                active = next(
+                    (
+                        lbl
+                        for lbl in ("storm", "foehn", "breva", "tivano", "calm")
+                        if fr.feature_vector.get(f"regime_{lbl}") == 1
+                    ),
+                    None,
+                )
+                entry = artifact.get(active) if active else None
+                if entry and entry.get("residual_deg"):
+                    final = WindVector(
+                        final.speed_kn,
+                        (final.direction_deg + float(entry["residual_deg"])) % 360.0,
+                    )
+        except Exception as exc:
+            logger.debug("Regime direction correction skipped: %s", exc)
 
     # Gust: lookup from feature vector (ref model gust) and apply bias correction ratio
     gust = fr.feature_vector.get(f"fc_{ref_fc}_gust")

@@ -241,6 +241,8 @@ model:
   # lead_hours, spot one-hots, real obs lags + 3h trend, online rolling bias
   # (6/12/24h), time harmonics, regime one-hots, forecast ramp shape.
   feature_pack_enabled: true
+  # --- Deep Audit R14: per-regime direction correction ---
+  regime_direction_correction: true
   # Section 7.2 — upgrade gate. Do not add a second model unless these are met.
   upgrade_gate:
     min_mae_improvement_kn: 0.2

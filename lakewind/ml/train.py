@@ -484,6 +484,7 @@ def train(
     model_version: str | None = None,
     backend: str | None = None,
     dataset: pd.DataFrame | None = None,
+    disable_models: list[str] | None = None,
 ) -> TrainingResult | None:
     """Train the quantile MOS model on stored history.
 
@@ -492,6 +493,12 @@ def train(
     materializing features, not boosting. Time-ordered validation split +
     early stopping + optional feature selection + optional heterogeneous
     ensemble, all driven by settings.yaml.
+
+    Deep Audit R14 (3.8): `disable_models` drops every fc_<model>_* column
+    before fitting — the mechanism for the walk-forward ablation that decides
+    with data whether a member (e.g. gfs_seamless, the audit's weakest-link
+    candidate) earns its quota. Compare registry metrics of the ablated run
+    against the full run via experiment_attempts/upgrade gate.
     """
     s = load_settings()
     backend = backend or _get_backend()
@@ -507,6 +514,16 @@ def train(
     df = dataset if dataset is not None else _build_dataset(
         point_id, start, end, reference_forecast_model=reference_forecast_model
     )
+    if disable_models:
+        drop = [
+            c for c in df.columns
+            if any(c.startswith(f"fc_{m}_") or c == f"fc_{m}" for m in disable_models)
+        ]
+        if drop:
+            logger.info(
+                "Ablation: dropping %d columns for disabled models %s", len(drop), disable_models
+            )
+            df = df.drop(columns=drop)
     if len(df) < s.model.walk_forward.min_train_samples:
         logger.warning(
             "Not enough training samples: %d (min %d). Skipping train.",
@@ -681,6 +698,11 @@ def train(
             if ref_col_speed in X_val.columns and ref_col_dir in X_val.columns:
                 speed_errs: list[float] = []
                 dir_errs: list[float] = []
+                # Deep Audit R14 (5.5): signed direction residual per regime —
+                # Breva/Tivano/Foehn have distinct direction-error signatures;
+                # the artifact lets serving apply a small regime-conditional
+                # rotation (only where enough samples justify it).
+                regime_dir_residuals: dict[str, list[float]] = {}
                 for i in range(len(X_val)):
                     rs = X_val[ref_col_speed].iloc[i]
                     rd = X_val[ref_col_dir].iloc[i]
@@ -692,11 +714,35 @@ def train(
                     pu, pv = ru + float(bu[i]), rv + float(bv[i])
                     o_vec, p_vec = WindVector.from_uv(ou, ov), WindVector.from_uv(pu, pv)
                     speed_errs.append(abs(o_vec.speed_kn - p_vec.speed_kn))
-                    d = (o_vec.direction_deg - p_vec.direction_deg + 180.0) % 360.0 - 180.0
-                    dir_errs.append(abs(d))
+                    signed = (p_vec.direction_deg - o_vec.direction_deg + 180.0) % 360.0 - 180.0
+                    dir_errs.append(abs(signed))
+                    active = next(
+                        (
+                            lbl
+                            for lbl in ("breva", "tivano", "foehn", "storm", "calm")
+                            if f"regime_{lbl}" in X_val.columns
+                            and int(X_val[f"regime_{lbl}"].iloc[i]) == 1
+                        ),
+                        None,
+                    )
+                    if active is not None:
+                        regime_dir_residuals.setdefault(active, []).append(signed)
                 if speed_errs:
                     speed_mae = float(np.mean(speed_errs))
                     dir_err = float(np.mean(dir_errs))
+                    # persist the per-regime rotation artifact (min 50 samples)
+                    artifact = {
+                        lbl: {
+                            "residual_deg": round(float(np.mean(vals)), 3),
+                            "n": len(vals),
+                        }
+                        for lbl, vals in regime_dir_residuals.items()
+                        if len(vals) >= 50
+                    }
+                    if artifact:
+                        art_path = MODELS_DIR / f"{mv}_regime_dir.json"
+                        art_path.write_text(json.dumps(artifact, indent=2))
+                        logger.info("Regime direction artifact: %s", artifact)
         except Exception as exc:
             logger.debug("Speed-space registry metrics skipped: %s", exc)
 
