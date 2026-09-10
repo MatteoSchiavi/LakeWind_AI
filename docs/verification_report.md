@@ -34,6 +34,7 @@ The previous session ended with work pushed but **CI red on GitHub** and **laten
 | 4 | `ruff check` = **276 errors** (55 unused imports, 36 unsorted, 38 empty f-strings, 17 dead locals, 4 bare excepts, 14 undefined names…) | Lint gate impossible to pass | 276 → **0** (see §3) |
 | 5 | `optuna` missing from `pyproject.toml` | `lakewind tune` + 1 test failed on any fresh install | `optuna>=3.6` added |
 | 6 | `pillow` / `httpx` directly imported but undeclared (transitive-only); `apscheduler` declared but unused since Phase 2 | Fragile installs | pillow added, httpx added to dev extras, apscheduler removed |
+| 7 | `pytest-asyncio` used by 6 marked async tests but **not declared** in dev extras — passed locally only because the sandbox venv happened to have it | All 6 Phase-2 async tests failed on the CI runner ("async def functions are not natively supported") once the install step was fixed | `pytest-asyncio>=0.24` declared in dev extras |
 
 ### Lint cleanup detail (276 → 0)
 
@@ -54,7 +55,7 @@ The previous session ended with work pushed but **CI red on GitHub** and **laten
 | Placeholders | TODO/FIXME/mock/NotImplementedError scan | ✅ only benign hits (SQL placeholder strings, `BaseCollector.collect` ABC, documented disabled-by-default `diy_buoy` stub, docstrings) |
 | web-ui | `npm install && npm run build` | ✅ 5 routes build, type-check clean, 215 kB first load |
 | Docker | GitHub Actions `docker` job | ✅ success (image builds) |
-| CI | Re-run after `d1ffd57` | ✅ green (test + docker) |
+| CI | Run on `22e21f5` | ✅ **GREEN — test + docker jobs both pass** (every earlier run in repo history was red) |
 | Settings | `feature_set_version: v8`, tuned LGBM params (num_leaves 98, lr 0.0177, min_data_in_leaf 46…), `aux_reference_model`, `train_window_days: 548` | ✅ coherent with Phase 3 + audit impl |
 | R11/R13 config | `auth_token`, `backup_dest_dir`, retention have typed safe defaults in `config.py`; activation documented | ✅ |
 
@@ -77,3 +78,5 @@ The previous session ended with work pushed but **CI red on GitHub** and **laten
 All work claimed in Phases 0–3 and the Deep Audit implementation is present, coherent, and now **proven by an actually-green CI** (which was red before this pass), a fully clean lint gate, 238 passing tests, and a build-verified web-ui. The two latent P0s (bot `utcnow` NameErrors, broken CI install step) were caught exactly because this verification ran.
 
 **Phase 4 (UI/UX) is cleared to start.**
+
+*Commits in this verification pass:* `d1ffd57` (P0 fixes + lint zero + deps), `8419e60` (this report), `22e21f5` (pytest-asyncio declaration → CI green).
