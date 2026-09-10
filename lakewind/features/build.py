@@ -472,25 +472,46 @@ def build_features_for(
         fv["obs_nearest_missing"] = True
         fv["obs_nearest_confidence"] = 0.0
 
-    # TARGET (Spec §6)
+    # TARGET (Spec §6) — with the Deep Audit R2 ground-truth hierarchy.
+    # The former selector took the DISTANCE-NEAREST observation, which the
+    # distance-zero-by-construction ERA5 rows always won (100% of training
+    # targets were ERA5 — audit 3.3). Selection is now tier-first: real
+    # stations always beat reanalysis as the target; reanalysis still trains
+    # but at a reduced sample weight (R2 + R8).
     target_u: float | None = None
     target_v: float | None = None
+    target_source: str | None = None
+    target_confidence: float | None = None
+    target_tier: int | None = None
+    target_weight: float | None = None
+    target_obs_speed: float | None = None
     if nearest_obs:
-        best = min(
-            nearest_obs,
-            key=lambda o: _haversine(vp.lat, vp.lon, o.get("lat") or 0.0, o.get("lon") or 0.0),
+        from lakewind.features.targets import select_target_obs, source_tier, target_quality_weight
+
+        for o in nearest_obs:
+            ts = o.get("timestamp")
+            o["age_min"] = (
+                (valid_time - ts).total_seconds() / 60.0 if ts else 999.0
+            )
+        best = select_target_obs(nearest_obs, vp.lat, vp.lon)
+    else:
+        best = None
+    if best is not None and (
+        ref.get("wind_speed_kn") is not None
+        and ref.get("wind_dir_deg") is not None
+    ):
+        obs_u, obs_v = WindVector(
+            speed_kn=best["wind_speed_kn"], direction_deg=best["wind_dir_deg"]
+        ).to_uv()
+        target_u = obs_u - ref_u
+        target_v = obs_v - ref_v
+        target_source = best.get("source")
+        target_confidence = best.get("confidence")
+        target_tier = source_tier(target_source)
+        target_weight = target_quality_weight(
+            target_source, target_confidence, s.model.target_quality
         )
-        if (
-            best.get("wind_speed_kn") is not None
-            and best.get("wind_dir_deg") is not None
-            and ref.get("wind_speed_kn") is not None
-            and ref.get("wind_dir_deg") is not None
-        ):
-            obs_u, obs_v = WindVector(
-                speed_kn=best["wind_speed_kn"], direction_deg=best["wind_dir_deg"]
-            ).to_uv()
-            target_u = obs_u - ref_u
-            target_v = obs_v - ref_v
+        target_obs_speed = best.get("wind_speed_kn")
 
     return FeatureResult(
         point_id=point_id,
@@ -508,8 +529,13 @@ def build_features_for(
             # into vs-ERA5 and vs-real-station — this key was never set, so
             # every sample was silently counted as "real". Now the source of
             # the ground-truth observation is propagated to the backtest.
-            "obs_source": (best.get("source") if nearest_obs else None),
-            "obs_confidence": (best.get("confidence") if nearest_obs else None),
+            "obs_source": (best.get("source") if best else None),
+            "obs_confidence": (best.get("confidence") if best else None),
+            # Deep Audit R2: hierarchy metadata consumed by the trainer (R8
+            # sample weights) and by evaluation splits (R9).
+            "obs_speed_kn": target_obs_speed,
+            "target_tier": target_tier,
+            "target_weight": target_weight,
         },
     )
 

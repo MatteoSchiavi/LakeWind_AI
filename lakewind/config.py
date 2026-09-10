@@ -133,6 +133,21 @@ class WalkForwardConfig(BaseModel):
     min_train_samples: int = 200
 
 
+class TargetQualityConfig(BaseModel):
+    """Deep Audit R2: ground-truth hierarchy training weights.
+
+    station: real anemometers (ARPA/Domaso/DIY/Netatmo) — full trust.
+    intermediate_reanalysis: CERRA-class regional reanalysis.
+    era5: global reanalysis surrogate — the audit's measured 100%-of-targets
+    defect means ERA5 must be DEMOTED, not removed (it still teaches
+    synoptic structure that a thin station ledger cannot).
+    """
+
+    station_weight: float = 1.0
+    intermediate_reanalysis_weight: float = 0.6
+    era5_weight: float = 0.4
+
+
 class ModelConfig(BaseModel):
     feature_set_version: str
     backend: str = "lightgbm"  # "lightgbm" or "xgboost_gpu"
@@ -165,6 +180,22 @@ class ModelConfig(BaseModel):
     # Foehn gradient and thermal-contrast features read this deterministic
     # model's forecast instead of an unordered latest-run pick.
     aux_reference_model: str = "icon_eu"
+    # --- Deep Audit R2: ground-truth hierarchy weights ---
+    target_quality: TargetQualityConfig = Field(default_factory=TargetQualityConfig)
+    # --- Deep Audit R8: production training regime ---
+    # Production retraining window. 12-18 months keeps seasonal competence
+    # (the former 60-day default made the deployed model seasonally blind);
+    # walk_forward.train_window_days stays 60 — that is the EVALUATION
+    # protocol, not the production regime.
+    train_window_days: int = 548
+    # Exponential recency weighting half-life (days). Recent regimes dominate
+    # without erasing the seasonal prior.
+    recency_half_life_days: float = 90.0
+    # Windy-sample upweight: the business metric is decision precision at
+    # sailing-relevant thresholds while the wind distribution is heavily
+    # calm-imbalanced.
+    windy_sample_upweight: float = 2.5
+    windy_threshold_kn: float = 8.0
 
 
 class SuccessCriteria(BaseModel):

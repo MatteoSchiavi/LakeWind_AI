@@ -101,6 +101,11 @@ def _build_dataset(
             row = {"point_id": pid, "valid_time": cur, **fr.feature_vector}
             row["target_u"] = fr.target_u
             row["target_v"] = fr.target_v
+            # Deep Audit R2/R8: hierarchy metadata travels with every sample
+            # (target-quality weight + observed speed for the windy upweight).
+            row["target_weight"] = fr.meta.get("target_weight")
+            row["obs_speed_kn"] = fr.meta.get("obs_speed_kn")
+            row["obs_source"] = fr.meta.get("obs_source")
             rows.append(row)
         cur = cur + timedelta(hours=1)
 
@@ -110,7 +115,10 @@ def _build_dataset(
 
 def _feature_matrix(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
     """Drop non-feature columns and return (X, feature_names)."""
-    drop_cols = {"point_id", "valid_time", "target_u", "target_v"}
+    drop_cols = {
+        "point_id", "valid_time", "target_u", "target_v",
+        "target_weight", "obs_speed_kn", "obs_source",  # Deep Audit R2/R8 meta
+    }
     feature_cols = [c for c in df.columns if c not in drop_cols]
     X = df[feature_cols].copy()
     for c in X.columns:
@@ -119,6 +127,45 @@ def _feature_matrix(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
         elif X[c].dtype == object:
             X[c] = pd.to_numeric(X[c], errors="coerce")
     return X, feature_cols
+
+
+def compute_sample_weights(
+    df: pd.DataFrame,
+    *,
+    half_life_days: float = 0.0,
+    windy_upweight: float = 1.0,
+    windy_threshold_kn: float = 8.0,
+    reference_time: pd.Timestamp | datetime | None = None,
+) -> np.ndarray:
+    """Combined per-sample training weights (Deep Audit R2 + R8).
+
+    product of three factors (1.0 whenever the corresponding input is absent,
+    so callers with legacy datasets get unchanged behaviour):
+      - target quality (R2): station 1.0 / intermediate reanalysis ~0.6 /
+        ERA5 ~0.4, times the observation's own confidence — computed in the
+        feature builder and carried in the ``target_weight`` column.
+      - recency (R8): exponential 0.5**(age_days / half_life) so recent
+        regimes dominate without erasing the seasonal prior.
+      - windy upweight (R8): ``windy_upweight`` for samples whose observed
+        speed >= ``windy_threshold_kn`` — the business metric is decision
+        precision at sailing thresholds, the wind distribution is calm-heavy.
+    """
+    w = np.ones(len(df), dtype=float)
+    if "target_weight" in df.columns:
+        tw = pd.to_numeric(df["target_weight"], errors="coerce").to_numpy(dtype=float)
+        tw = np.where(np.isfinite(tw), tw, 1.0)
+        w = w * np.clip(tw, 0.0, 1.0)
+    if "obs_speed_kn" in df.columns and windy_upweight and windy_upweight > 1.0:
+        sp = pd.to_numeric(df["obs_speed_kn"], errors="coerce").to_numpy(dtype=float)
+        sp = np.where(np.isfinite(sp), sp, 0.0)
+        w = w * np.where(sp >= windy_threshold_kn, float(windy_upweight), 1.0)
+    if "valid_time" in df.columns and half_life_days and half_life_days > 0:
+        vt = pd.to_datetime(df["valid_time"])
+        ref = pd.Timestamp(reference_time) if reference_time is not None else vt.max()
+        age_days = (ref - vt).dt.total_seconds().to_numpy(dtype=float) / 86400.0
+        age_days = np.clip(np.where(np.isfinite(age_days), age_days, 0.0), 0.0, None)
+        w = w * np.power(0.5, age_days / float(half_life_days))
+    return w
 
 
 def _time_ordered_split(
@@ -154,11 +201,16 @@ def _train_lightgbm(
     y_val: np.ndarray | None = None,
     early_stopping_rounds: int = 0,
     max_rounds: int | None = None,
+    sample_weight: np.ndarray | None = None,
+    sample_weight_val: np.ndarray | None = None,
 ) -> tuple[Any, dict[str, float]]:
     """Train one LightGBM quantile model.
 
     With a validation set: early stopping on the validation pinball loss and
     `predict` automatically uses `best_iteration`. Returns (model, info).
+    Deep Audit R2/R8: optional per-sample weights (target quality x recency
+    x windy upweight) applied to BOTH train and validation so early stopping
+    optimizes the same weighted objective the model is trained on.
     """
     import lightgbm as lgb
 
@@ -168,10 +220,10 @@ def _train_lightgbm(
     p["alpha"] = quantile
     p["verbose"] = -1
     num_rounds = max_rounds or p.pop("num_iterations", 500)
-    dtrain = lgb.Dataset(X, label=y, free_raw_data=False)
+    dtrain = lgb.Dataset(X, label=y, weight=sample_weight, free_raw_data=False)
     info: dict[str, float] = {}
     if X_val is not None and y_val is not None and early_stopping_rounds > 0:
-        dval = lgb.Dataset(X_val, label=y_val, reference=dtrain)
+        dval = lgb.Dataset(X_val, label=y_val, weight=sample_weight_val, reference=dtrain)
         model = lgb.train(
             p,
             dtrain,
@@ -247,6 +299,8 @@ def _train_xgboost_gpu(
     y_val: np.ndarray | None = None,
     early_stopping_rounds: int = 0,
     max_rounds: int | None = None,
+    sample_weight: np.ndarray | None = None,
+    sample_weight_val: np.ndarray | None = None,
 ) -> tuple[Any, dict[str, float]]:
     """Train one XGBoost quantile model on GPU (falls back to CPU if no GPU).
 
@@ -282,15 +336,21 @@ def _train_xgboost_gpu(
         # sklearn API: early_stopping_rounds is a constructor param in 2.x
         model.set_params(early_stopping_rounds=early_stopping_rounds)
         try:
-            model.fit(X, y, eval_set=[(X_val, y_val)], verbose=False)
+            model.fit(
+                X, y,
+                sample_weight=sample_weight,
+                eval_set=[(X_val, y_val)],
+                sample_weight_eval_set=[sample_weight_val] if sample_weight_val is not None else None,
+                verbose=False,
+            )
             info["best_iteration"] = float(getattr(model, "best_iteration", n_estimators) or n_estimators)
         except TypeError:
-            # Older sklearn wrapper without eval_set quantile support:
+            # Older sklearn wrapper without eval_set/sample-weight support:
             # fall back to fixed-rounds training.
             model = xgb.XGBRegressor(**xgb_params)
-            model.fit(X, y, verbose=False)
+            model.fit(X, y, sample_weight=sample_weight, verbose=False)
     else:
-        model.fit(X, y, verbose=False)
+        model.fit(X, y, sample_weight=sample_weight, verbose=False)
     pred = model.predict(X)
     info["insample_mae"] = float(np.mean(np.abs(pred - y)))
     if X_val is not None and y_val is not None and "best_iteration" in info:
@@ -324,15 +384,18 @@ def _get_backend() -> str:
 
 
 def _train_one(backend: str, X, y, q, params, *, X_val=None, y_val=None,
-               early_stopping_rounds: int = 0, max_rounds: int | None = None):
+               early_stopping_rounds: int = 0, max_rounds: int | None = None,
+               sample_weight=None, sample_weight_val=None):
     if backend == "xgboost_gpu":
         return _train_xgboost_gpu(
             X, y, q, params, X_val=X_val, y_val=y_val,
             early_stopping_rounds=early_stopping_rounds, max_rounds=max_rounds,
+            sample_weight=sample_weight, sample_weight_val=sample_weight_val,
         )
     return _train_lightgbm(
         X, y, q, params, X_val=X_val, y_val=y_val,
         early_stopping_rounds=early_stopping_rounds, max_rounds=max_rounds,
+        sample_weight=sample_weight, sample_weight_val=sample_weight_val,
     )
 
 
@@ -432,7 +495,13 @@ def train(
     s = load_settings()
     backend = backend or _get_backend()
     end = end or utcnow()
-    start = start or (end - timedelta(days=s.model.walk_forward.train_window_days))
+    # Deep Audit R8: production retraining uses the LONG window (12-18 months)
+    # from model.train_window_days; the 60-day walk_forward window is the
+    # evaluation protocol and no longer silently caps deployed models.
+    production_window_days = int(
+        getattr(s.model, "train_window_days", 0) or s.model.walk_forward.train_window_days
+    )
+    start = start or (end - timedelta(days=production_window_days))
 
     df = dataset if dataset is not None else _build_dataset(
         point_id, start, end, reference_forecast_model=reference_forecast_model
@@ -455,19 +524,41 @@ def train(
     es_rounds = int(getattr(s.model, "early_stopping_rounds", 150))
     max_rounds = int(getattr(s.model, "max_boost_rounds", 3000))
     df_tr, df_val = _time_ordered_split(df, val_fraction)
+    # Deep Audit R2/R8: sample weights (target quality x recency x windy).
+    # Reference time for recency is the end of the available history so the
+    # newest samples weigh ~1.0 regardless of when training is invoked.
+    half_life = float(getattr(s.model, "recency_half_life_days", 0.0) or 0.0)
+    windy_up = float(getattr(s.model, "windy_sample_upweight", 1.0) or 1.0)
+    windy_thr = float(getattr(s.model, "windy_threshold_kn", 8.0) or 8.0)
+    weight_ref = df["valid_time"].max()
     if df_val is None:
         X_tr, y_tr_u, y_tr_v = X_all, y_u, y_v
         feature_cols_tr = list(feature_cols)
         X_val = y_val_u = y_val_v = None
+        sw_tr_u = sw_tr_v = compute_sample_weights(
+            df, half_life_days=half_life, windy_upweight=windy_up,
+            windy_threshold_kn=windy_thr, reference_time=weight_ref,
+        )
+        sw_val_u = sw_val_v = None
         logger.info("Validation split disabled/too small — fixed-rounds training on all data")
     else:
         X_tr, feature_cols_tr = _feature_matrix(df_tr)
         X_val, _ = _feature_matrix(df_val)
         y_tr_u, y_tr_v = df_tr["target_u"].values, df_tr["target_v"].values
         y_val_u, y_val_v = df_val["target_u"].values, df_val["target_v"].values
+        sw_tr_u = sw_tr_v = compute_sample_weights(
+            df_tr, half_life_days=half_life, windy_upweight=windy_up,
+            windy_threshold_kn=windy_thr, reference_time=weight_ref,
+        )
+        sw_val_u = sw_val_v = compute_sample_weights(
+            df_val, half_life_days=0.0, windy_upweight=windy_up,
+            windy_threshold_kn=windy_thr, reference_time=weight_ref,
+        )
         logger.info(
-            "Time-ordered split: %d train / %d val (val ends %s)",
+            "Time-ordered split: %d train / %d val (val ends %s); weighted objective "
+            "(half-life %.0fd, windy %.1fx >= %.0fkn)",
             len(df_tr), len(df_val), df_val["valid_time"].max(),
+            half_life, windy_up, windy_thr,
         )
 
     # --- Phase 3: two-phase feature selection (train side only) ---
@@ -527,7 +618,10 @@ def train(
 
     # Train one model per (target, quantile, member)
     params = s.model.lgbm_params.model_dump()
-    for target_name, y_tr, y_val in (("u", y_tr_u, y_val_u), ("v", y_tr_v, y_val_v)):
+    for target_name, y_tr, y_val, sw_tr, sw_val in (
+        ("u", y_tr_u, y_val_u, sw_tr_u, sw_val_u),
+        ("v", y_tr_v, y_val_v, sw_tr_v, sw_val_v),
+    ):
         for q in s.model.quantiles:
             q_key = f"{target_name}_q{int(q*100):02d}"
             for member in members:
@@ -536,6 +630,7 @@ def train(
                     X_val=X_val, y_val=y_val,
                     early_stopping_rounds=es_rounds if X_val is not None else 0,
                     max_rounds=max_rounds,
+                    sample_weight=sw_tr, sample_weight_val=sw_val,
                 )
                 for k, v in info.items():
                     metrics[f"{q_key}_{k}"] = v

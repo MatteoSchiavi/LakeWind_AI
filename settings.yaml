@@ -199,6 +199,22 @@ model:
   # Deep Audit R10: deterministic model used for aux-point (Zurich/Milano/…)
   # gradients — replaces the former unordered rows[0] pick.
   aux_reference_model: "icon_eu"
+  # --- Deep Audit R2: ground-truth hierarchy training weights ---
+  # Stations (ARPA/Domaso/DIY/Netatmo) train at full weight; CERRA-class
+  # regional reanalysis at ~0.6; ERA5 at ~0.4 (demoted, not removed).
+  # Weights combine multiplicatively with each observation's confidence.
+  target_quality:
+    station_weight: 1.0
+    intermediate_reanalysis_weight: 0.6
+    era5_weight: 0.4
+  # --- Deep Audit R8: production training regime ---
+  # Production retraining uses 12-18 months of history (the 60-day window in
+  # walk_forward is the evaluation protocol). Recency weighting has a ~90-day
+  # half-life; sailing-relevant samples (obs >= 8 kn) are upweighted 2.5x.
+  train_window_days: 548
+  recency_half_life_days: 90.0
+  windy_sample_upweight: 2.5
+  windy_threshold_kn: 8.0
   # Section 7.2 — upgrade gate. Do not add a second model unless these are met.
   upgrade_gate:
     min_mae_improvement_kn: 0.2
