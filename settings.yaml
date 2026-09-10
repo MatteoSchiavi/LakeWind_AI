@@ -237,6 +237,10 @@ model:
   # trains the calibrators with this alpha on every retrain.
   conformal_enabled: true
   conformal_alpha: 0.2
+  # --- Deep Audit R7: feature pack (features/feature_pack.py) ---
+  # lead_hours, spot one-hots, real obs lags + 3h trend, online rolling bias
+  # (6/12/24h), time harmonics, regime one-hots, forecast ramp shape.
+  feature_pack_enabled: true
   # Section 7.2 — upgrade gate. Do not add a second model unless these are met.
   upgrade_gate:
     min_mae_improvement_kn: 0.2

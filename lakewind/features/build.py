@@ -487,6 +487,18 @@ def build_features_for(
         fv["obs_nearest_missing"] = True
         fv["obs_nearest_confidence"] = 0.0
 
+    # 7) DEEP AUDIT R7 FEATURE PACK — lead time, point identity, REAL obs
+    # lags + trend, online rolling bias, time harmonics, regime label,
+    # forecast ramp shape. The audit ranked these the highest-value feature
+    # additions; most carry information no amount of tuning can recover
+    # because the model was never offered it.
+    if getattr(s.model, "feature_pack_enabled", True):
+        try:
+            from lakewind.features.feature_pack import compute_feature_pack
+            compute_feature_pack(fv, point_id, valid_time, ref, fetch_at=_fetch)
+        except Exception as exc:
+            logger.debug("R7 feature pack skipped: %s", exc)
+
     # TARGET (Spec §6) — with the Deep Audit R2 ground-truth hierarchy.
     # The former selector took the DISTANCE-NEAREST observation, which the
     # distance-zero-by-construction ERA5 rows always won (100% of training

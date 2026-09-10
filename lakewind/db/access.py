@@ -1067,6 +1067,55 @@ def fetch_latest_observation_near(
     return [r for r in rows if _dist_km(r) <= max_distance_km]
 
 
+def fetch_observations_near_range(
+    lat: float,
+    lon: float,
+    start_time: datetime,
+    end_time: datetime,
+    max_distance_km: float = 25.0,
+) -> list[dict[str, Any]]:
+    """All observations near (lat, lon) within a valid_time range (R7).
+
+    One bulk query serving the R7 feature pack: obs lags (t-1h/-2h/-3h) and
+    the online rolling-bias features need the recent observed trajectory in
+    a single pass instead of one query per offset. Same bbox prefilter +
+    precise haversine filter contract as fetch_latest_observation_near.
+    """
+    dlat = max_distance_km / 111.0 * 1.2
+    dlon = max_distance_km / (111.0 * max(0.1, math.cos(math.radians(lat)))) * 1.2
+    sql = f"""
+        SELECT * FROM {load_settings().db.observations_table}
+        WHERE timestamp BETWEEN ? AND ?
+          AND lat BETWEEN ? AND ?
+          AND lon BETWEEN ? AND ?
+        ORDER BY timestamp ASC
+    """
+    with cursor(read_only=True) as conn:
+        cur = conn.execute(
+            sql,
+            [start_time, end_time, lat - dlat, lat + dlat, lon - dlon, lon + dlon],
+        )
+        cols = [d[0] for d in cur.description]
+        rows = [dict(zip(cols, row, strict=False)) for row in cur.fetchall()]
+
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        olat = r.get("lat") or 0.0
+        olon = r.get("lon") or 0.0
+        phi1, phi2 = math.radians(lat), math.radians(olat)
+        dphi = math.radians(olat - lat)
+        dlam = math.radians(olon - lon)
+        a = (
+            math.sin(dphi / 2.0) ** 2
+            + math.cos(phi1) * math.cos(phi2) * math.sin(dlam / 2.0) ** 2
+        )
+        dist = 2.0 * 6371.0 * math.asin(math.sqrt(a))
+        if dist <= max_distance_km:
+            r["dist_km"] = dist
+            out.append(r)
+    return out
+
+
 __all__ = [
     "cursor",
     "write_lock",
@@ -1090,4 +1139,5 @@ __all__ = [
     "list_sailing_log",
     "fetch_forecasts_at",
     "fetch_latest_observation_near",
+    "fetch_observations_near_range",
 ]

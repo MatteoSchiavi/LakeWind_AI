@@ -220,6 +220,10 @@ class ModelConfig(BaseModel):
     # time; alpha is the miscoverage rate (0.2 -> the 80% band contract).
     conformal_enabled: bool = True
     conformal_alpha: float = 0.2
+    # --- Deep Audit R7: feature pack ---
+    # lead_hours, spot one-hots, real obs lags + trend, online rolling bias,
+    # time harmonics, regime one-hots, ramp shape (features/feature_pack.py).
+    feature_pack_enabled: bool = True
 
 
 class SuccessCriteria(BaseModel):
