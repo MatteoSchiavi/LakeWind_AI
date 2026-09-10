@@ -68,6 +68,9 @@ class BacktestReport:
     nwp_mae_vs_era5: float | None = None
     nwp_mae_vs_real: float | None = None
     per_regime: dict[str, dict[str, float]] = field(default_factory=dict)
+    # Deep Audit R9: product-term evaluation upgrades
+    per_lead: dict[str, dict[str, float]] = field(default_factory=dict)
+    event_verification: dict[str, dict[str, float]] = field(default_factory=dict)
     windows: list[dict[str, Any]] = field(default_factory=list)
 
 
@@ -140,6 +143,75 @@ def _materialize_test_samples(
             )
         cur += timedelta(hours=1)
     return rows
+
+
+# --- Deep Audit R9: event-based verification (product-term metrics) ---
+
+_LEAD_BUCKETS = ((0.0, 3.0, "0-3h"), (3.0, 6.0, "3-6h"), (6.0, 12.0, "6-12h"), (12.0, 24.0, "12-24h"))
+
+
+def lead_bucket(lead_hours: float | None) -> str:
+    """Bucket a lead time for per-lead evaluation (0-3/3-6/6-12/12-24/unknown)."""
+    if lead_hours is None:
+        return "unknown"
+    for lo, hi, name in _LEAD_BUCKETS:
+        if lo <= lead_hours < hi:
+            return name
+    return "unknown"
+
+
+def event_probability(center: float, half_width_80: float, threshold: float) -> float:
+    """P(speed >= threshold) implied by the calibrated 80% interval.
+
+    The conformal-calibrated band [center - ee, center + ee] covers 80%, so
+    sigma = ee / 1.2816 (the 80% two-sided normal quantile). The probability
+    is the normal tail above the threshold — a parametric but calibrated
+    read of the quantile output, suitable for Brier evaluation.
+    """
+    import math as _math
+
+    ee = max(0.05, float(half_width_80))
+    sigma = ee / 1.2816
+    z = (float(threshold) - float(center)) / sigma
+    # P(X >= threshold) = 1 - Phi(z) = 0.5 * erfc(z / sqrt(2))
+    p = 0.5 * _math.erfc(z / _math.sqrt(2.0))
+    return min(1.0, max(0.0, p))
+
+
+def brier_score(probs: list[float], outcomes: list[bool]) -> float:
+    """Mean (p - o)^2 — 0 is perfect, 0.25 is climatology-guessing."""
+    if not probs:
+        return float("nan")
+    return float(np.mean([(p - (1.0 if o else 0.0)) ** 2 for p, o in zip(probs, outcomes)]))
+
+
+def reliability_bins(probs: list[float], outcomes: list[bool], n_bins: int = 5) -> list[dict[str, float]]:
+    """Reliability diagram data: forecast-probability bucket -> observed frequency."""
+    bins: list[dict[str, float]] = []
+    edges = [i / n_bins for i in range(n_bins + 1)]
+    for i in range(n_bins):
+        lo, hi = edges[i], edges[i + 1]
+        idx = [j for j, p in enumerate(probs) if (lo <= p < hi) or (i == n_bins - 1 and p == hi)]
+        bins.append({
+            "bin_low": lo,
+            "bin_high": hi,
+            "n": float(len(idx)),
+            "mean_forecast_prob": float(np.mean([probs[j] for j in idx])) if idx else float("nan"),
+            "observed_frequency": float(np.mean([1.0 if outcomes[j] else 0.0 for j in idx])) if idx else float("nan"),
+        })
+    return bins
+
+
+def _row_lead_hours(s_row: dict[str, Any]) -> float | None:
+    """Lead time of a test sample from its R7 feature vector (None for legacy)."""
+    fv = s_row.get("feature_vector")
+    if not isinstance(fv, dict):
+        return None
+    v = fv.get("lead_hours")
+    try:
+        return float(v) if v is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 def _persistence_prediction(point_id: str, at_time: datetime) -> tuple[float, float] | None:
@@ -276,6 +348,10 @@ def run_backtest(
         "foehn": {"cand_mae": [], "pers_mae": [], "nwp_mae": []},
         "calm": {"cand_mae": [], "pers_mae": [], "nwp_mae": []},
     }
+    # Deep Audit R9: per-lead + event-based collections
+    per_lead: dict[str, dict[str, list[float]]] = {}
+    event_probs: dict[float, list[float]] = {8.0: [], 12.0: []}
+    event_outcomes: dict[float, list[bool]] = {8.0: [], 12.0: []}
     windows_summary: list[dict[str, Any]] = []
 
     for w in windows:
@@ -320,6 +396,20 @@ def run_backtest(
                 nwp_dir_err = circular_direction_error_deg(s_row["ref_dir"], s_row["obs_dir"])
                 nwp_errors.append(nwp_err)
                 nwp_dir_errors.append(nwp_dir_err)
+
+                # Deep Audit R9: per-lead attribution (lead_hours comes from
+                # the R7 feature pack) + event-based verification at the
+                # sailing decision thresholds.
+                lead = _row_lead_hours(s_row)
+                bucket = lead_bucket(lead)
+                per_lead.setdefault(bucket, {"cand_mae": [], "nwp_mae": []})
+                per_lead[bucket]["cand_mae"].append(cand_err)
+                per_lead[bucket]["nwp_mae"].append(nwp_err)
+                for thr in (8.0, 12.0):
+                    event_probs[thr].append(
+                        event_probability(cand_speed, cand.expected_error_kn, thr)
+                    )
+                    event_outcomes[thr].append(s_row["obs_speed"] >= thr)
 
                 # V5: Separate by observation source
                 if s_row.get("is_era5"):
@@ -402,6 +492,32 @@ def run_backtest(
             "nwp_mae_kn": float(np.nanmean(d["nwp_mae"])) if d["nwp_mae"] else 0.0,
         }
 
+    # Deep Audit R9: per-lead + event-verification summaries
+    per_lead_summary: dict[str, dict[str, float]] = {
+        b: {
+            "n": float(len(d["cand_mae"])),
+            "cand_mae_kn": round(float(np.mean(d["cand_mae"])), 3) if d["cand_mae"] else 0.0,
+            "nwp_mae_kn": round(float(np.mean(d["nwp_mae"])), 3) if d["nwp_mae"] else 0.0,
+        }
+        for b, d in per_lead.items()
+    }
+    event_summary: dict[str, dict[str, Any]] = {}
+    for thr, probs in event_probs.items():
+        outcomes = event_outcomes[thr]
+        if not probs:
+            continue
+        bins = reliability_bins(probs, outcomes)
+        event_summary[f"ge_{int(thr)}kn"] = {
+            "n": float(len(probs)),
+            "base_rate": round(float(np.mean([1.0 if o else 0.0 for o in outcomes])), 4),
+            "brier": round(brier_score(probs, outcomes), 4),
+            "reliability": [
+                {**b, "mean_forecast_prob": round(b["mean_forecast_prob"], 4),
+                 "observed_frequency": round(b["observed_frequency"], 4)}
+                for b in bins
+            ],
+        }
+
     return BacktestReport(
         candidate_model_version=candidate_model_version,
         n_test_samples=len(cand_errors),
@@ -425,6 +541,8 @@ def run_backtest(
         nwp_mae_vs_era5=round(float(np.mean(nwp_errors_era5)), 3) if nwp_errors_era5 else None,
         nwp_mae_vs_real=round(float(np.mean(nwp_errors_real)), 3) if nwp_errors_real else None,
         per_regime=per_regime_summary,
+        per_lead=per_lead_summary,
+        event_verification=event_summary,
         windows=windows_summary,
     )
 

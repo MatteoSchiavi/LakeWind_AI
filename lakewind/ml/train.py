@@ -48,6 +48,7 @@ from lakewind.config import load_settings
 from lakewind.db import access
 from lakewind.features.build import build_features_for
 from lakewind.utils.timeutil import utcnow
+from lakewind.utils.wind import WindVector
 
 logger = logging.getLogger(__name__)
 
@@ -663,7 +664,42 @@ def train(
     }, indent=2))
     model_paths["features"] = feature_path
 
-    # Register in DB
+    # Register in DB — with SPEED-SPACE metrics (Deep Audit R9).
+    # The registry previously stored the BIAS-u validation MAE, which is not
+    # comparable across model versions and not the product metric. Reconstruct
+    # observed and predicted speeds on the validation slice and register the
+    # speed-space MAE + circular direction error.
+    speed_mae: float | None = None
+    dir_err: float | None = None
+    if X_val is not None and df_val is not None:
+        try:
+            bundle = load_model_bundle(mv)
+            bu = predict_with_bundle(bundle, X_val, "u", 0.5)
+            bv = predict_with_bundle(bundle, X_val, "v", 0.5)
+            ref_col_speed = f"fc_{reference_forecast_model}_speed"
+            ref_col_dir = f"fc_{reference_forecast_model}_dir"
+            if ref_col_speed in X_val.columns and ref_col_dir in X_val.columns:
+                speed_errs: list[float] = []
+                dir_errs: list[float] = []
+                for i in range(len(X_val)):
+                    rs = X_val[ref_col_speed].iloc[i]
+                    rd = X_val[ref_col_dir].iloc[i]
+                    if pd.isna(rs) or pd.isna(rd):
+                        continue
+                    ru, rv = WindVector(float(rs), float(rd)).to_uv()
+                    # observed = reference + true bias; predicted = reference + predicted bias
+                    ou, ov = ru + float(df_val["target_u"].iloc[i]), rv + float(df_val["target_v"].iloc[i])
+                    pu, pv = ru + float(bu[i]), rv + float(bv[i])
+                    o_vec, p_vec = WindVector.from_uv(ou, ov), WindVector.from_uv(pu, pv)
+                    speed_errs.append(abs(o_vec.speed_kn - p_vec.speed_kn))
+                    d = (o_vec.direction_deg - p_vec.direction_deg + 180.0) % 360.0 - 180.0
+                    dir_errs.append(abs(d))
+                if speed_errs:
+                    speed_mae = float(np.mean(speed_errs))
+                    dir_err = float(np.mean(dir_errs))
+        except Exception as exc:
+            logger.debug("Speed-space registry metrics skipped: %s", exc)
+
     val_mae = metrics.get("u_q50_val_mae")
     access.register_model(
         model_version=mv,
@@ -671,15 +707,16 @@ def train(
         feature_set_version=s.model.feature_set_version,
         training_start=start.date(),
         training_end=end.date(),
-        backtest_mae_kn=float(val_mae) if val_mae is not None else 0.0,
-        backtest_dir_error_deg=None,
+        backtest_mae_kn=round(speed_mae, 4) if speed_mae is not None else 0.0,
+        backtest_dir_error_deg=round(dir_err, 3) if dir_err is not None else None,
         promoted=False,
         git_commit="",
         notes=(
             f"backend={backend}; ensemble={members}; "
             f"features={n_features}; samples={n_samples}; "
             f"val_split={val_fraction}; "
-            f"val_metrics: { {k: round(v, 4) for k, v in metrics.items() if 'val_' in k} }"
+            + (f"speed_space_val_mae_kn={speed_mae:.4f}; " if speed_mae is not None else "")
+            + f"bias_space_val_metrics: { {k: round(v, 4) for k, v in metrics.items() if 'val_' in k} }"
         ),
     )
 
