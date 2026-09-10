@@ -328,11 +328,11 @@ def build_features_for(
     # These are the BrevaGuru-style "complex variables created ad hoc" features.
     try:
         from lakewind.features.advanced import (
-            compute_thermal_inertia,
+            compute_foehn_strength_index,
+            compute_lake_breeze_potential,
             compute_macro_area_pressure_differentials,
             compute_stability_indices,
-            compute_lake_breeze_potential,
-            compute_foehn_strength_index,
+            compute_thermal_inertia,
         )
         # Thermal inertia (last 6 hours) — memoized (shares lag fetches)
         ti = compute_thermal_inertia(valid_time, point_id, hours=6, memo=memo)

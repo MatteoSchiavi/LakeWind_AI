@@ -18,6 +18,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from lakewind.config import load_settings
 from lakewind.features.physics import (
     compute_all_v7_physics,
     compute_cross_model_aggregates,
@@ -30,8 +31,6 @@ from lakewind.features.physics import (
     is_v7_feature,
     valley_axis_deg_for,
 )
-from lakewind.config import load_settings
-from lakewind.ml.tune import _pinball_loss
 from lakewind.ml.train import (
     _feature_matrix,
     _time_ordered_split,
@@ -40,8 +39,8 @@ from lakewind.ml.train import (
     predict_with_bundle,
     train,
 )
+from lakewind.ml.tune import _pinball_loss
 from lakewind.utils.wind import WindVector
-
 
 # ----------------------------------------------------------------- physics --
 
@@ -289,7 +288,6 @@ class TestTune:
 class TestBuilderV7Presence:
     def test_v7_features_in_builder_output(self, temp_db):
         """End-to-end: builder emits V7 physics keys from DB-backed samples."""
-        from datetime import datetime
 
         from lakewind.db import access
         from lakewind.features.build import build_features_for

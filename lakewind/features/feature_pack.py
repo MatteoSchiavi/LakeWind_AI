@@ -33,8 +33,9 @@ from __future__ import annotations
 
 import logging
 import math
+from collections.abc import Callable
 from datetime import datetime, timedelta
-from typing import Any, Callable
+from typing import Any
 
 from lakewind.config import load_settings
 from lakewind.db import access

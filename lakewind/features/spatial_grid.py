@@ -22,7 +22,6 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from lakewind.config import load_settings
-from lakewind.db import access
 
 logger = logging.getLogger(__name__)
 
@@ -111,10 +110,9 @@ def run_feature_discovery(
 
     Returns: list of top-N feature names.
     """
-    import numpy as np
     import pandas as pd
+
     from lakewind.features.build import build_features_for
-    from lakewind.config import load_settings
 
     s = load_settings()
     op_ids = s.operational_point_ids or [p.id for p in s.virtual_points]
@@ -122,7 +120,6 @@ def run_feature_discovery(
     # Build dataset
     rows = []
     cur = start
-    from datetime import timedelta
     while cur < end:
         for pid in op_ids:
             try:
@@ -164,7 +161,7 @@ def run_feature_discovery(
 
     # Get feature importance
     importance = model.feature_importances_
-    pairs = list(zip(feature_cols, importance))
+    pairs = list(zip(feature_cols, importance, strict=False))
     pairs.sort(key=lambda p: p[1], reverse=True)
 
     top_features = [name for name, imp in pairs[:top_n] if imp > 0.001]

@@ -46,7 +46,7 @@ class TestEventProbability:
 
     def test_probability_monotone_in_threshold(self):
         ps = [event_probability(10.0, 2.0, t) for t in (6, 8, 10, 12, 14)]
-        assert all(a > b for a, b in zip(ps, ps[1:]))
+        assert all(a > b for a, b in zip(ps, ps[1:], strict=False))
 
     def test_zero_width_band_uses_floor(self):
         p = event_probability(10.0, 0.0, 10.0)

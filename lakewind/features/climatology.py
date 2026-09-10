@@ -22,9 +22,8 @@ from __future__ import annotations
 import logging
 import math
 from datetime import datetime, timedelta
-from typing import Any, Optional
+from typing import Any
 
-from lakewind.config import load_settings
 from lakewind.db import access
 
 logger = logging.getLogger(__name__)
@@ -60,7 +59,10 @@ def compute_climatology_features(
     """
     global _CLIMATOLOGY_TABLE_CHECKED
     try:
-        from lakewind.collector.deep_backfill import ensure_climatology_table, get_climatology_normal
+        from lakewind.collector.deep_backfill import (
+            ensure_climatology_table,
+            get_climatology_normal,
+        )
     except ImportError:
         return _empty_climatology()
 

@@ -89,7 +89,7 @@ class BaseCollector(ABC):
             attempts = self.max_retries + 1
             rows = self.to_rows(raw)
             rows = self.validate(rows)
-            n = self.store(rows)
+            self.store(rows)
             latency = (time.perf_counter() - start) * 1000.0
             access.log_source_health(self.source_name, ok=True, latency_ms=latency)
             return CollectResult(

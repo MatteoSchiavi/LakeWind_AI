@@ -12,7 +12,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from lakewind.db import access as db_access  # noqa: E402
-from lakewind.db.schema import SCHEMA_SQL, INDEXES_SQL  # noqa: E402
+from lakewind.db.schema import INDEXES_SQL, SCHEMA_SQL  # noqa: E402
 from lakewind.db.schema_v2 import V2_SCHEMA_SQL  # noqa: E402
 
 

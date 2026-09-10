@@ -147,12 +147,13 @@ def tune_lgbm_params(
     remaining = max(0, n_trials - len(study.trials))
     if remaining == 0:
         print(f"Study already has {len(study.trials)} trials — nothing to run")
-    objective = lambda trial: _quantile_objective(
-        trial, X_tr, y_tr, X_val, y_val,
-        quantiles=list(s.model.quantiles),
-        max_rounds=rounds,
-        early_stopping_rounds=esr,
-    )
+    def objective(trial: optuna.trial.Trial) -> float:
+        return _quantile_objective(
+            trial, X_tr, y_tr, X_val, y_val,
+            quantiles=list(s.model.quantiles),
+            max_rounds=rounds,
+            early_stopping_rounds=esr,
+        )
     study.optimize(objective, n_trials=remaining, show_progress_bar=False)
 
     best = dict(study.best_params)
@@ -170,7 +171,7 @@ def tune_from_db(
     storage_path: str | None = None,
 ) -> dict[str, Any]:
     """Materialize the dataset from the DB and tune (CLI entry point)."""
-    from datetime import datetime, timedelta
+    from datetime import timedelta
 
     from lakewind.ml.train import _build_dataset
     from lakewind.utils.timeutil import utcnow

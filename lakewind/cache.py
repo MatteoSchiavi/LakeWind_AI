@@ -33,13 +33,10 @@ import threading
 import time
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
-from typing import Any, Generic, TypeVar
-
-K = TypeVar("K")
-V = TypeVar("V")
+from typing import Any
 
 
-class TTLCache(Generic[K, V]):
+class TTLCache[K, V]:
     """Thread-safe TTL + LRU cache.
 
     Parameters
@@ -139,7 +136,7 @@ class TTLCache(Generic[K, V]):
             }
 
 
-class SingleFlight:
+class SingleFlight[V]:
     """Coalesce concurrent async computations per key.
 
     Usage::
@@ -192,7 +189,7 @@ class SingleFlight:
             return result
 
 
-class SyncSingleFlight:
+class SyncSingleFlight[V]:
     """Thread-based coalescing for sync callers (Streamlit / CLI / tests).
 
     Concurrent threads calling `run(key, fn)` with the same key execute `fn`

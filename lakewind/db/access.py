@@ -12,13 +12,14 @@ from __future__ import annotations
 import json
 import logging
 import math
-import threading
 import shutil
+import threading
 import time
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 import duckdb
@@ -479,7 +480,7 @@ def backup_database(dest_dir: Path, offsite_dir: Path | None = None) -> Path:
     irreplaceable historical training asset — this closes the only
     unrecoverable-failure class the system has.
     """
-    s = load_settings()
+    load_settings()
     db_path = get_db_path()
     dest_dir.mkdir(parents=True, exist_ok=True)
     stamp = utcnow().strftime("%Y%m%d_%H%M%S")

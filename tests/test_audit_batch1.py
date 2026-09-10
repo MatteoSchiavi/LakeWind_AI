@@ -23,7 +23,6 @@ from lakewind.collector.base import (
 from lakewind.config import reset_caches
 from lakewind.utils.wind import circular_mean_deg, circular_spread_deg, circular_std_deg
 
-
 # --- R10: circular direction statistics (utils/wind.py) ---
 
 

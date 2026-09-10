@@ -41,8 +41,9 @@ def test_walk_forward_windows():
 
 
 def test_cpcv_paths_structure():
-    from lakewind.ml.cpcv_backtest import generate_cpcv_paths
     from math import comb
+
+    from lakewind.ml.cpcv_backtest import generate_cpcv_paths
 
     paths = generate_cpcv_paths(
         n_samples=600, n_groups=6, n_test_groups=2,

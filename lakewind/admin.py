@@ -15,8 +15,7 @@ from __future__ import annotations
 import logging
 import os
 import time
-from datetime import datetime, timedelta
-from typing import Any
+from datetime import timedelta
 
 from lakewind.config import load_settings
 from lakewind.db import access
@@ -124,7 +123,7 @@ def get_admin_status() -> str:
         uptime_h = uptime_s / 3600
         lines.append(f"  Uptime: {uptime_h:.1f}h")
     except Exception:
-        lines.append(f"  Uptime: (psutil not installed)")
+        lines.append("  Uptime: (psutil not installed)")
 
     # --- Program Status ---
     lines.append("")
@@ -229,7 +228,7 @@ def get_admin_status() -> str:
             )
             errors = cur.fetchall()
         if errors:
-            for src, err, when in errors:
+            for src, err, _when in errors:
                 lines.append(f"  ❌ {src}: {err[:60] if err else '?'}")
         else:
             lines.append("  ✅ No recent errors")

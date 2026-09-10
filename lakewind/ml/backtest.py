@@ -182,7 +182,7 @@ def brier_score(probs: list[float], outcomes: list[bool]) -> float:
     """Mean (p - o)^2 — 0 is perfect, 0.25 is climatology-guessing."""
     if not probs:
         return float("nan")
-    return float(np.mean([(p - (1.0 if o else 0.0)) ** 2 for p, o in zip(probs, outcomes)]))
+    return float(np.mean([(p - (1.0 if o else 0.0)) ** 2 for p, o in zip(probs, outcomes, strict=False)]))
 
 
 def reliability_bins(probs: list[float], outcomes: list[bool], n_bins: int = 5) -> list[dict[str, float]]:
@@ -249,7 +249,7 @@ def _persistence_prediction(point_id: str, at_time: datetime) -> tuple[float, fl
             [cutoff_end, cutoff_start, vp.lat - dlat, vp.lat + dlat, vp.lon - dlon, vp.lon + dlon],
         )
         cols = [d[0] for d in cur.description]
-        obs = [dict(zip(cols, row)) for row in cur.fetchall()]
+        obs = [dict(zip(cols, row, strict=False)) for row in cur.fetchall()]
     if not obs:
         return None
     # Pick the closest by haversine distance to the virtual point

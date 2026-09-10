@@ -162,7 +162,6 @@ async def _nightly_maintenance(retention_days: int) -> None:
     """R11: consistent backup + retention prune; failures never stop the loop."""
     from pathlib import Path
 
-    from lakewind.config import get_db_path
     from lakewind.db import access
 
     def _run() -> dict[str, Any]:

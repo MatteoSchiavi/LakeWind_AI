@@ -18,10 +18,9 @@ The recovery is idempotent — INSERT OR REPLACE means re-running is safe.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import Any
 
-from lakewind.config import load_settings
 from lakewind.db import access
 from lakewind.utils.timeutil import utcnow
 
@@ -147,7 +146,7 @@ def recover(
     # --- Recover forecast_runs ---
     fc_gap = gaps["forecast_runs"]
     if fc_gap["needs_recovery"] or force_full:
-        gap_days = min(fc_gap["gap_days"], max_days)
+        min(fc_gap["gap_days"], max_days)
         if fc_gap["latest"]:
             start = fc_gap["latest"] - timedelta(hours=1)  # slight overlap for safety
         else:
@@ -194,7 +193,7 @@ def recover(
     # --- Recover observations (ERA5) ---
     obs_gap = gaps["observations"]
     if obs_gap["needs_recovery"] or force_full:
-        gap_days = min(obs_gap["gap_days"], max_days)
+        min(obs_gap["gap_days"], max_days)
         if obs_gap["latest"]:
             start = obs_gap["latest"] - timedelta(hours=1)
         else:

@@ -24,7 +24,6 @@ from lakewind.features.targets import (
     tier_weight,
 )
 
-
 # --- R2: tier classification ---
 
 

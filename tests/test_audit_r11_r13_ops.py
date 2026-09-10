@@ -3,16 +3,14 @@ operational alerts) and R12 (collector fixture behaviour at the ARPA
 month-rollover boundary)."""
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 import duckdb
-import pytest
 
 from lakewind.config import reset_caches
 from lakewind.db import access
 from lakewind.db.schema import init_db
 from lakewind.utils.timeutil import utcnow
-
 
 NOW = utcnow().replace(tzinfo=None)
 

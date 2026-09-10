@@ -109,7 +109,7 @@ async def _check_alerts(ctx) -> None:
 
             # Send alert
             user = user_db.get_user(user_id)
-            lang = user.get("language", "en") if user else "en"
+            user.get("language", "en") if user else "en"
             units = user.get("units", "kn") if user else "kn"
             peak = max(spd for _, spd in future_preds)
             peak_time = max(future_preds, key=lambda x: x[1])[0]
@@ -161,7 +161,7 @@ async def _check_subscriptions(ctx) -> None:
             user = user_db.get_user(user_id)
             if not user:
                 continue
-            lang = user.get("language", "en")
+            user.get("language", "en")
             units = user.get("units", "kn")
             tz = user.get("timezone", "Europe/Rome")
 

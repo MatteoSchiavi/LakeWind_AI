@@ -107,7 +107,7 @@ def _load_regime_dir_artifact(model_version: str) -> dict[str, Any] | None:
     return artifact
 
 
-def apply_conformal_band(bp: "BiasPrediction", model_version: str) -> "BiasPrediction":
+def apply_conformal_band(bp: BiasPrediction, model_version: str) -> BiasPrediction:
     """Rescale the 90-10 bias band to the split-conformal interval (R4).
 
     For each target the band is re-centred on the median with half-width
@@ -212,7 +212,7 @@ def predict_at(
                 rows = cur.fetchall()
             if not rows:
                 raise RuntimeError("No model trained yet. Run `lakewind retrain` first.")
-            model_version = dict(zip(cols, rows[0]))["model_version"]
+            model_version = dict(zip(cols, rows[0], strict=False))["model_version"]
         else:
             model_version = prod["model_version"]
 
@@ -367,7 +367,7 @@ def _lightgbm_top_contribs(model: Any, X: pd.DataFrame, feat_names: list[str]) -
     if isinstance(shap_vals, list):
         shap_vals = shap_vals[0]
     arr = np.atleast_2d(shap_vals)[0]
-    pairs = list(zip(feat_names, arr.tolist()))
+    pairs = list(zip(feat_names, arr.tolist(), strict=False))
     pairs.sort(key=lambda p: abs(p[1]), reverse=True)
     return [(n, round(v, 3)) for n, v in pairs[:5] if abs(v) > 1e-6]
 
@@ -380,7 +380,7 @@ def _xgboost_top_contribs(model: Any, X: pd.DataFrame, feat_names: list[str]) ->
     contributions = model.predict(xgb.DMatrix(X), pred_contribs=True)
     # Returns shape (n_samples, n_features + 1) — last column is bias
     arr = np.atleast_2d(contributions)[0, :-1]
-    pairs = list(zip(feat_names, arr.tolist()))
+    pairs = list(zip(feat_names, arr.tolist(), strict=False))
     pairs.sort(key=lambda p: abs(p[1]), reverse=True)
     return [(n, round(v, 3)) for n, v in pairs[:5] if abs(v) > 1e-6]
 

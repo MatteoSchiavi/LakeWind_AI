@@ -40,10 +40,8 @@ from itertools import combinations
 from typing import Any
 
 import numpy as np
-import pandas as pd
 
 from lakewind.config import load_settings
-from lakewind.db import access
 from lakewind.features.build import build_features_for
 from lakewind.ml.infer import predict_at
 from lakewind.utils.wind import WindVector, circular_direction_error_deg
@@ -123,7 +121,7 @@ def generate_cpcv_paths(
         test_indices: list[int] = []
         for g in test_combo:
             test_indices.extend(groups[g])
-        test_set = set(test_indices)
+        set(test_indices)
 
         # Train = all groups not in test
         train_indices: list[int] = []
@@ -316,7 +314,7 @@ def run_cpcv_backtest(
     # Significance test: is candidate better than NWP?
     # Simple paired t-test (candidate < nwp for each path)
     from scipy import stats
-    diffs = [n - c for n, c in zip(nwp_maes, cand_maes)]
+    diffs = [n - c for n, c in zip(nwp_maes, cand_maes, strict=False)]
     if len(diffs) >= 5:
         t_stat, p_value = stats.ttest_1samp(diffs, 0)
         is_significant = (p_value < 0.05) and (t_stat > 0)

@@ -8,12 +8,11 @@ can be surfaced in /status (Telegram) and used to degrade prediction confidence.
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any
 
 from lakewind.db import access
 from lakewind.utils.timeutil import utcnow
-
 
 # Freshness SLA per source (minutes)
 FRESHNESS_SLA_MINUTES: dict[str, int] = {

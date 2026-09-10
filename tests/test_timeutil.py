@@ -1,7 +1,7 @@
 """Time-convention + timezone correctness tests (the V6.6 systemic fixes)."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
 from lakewind.utils.timeutil import local_hour, to_aware_utc, to_local, utcnow
@@ -10,14 +10,14 @@ from lakewind.utils.timeutil import local_hour, to_aware_utc, to_local, utcnow
 def test_utcnow_is_naive_utc():
     now = utcnow()
     assert now.tzinfo is None  # project convention: naive UTC
-    aware = now.replace(tzinfo=timezone.utc)
-    assert abs((aware - datetime.now(timezone.utc)).total_seconds()) < 5
+    aware = now.replace(tzinfo=UTC)
+    assert abs((aware - datetime.now(UTC)).total_seconds()) < 5
 
 
 def test_to_aware_utc_treats_naive_as_utc():
     dt = datetime(2026, 7, 15, 12, 0)  # naive
     aware = to_aware_utc(dt)
-    assert aware.utcoffset() == timezone.utc.utcoffset(aware)
+    assert aware.utcoffset() == UTC.utcoffset(aware)
     assert aware.hour == 12  # no shift — naive WAS utc
 
 

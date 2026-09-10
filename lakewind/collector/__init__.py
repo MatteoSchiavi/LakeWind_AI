@@ -7,7 +7,6 @@ to source_health but never blocks the others (Spec §8 graceful degradation).
 from __future__ import annotations
 
 import logging
-from dataclasses import asdict
 from typing import Any
 
 from lakewind.collector.arpa_hydro import ArpaHydroCollector
@@ -17,8 +16,8 @@ from lakewind.collector.diy_buoy import DiyBuoyCollector
 from lakewind.collector.domaso_station import DomasoCollector
 from lakewind.collector.era5_reanalysis import Era5ReanalysisCollector
 from lakewind.collector.open_meteo import OpenMeteoCollector
-from lakewind.config import load_settings
 from lakewind.collector.open_meteo_ensemble import OpenMeteoEnsembleCollector
+from lakewind.config import load_settings
 
 logger = logging.getLogger(__name__)
 

@@ -5,7 +5,6 @@ from datetime import datetime
 
 import pytest
 
-from lakewind.utils.wind import WindVector, bias_correct, circular_direction_error_deg
 from lakewind.utils.weather import (
     decode_weather_code,
     is_foggy,
@@ -14,6 +13,7 @@ from lakewind.utils.weather import (
     is_stormy,
     sailing_weather_warning,
 )
+from lakewind.utils.wind import WindVector, bias_correct, circular_direction_error_deg
 
 
 class TestWindVector:

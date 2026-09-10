@@ -18,7 +18,6 @@ import signal
 import sys
 import threading
 import traceback
-from datetime import datetime
 from typing import Any
 
 logger = logging.getLogger(__name__)

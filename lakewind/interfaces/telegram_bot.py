@@ -23,13 +23,10 @@ from __future__ import annotations
 
 import io
 import logging
-import math
 import os
 from datetime import datetime, timedelta
-from typing import Any
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.constants import ParseMode
 from telegram.ext import (
     ApplicationBuilder,
     CallbackQueryHandler,
@@ -40,15 +37,17 @@ from telegram.ext import (
 )
 
 from lakewind.config import load_secrets, load_settings
-from lakewind.db import access, users as user_db
-from lakewind.utils.weather import decode_weather_code, sailing_weather_warning, is_rainy
+from lakewind.db import access
+from lakewind.db import users as user_db
+from lakewind.utils.timeutil import to_local, utcnow
+from lakewind.utils.weather import decode_weather_code, sailing_weather_warning
 
 logger = logging.getLogger(__name__)
 
 # Phase 2: bounded on-demand image rendering. Pre-rendered artifacts cover
 # the normal path; this semaphore only caps the fallback so a burst of edge
 # requests can never occupy the thread pool with dozens of matplotlib jobs.
-import asyncio as _asyncio
+import asyncio as _asyncio  # noqa: E402 — semaphore needs settings, deliberate late import
 
 _render_semaphore = _asyncio.Semaphore(load_settings().cache.render_semaphore)
 
@@ -351,10 +350,10 @@ def _format_wind_infographic(pred: dict, forecast: dict | None, lang: str, units
     warning = sailing_weather_warning(weather_code, speed, vis)
 
     lines = [
-        f"━━━━━━━━━━━━━━━━━━━━━━",
+        "━━━━━━━━━━━━━━━━━━━━━━",
         f"  {weather_icon} {point}",
         f"  {_speed_color_emoji(speed)} {v:.1f} {u}  {compass}",
-        f"━━━━━━━━━━━━━━━━━━━━━━",
+        "━━━━━━━━━━━━━━━━━━━━━━",
         f"  Speed:   {_speed_bar(speed)} {v:.1f} {u}",
         f"  Gust:    {_speed_bar(gust)} {gv:.1f} {u}",
         f"  Dir:     {_fmt_cardinal(direction)} ({direction:.0f}°)",
@@ -371,13 +370,13 @@ def _format_wind_infographic(pred: dict, forecast: dict | None, lang: str, units
     if vis is not None:
         lines.append(f"  Vis:     {vis/1000:.1f} km")
 
-    lines.append(f"━━━━━━━━━━━━━━━━━━━━━━")
+    lines.append("━━━━━━━━━━━━━━━━━━━━━━")
     lines.append(f"  {sail_emoji} {sail_text}")
 
     if warning:
         lines.append(f"  ⚠️ {warning}")
 
-    lines.append(f"━━━━━━━━━━━━━━━━━━━━━━")
+    lines.append("━━━━━━━━━━━━━━━━━━━━━━")
     return "\n".join(lines)
 
 
@@ -403,7 +402,7 @@ def _format_today_table(preds: list[dict], lang: str, units: str) -> str:
     if not preds:
         return "No data available." if lang == "en" else "Nessun dato disponibile."
 
-    lines = [f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", f"  {'Hr':<5} {'Spd':>6} {'Gust':>6} {'Dir':>6} {'Conf':>6} {'Wx'}", f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"]
+    lines = ["━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", f"  {'Hr':<5} {'Spd':>6} {'Gust':>6} {'Dir':>6} {'Conf':>6} {'Wx'}", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"]
     for p in preds:
         vt = p.get("valid_time")
         if isinstance(vt, str):
@@ -423,7 +422,7 @@ def _format_today_table(preds: list[dict], lang: str, units: str) -> str:
 
         lines.append(f"  {vt.strftime('%H:%M'):<5} {v:>5.1f}{u[:0]} {gv:>5.1f}  {_fmt_cardinal(direction):>5}  {conf:>5.0f}%  {emoji}")
 
-    lines.append(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
     return "\n".join(lines)
 
 
@@ -434,11 +433,11 @@ async def _start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not allowed:
         await update.message.reply_text("⛔ You're not on the whitelist.")
         return
-    lang = _get_user_lang(user)
+    _get_user_lang(user)
     welcome = (
-        f"🌊 LakeWind AI\n\n"
-        f"Hyperlocal wind forecasts for Dongo-Dervio, Lake Como.\n"
-        f"Tap a button below to get started 👇"
+        "🌊 LakeWind AI\n\n"
+        "Hyperlocal wind forecasts for Dongo-Dervio, Lake Como.\n"
+        "Tap a button below to get started 👇"
     )
     await update.message.reply_text(welcome, reply_markup=_main_menu_kb())
 
@@ -614,11 +613,10 @@ async def _sailing_recommendation(query, user, lang, units) -> None:
 
     s = load_settings()
     tz = zoneinfo.ZoneInfo(s.project.timezone)
-    from lakewind.utils.timeutil import to_local, utcnow
 
     local_now = to_local(utcnow(), s.project.timezone)
 
-    lines = [f"━━━━━━━━━━━━━━━━━━━━━━", f"  ⛵ SAILING REPORT — {local_now.strftime('%a %b %d')}", f"━━━━━━━━━━━━━━━━━━━━━━"]
+    lines = ["━━━━━━━━━━━━━━━━━━━━━━", f"  ⛵ SAILING REPORT — {local_now.strftime('%a %b %d')}", "━━━━━━━━━━━━━━━━━━━━━━"]
 
     window = await store.get_multi_point_window(
         list(s.operational_point_ids or []),
@@ -652,15 +650,15 @@ async def _sailing_recommendation(query, user, lang, units) -> None:
 
     if best_point:
         v, u = _convert_speed(best_speed, units)
-        lines.append(f"━━━━━━━━━━━━━━━━━━━━━━")
+        lines.append("━━━━━━━━━━━━━━━━━━━━━━")
         lines.append(f"  🏆 BEST: {best_point.replace('_',' ').title()} @ {best_hour}:00")
         lines.append(f"  🌬 Peak: {v:.1f} {u}")
-        lines.append(f"  ⛵ GO SAILING!" if lang == "en" else f"  ⛵ VAI!")
+        lines.append("  ⛵ GO SAILING!" if lang == "en" else "  ⛵ VAI!")
     else:
-        lines.append(f"━━━━━━━━━━━━━━━━━━━━━━")
-        lines.append(f"  🏠 NOT WORTH IT TODAY" if lang == "en" else f"  🏠 NON VALE LA PENA")
+        lines.append("━━━━━━━━━━━━━━━━━━━━━━")
+        lines.append("  🏠 NOT WORTH IT TODAY" if lang == "en" else "  🏠 NON VALE LA PENA")
 
-    lines.append(f"━━━━━━━━━━━━━━━━━━━━━━")
+    lines.append("━━━━━━━━━━━━━━━━━━━━━━")
     await query.edit_message_text(
         chr(10).join(lines),
         reply_markup=_main_menu_kb(),
@@ -760,18 +758,18 @@ async def _status_display(query, lang) -> None:
     health = access.latest_source_health()
     freshness = check_freshness()
 
-    lines = [f"━━━━━━━━━━━━━━━━━━━━━━", f"  📊 DATA SOURCE STATUS", f"━━━━━━━━━━━━━━━━━━━━━━"]
+    lines = ["━━━━━━━━━━━━━━━━━━━━━━", "  📊 DATA SOURCE STATUS", "━━━━━━━━━━━━━━━━━━━━━━"]
     for h in health:
         mark = "✅" if h["ok"] else "❌"
         lines.append(f"  {mark} {h['source']:<25} {h['latency_ms']:.0f}ms")
 
-    lines.append(f"━━━━━━━━━━━━━━━━━━━━━━")
-    lines.append(f"  Freshness:")
+    lines.append("━━━━━━━━━━━━━━━━━━━━━━")
+    lines.append("  Freshness:")
     for f in freshness:
         mark = "✅" if f["is_fresh"] else "⚠️"
         lines.append(f"  {mark} {f['source']:<25} {f['age_minutes']:.0f}min ago")
 
-    lines.append(f"━━━━━━━━━━━━━━━━━━━━━━")
+    lines.append("━━━━━━━━━━━━━━━━━━━━━━")
     await query.edit_message_text(chr(10).join(lines), reply_markup=_main_menu_kb())
 
 
@@ -831,7 +829,6 @@ async def _sailing_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if not allowed:
         return
     # Reuse the callback handler logic
-    from telegram import CallbackQuery
     class FakeQuery:
         def __init__(self, msg):
             self.message = msg
@@ -863,7 +860,7 @@ async def _alert_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     allowed, user = await _authorize(update)
     if not allowed:
         return
-    lang = _get_user_lang(user)
+    _get_user_lang(user)
     if not context.args:
         alerts = user_db.list_alerts(update.effective_user.id)
         if not alerts:
@@ -960,12 +957,14 @@ async def _accuracy_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     allowed, user = await _authorize(update)
     if not allowed:
         return
-    lang = _get_user_lang(user)
+    _get_user_lang(user)
     point_id = (context.args[0] if context.args else None) or user.get("favorite_point_id") or "mid_channel"
 
-    from lakewind.db import access
-    from datetime import datetime, timedelta
+    from datetime import datetime
+
     import numpy as np
+
+    from lakewind.db import access
 
     now = utcnow()
 
@@ -999,7 +998,7 @@ async def _accuracy_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         if isinstance(vt, str):
             try:
                 vt = datetime.fromisoformat(vt)
-            except:
+            except Exception:
                 continue
         if vt is None:
             continue
@@ -1020,7 +1019,7 @@ async def _accuracy_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             if isinstance(ot, str):
                 try:
                     ot = datetime.fromisoformat(ot)
-                except:
+                except Exception:
                     continue
             if ot is None:
                 continue
@@ -1132,7 +1131,7 @@ async def _why_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             result = predict_at(point_id, now, compute_shap=True)
             if result and result.top_contributors:
                 contributors = result.top_contributors
-        except:
+        except Exception:
             pass
 
     lines = [
@@ -1155,8 +1154,8 @@ async def _why_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     # Add regime context
     try:
-        from lakewind.ml.regime import classify_regime
         from lakewind.features.build import build_features_for
+        from lakewind.ml.regime import classify_regime
         fr = build_features_for(point_id, now)
         if fr:
             result = classify_regime(now, fr.feature_vector)
@@ -1172,7 +1171,7 @@ async def _why_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 lines.append("   Storm conditions — high CAPE + strong wind")
             else:
                 lines.append("   Calm conditions — no dominant regime")
-    except:
+    except Exception:
         pass
 
     # Data maturity warning
@@ -1299,7 +1298,7 @@ async def _admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     if user is None:
         return
 
-    from lakewind.admin import is_admin, get_admin_status, get_admin_users_list
+    from lakewind.admin import get_admin_status, get_admin_users_list, is_admin
 
     if not is_admin(user.id):
         await update.message.reply_text("⛔ Admin only.")
@@ -1452,7 +1451,6 @@ def build_app():
 
 def run_bot() -> None:  # pragma: no cover
     """Start the Telegram bot."""
-    import asyncio
 
     from lakewind.interfaces.bot_scheduler import run_scheduler
 

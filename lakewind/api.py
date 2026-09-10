@@ -22,7 +22,6 @@ Run modes:
 from __future__ import annotations
 
 import asyncio
-import io
 import logging
 from contextlib import asynccontextmanager
 from datetime import timedelta
@@ -232,7 +231,7 @@ def _jsonify(obj: Any) -> Any:
     return obj
 
 
-def start_in_process(port: int, host: str = "0.0.0.0") -> "asyncio.Task[None]":
+def start_in_process(port: int, host: str = "0.0.0.0") -> asyncio.Task[None]:
     """Run uvicorn as a task on the current loop (bot post_init integration)."""
     import uvicorn
 

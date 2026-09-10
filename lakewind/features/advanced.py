@@ -37,9 +37,8 @@ All features are computed from data already in the DB (no extra API calls).
 from __future__ import annotations
 
 import logging
-import math
 from datetime import datetime, timedelta
-from typing import Any, Optional
+from typing import Any
 
 from lakewind.config import load_settings
 from lakewind.db import access
@@ -161,8 +160,7 @@ def compute_macro_area_pressure_differentials(
     For Foehn: zurich > milano by ≥8 hPa → Foehn likely.
     For Breva: milano > zurich (south high pressure) → southerly flow.
     """
-    s = load_settings()
-    lead = 180  # minutes
+    load_settings()
 
     def _get_pressure(point_id: str) -> float | None:
         fc = _memo_fetch(memo, point_id, valid_time, 180)

@@ -227,13 +227,13 @@ def _draw_station_model(ax, lon: float, lat: float, pred: dict[str, Any]) -> Non
 def _draw_data_overlay(ax, predictions: list[dict[str, Any]], valid_time: datetime) -> None:
     """Draw data overlay: pressure gradient badge + regime label in corner."""
     from lakewind.config import load_settings
-    s = load_settings()
+    load_settings()
 
     # Get regime from the first prediction's diagnostics (if available)
     regime_text = ""
     try:
-        from lakewind.ml.regime import classify_regime
         from lakewind.features.build import build_features_for
+        from lakewind.ml.regime import classify_regime
         if predictions:
             fr = build_features_for(predictions[0]["point_id"], valid_time)
             if fr:
@@ -258,7 +258,7 @@ def _draw_data_overlay(ax, predictions: list[dict[str, Any]], valid_time: dateti
 
     # Draw info badge in top-left corner
     from lakewind.config import load_settings
-    s = load_settings()
+    load_settings()
     info_lines = []
     if regime_text:
         info_lines.append(f"Regime: {regime_text}")
@@ -289,8 +289,9 @@ def _draw_panel_v3(
     show_data_overlay: bool = True,
 ) -> None:
     """Draw one V3 heatmap panel."""
-    from lakewind.config import load_settings
     from matplotlib.colors import LinearSegmentedColormap
+
+    from lakewind.config import load_settings
 
     s = load_settings()
     lon_min, lon_max = s.operating_area.lon_min, s.operating_area.lon_max

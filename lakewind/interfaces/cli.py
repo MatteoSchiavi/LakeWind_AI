@@ -21,13 +21,12 @@ import logging
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional
 
 import typer
 from rich.console import Console
 from rich.table import Table
 
-from lakewind.config import get_db_path, load_settings, load_secrets
+from lakewind.config import get_db_path, load_secrets, load_settings
 from lakewind.utils.timeutil import utcnow
 
 app = typer.Typer(help="LakeWind — hyperlocal wind forecasting for Lake Como")
@@ -89,7 +88,6 @@ def recover_cmd(
     Called automatically on every startup via init-db / docker-entrypoint.
     """
     _setup_logging()
-    import json
     from lakewind.recovery import recover
 
     console.print("[bold cyan]=== Auto-Recovery: Data Gap Detection ===[/bold cyan]")
@@ -99,20 +97,20 @@ def recover_cmd(
     fc = gaps.get("forecast_runs", {})
     obs = gaps.get("observations", {})
 
-    console.print(f"\n[bold]Forecast data:[/bold]")
+    console.print("\n[bold]Forecast data:[/bold]")
     console.print(f"  Latest: {fc.get('latest', 'none')}")
     console.print(f"  Gap: {fc.get('gap_days', '?')} days")
     console.print(f"  Total rows: {fc.get('count', 0)}")
     console.print(f"  Needs recovery: {'⚠ YES' if fc.get('needs_recovery') else '✓ no'}")
 
-    console.print(f"\n[bold]Observations:[/bold]")
+    console.print("\n[bold]Observations:[/bold]")
     console.print(f"  Latest: {obs.get('latest', 'none')}")
     console.print(f"  Gap: {obs.get('gap_days', '?')} days")
     console.print(f"  Total rows: {obs.get('count', 0)}")
     console.print(f"  Needs recovery: {'⚠ YES' if obs.get('needs_recovery') else '✓ no'}")
 
     if obs.get("by_source"):
-        console.print(f"\n  [bold]By source:[/bold]")
+        console.print("\n  [bold]By source:[/bold]")
         for src, info in obs["by_source"].items():
             console.print(f"    {src}: {info['count']} rows, gap {info['gap_hours']}h")
 
@@ -120,15 +118,15 @@ def recover_cmd(
         rec = result.get("recovery", {})
         fc_rec = rec.get("forecasts", {})
         era5_rec = rec.get("era5", {})
-        console.print(f"\n[bold green]Recovery completed:[/bold green]")
+        console.print("\n[bold green]Recovery completed:[/bold green]")
         if fc_rec.get("rows_inserted"):
             console.print(f"  Forecasts: {fc_rec['rows_inserted']} rows ({fc_rec.get('days', 0)} days)")
         if era5_rec.get("rows_inserted"):
             console.print(f"  ERA5: {era5_rec['rows_inserted']} rows ({era5_rec.get('days', 0)} days)")
     elif check:
-        console.print(f"\n[yellow]Dry-run: no data was modified.[/yellow]")
+        console.print("\n[yellow]Dry-run: no data was modified.[/yellow]")
     else:
-        console.print(f"\n[green]No gaps needed filling.[/green]")
+        console.print("\n[green]No gaps needed filling.[/green]")
 
 
 @app.command("doctor")
@@ -227,10 +225,10 @@ def collect() -> None:
 @app.command("backfill")
 def backfill_cmd(
     days: int = typer.Option(90, help="Days to backfill (from today backwards)"),
-    start: Optional[str] = typer.Option(None, help="Start date YYYY-MM-DD (overrides --days)"),
-    end: Optional[str] = typer.Option(None, help="End date YYYY-MM-DD"),
-    points: Optional[str] = typer.Option(None, help="Comma-separated point ids (default: all)"),
-    models: Optional[str] = typer.Option(None, help="Comma-separated NWP model slugs (default: all)"),
+    start: str | None = typer.Option(None, help="Start date YYYY-MM-DD (overrides --days)"),
+    end: str | None = typer.Option(None, help="End date YYYY-MM-DD"),
+    points: str | None = typer.Option(None, help="Comma-separated point ids (default: all)"),
+    models: str | None = typer.Option(None, help="Comma-separated NWP model slugs (default: all)"),
     era5_only: bool = typer.Option(False, help="Only backfill ERA5 reanalysis observations"),
     forecasts_only: bool = typer.Option(False, help="Only backfill historical NWP forecasts"),
 ) -> None:
@@ -276,7 +274,7 @@ def backfill_cmd(
 
 @app.command("predict")
 def predict(
-    horizons: Optional[str] = typer.Option(None, help="Comma-separated hours, e.g. 0,1,3,6,24"),
+    horizons: str | None = typer.Option(None, help="Comma-separated hours, e.g. 0,1,3,6,24"),
     no_collect: bool = typer.Option(False, help="Skip collector step"),
 ) -> None:
     """Generate and store current forecast."""
@@ -318,7 +316,7 @@ def predict(
 @app.command("backtest")
 def backtest_cmd(
     days: int = typer.Option(90, help="Total backtest span in days"),
-    candidate: Optional[str] = typer.Option(None, help="Existing model version to evaluate"),
+    candidate: str | None = typer.Option(None, help="Existing model version to evaluate"),
     promote: bool = typer.Option(False, help="Programmatically promote if it clears the gate"),
 ) -> None:
     """Walk-forward backtest against persistence + raw NWP + current production."""
@@ -342,7 +340,7 @@ def backtest_cmd(
     console.print(f"  [bold]Success criteria met: {report.success_criteria_met}[/bold]")
 
     # V5: Source-separated metrics (Claude audit: separate vs-ERA5 and vs-real)
-    console.print(f"\n[bold cyan]Observation source breakdown:[/bold cyan]")
+    console.print("\n[bold cyan]Observation source breakdown:[/bold cyan]")
     console.print(f"  ERA5 reanalysis samples:         {report.n_era5_samples}")
     console.print(f"  Real station samples:            {report.n_real_samples}")
     if report.candidate_mae_vs_era5 is not None:
@@ -350,8 +348,8 @@ def backtest_cmd(
     if report.candidate_mae_vs_real is not None:
         console.print(f"  Candidate MAE vs real stations:  {report.candidate_mae_vs_real} kn")
     if report.n_era5_samples > report.n_real_samples:
-        console.print(f"  [yellow]⚠ Most metrics are vs ERA5 (inter-model bias), not real observations.[/yellow]")
-        console.print(f"    Deploy DIY buoy for real ground truth.")
+        console.print("  [yellow]⚠ Most metrics are vs ERA5 (inter-model bias), not real observations.[/yellow]")
+        console.print("    Deploy DIY buoy for real ground truth.")
 
     console.print("\n[bold]Per-regime:[/bold]")
     rt = Table()
@@ -378,13 +376,13 @@ def backtest_cmd(
 @app.command("retrain")
 def retrain(
     days: int = typer.Option(60, help="Training window in days (default 60-day EVALUATION window; production regime uses model.train_window_days)"),
-    backend: Optional[str] = typer.Option(
+    backend: str | None = typer.Option(
         None, help="Backend: 'lightgbm' or 'xgboost_gpu' (default: from settings.yaml)"
     ),
     production_window: bool = typer.Option(
         False, "--production-window", help="Use model.train_window_days (12-18 months) instead of --days"
     ),
-    disable_model: list[str] = typer.Option(
+    disable_model: list[str] = typer.Option(  # noqa: B008 — typer idiom
         [], "--disable-model", help="Drop a model's features for the ABLATION run (R14), e.g. --disable-model gfs_seamless"
     ),
 ) -> None:
@@ -608,7 +606,7 @@ def precompute() -> None:
 
 @app.command("serve-dashboard")
 def serve_dashboard(
-    port: Optional[int] = typer.Option(None, help="Port override"),
+    port: int | None = typer.Option(None, help="Port override"),
 ) -> None:
     """Run the Streamlit dashboard (long-running)."""
     _setup_logging()
@@ -664,7 +662,7 @@ def log_sailing(
 
 @app.command("dump-forecasts")
 def dump_forecasts(
-    point: Optional[str] = typer.Option(None, help="Filter by point"),
+    point: str | None = typer.Option(None, help="Filter by point"),
     limit: int = typer.Option(50, help="Max rows"),
 ) -> None:
     """Dump latest stored forecasts as JSON (debugging)."""
@@ -745,7 +743,7 @@ def maintenance(
 
 @app.command("backup")
 def backup_cmd(
-    dest: Optional[Path] = typer.Option(None, "--dest", help="Backup directory (default settings db.backup.dest_dir)"),
+    dest: Path | None = typer.Option(None, "--dest", help="Backup directory (default settings db.backup.dest_dir)"),  # noqa: B008 — typer idiom
 ) -> None:
     """Timestamped consistent DuckDB backup with optional offsite copy (R11)."""
     _setup_logging()

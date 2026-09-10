@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import io
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any
 
 import numpy as np
@@ -176,7 +176,7 @@ def generate_validation_diagram(
     ax4.set_ylabel("MAE (kn)")
     ax4.set_title("Mean Absolute Error")
     ax4.grid(True, alpha=0.3, axis="y")
-    for bar, val in zip(bars, values):
+    for bar, val in zip(bars, values, strict=False):
         ax4.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.1,
                  f"{val:.2f}", ha="center", va="bottom", fontweight="bold")
 

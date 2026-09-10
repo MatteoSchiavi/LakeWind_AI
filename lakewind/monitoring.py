@@ -93,7 +93,7 @@ def operational_alerts(now: datetime | None = None) -> list[dict[str, Any]]:
     try:
         with access.cursor(read_only=True) as conn:
             cur = conn.execute(
-                f"""
+                """
                 SELECT source, max(checked_at) AS latest, max(error_msg) AS err
                 FROM source_health
                 WHERE ok = false AND checked_at > ?

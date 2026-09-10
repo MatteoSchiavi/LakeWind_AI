@@ -468,7 +468,7 @@ def _select_features(
             quick, X_val[shortlist], y_val,
             scoring="neg_mean_absolute_error", n_repeats=3, random_state=7,
         )
-        keep = [c for c, imp in zip(shortlist, perm.importances_mean) if imp > 0]
+        keep = [c for c, imp in zip(shortlist, perm.importances_mean, strict=False) if imp > 0]
         return keep or shortlist
     except Exception as exc:  # pragma: no cover — defensive
         logger.warning("Permutation pruning failed (%s) — keeping gain shortlist", exc)
@@ -746,7 +746,7 @@ def train(
         except Exception as exc:
             logger.debug("Speed-space registry metrics skipped: %s", exc)
 
-    val_mae = metrics.get("u_q50_val_mae")
+    metrics.get("u_q50_val_mae")
     access.register_model(
         model_version=mv,
         trained_at=utcnow(),
@@ -798,7 +798,7 @@ def load_model_bundle(model_version: str) -> dict[str, Any]:
     members = feat_meta.get("ensemble") or [actual_backend]
     if isinstance(members, str):
         members = [members]
-    primary = members[0]
+    members[0]
     for target in ("u", "v"):
         for q in load_settings().model.quantiles:
             key = f"{target}_q{int(q*100):02d}"

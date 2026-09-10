@@ -25,7 +25,6 @@ intervals that the user can trust.
 """
 from __future__ import annotations
 
-import json
 import logging
 import pickle
 from dataclasses import dataclass
@@ -37,7 +36,6 @@ import numpy as np
 import pandas as pd
 
 from lakewind.config import load_settings
-from lakewind.db import access
 from lakewind.features.build import build_features_for
 
 logger = logging.getLogger(__name__)
@@ -235,7 +233,7 @@ def calibrate_prediction(
         ("u", (bias_u_q10, bias_u_q50, bias_u_q90)),
         ("v", (bias_v_q10, bias_v_q50, bias_v_q90)),
     ]:
-        for q, val in zip([0.1, 0.5, 0.9], vals):
+        for q, val in zip([0.1, 0.5, 0.9], vals, strict=False):
             cal = load_conformal_calibrator(model_version, target, q)
             if cal is not None:
                 result[f"bias_{target}_q{int(q*100):02d}"] = cal.calibrate(val, expected_error)

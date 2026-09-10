@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from datetime import datetime, timedelta
+from datetime import timedelta
 from types import SimpleNamespace
 from typing import Any
 
@@ -454,8 +454,8 @@ async def test_store_series_covers_today_window(temp_db):
 
 @pytest.mark.asyncio
 async def test_run_cycle_uses_settings_horizons_and_bulk_insert(temp_db, monkeypatch):
-    from lakewind.prediction import engine
     from lakewind.db import access
+    from lakewind.prediction import engine
 
     n_calls = {"n": 0}
 

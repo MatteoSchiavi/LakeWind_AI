@@ -8,7 +8,6 @@ features are populated with correct values.
 """
 from __future__ import annotations
 
-import math
 from datetime import datetime, timedelta
 
 import pytest
@@ -17,7 +16,6 @@ from lakewind.config import reset_caches
 from lakewind.db import access
 from lakewind.db.schema import init_db
 from lakewind.features.build import build_features_for
-
 
 VT = datetime(2026, 7, 20, 14, 0)  # a Monday afternoon
 
@@ -160,8 +158,8 @@ class TestRegimeWiring:
         _seed_standard_db(temp_db)
         fv = build_features_for("dongo_shore", VT).feature_vector
         labels = ("storm", "foehn", "breva", "tivano", "calm")
-        assert all(f"regime_{l}" in fv for l in labels)
-        assert sum(fv[f"regime_{l}"] for l in labels) == 1  # exactly one regime
+        assert all(f"regime_{lab}" in fv for lab in labels)
+        assert sum(fv[f"regime_{lab}"] for lab in labels) == 1  # exactly one regime
 
     def test_classify_regime_is_wired_into_builder(self, temp_db):
         # Audit grep finding: classify_regime had zero callers in build.py.

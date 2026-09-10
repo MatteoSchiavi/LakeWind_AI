@@ -12,13 +12,13 @@ CONVENTION (V6.6, Phase 1 audit):
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
 
 def utcnow() -> datetime:
     """Naive datetime in UTC (the project-wide DB convention)."""
-    return datetime.now(timezone.utc).replace(tzinfo=None)
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 def to_aware_utc(dt: datetime) -> datetime:
@@ -28,8 +28,8 @@ def to_aware_utc(dt: datetime) -> datetime:
     as system-local time.
     """
     if dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
+        return dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC)
 
 
 def to_local(dt: datetime, tz_name: str = "Europe/Rome") -> datetime:

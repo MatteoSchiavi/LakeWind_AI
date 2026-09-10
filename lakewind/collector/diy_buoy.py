@@ -18,7 +18,6 @@ is out of scope for this code repository; see Appendix B of the spec.
 from __future__ import annotations
 
 import logging
-from datetime import datetime
 from typing import Any
 
 import requests

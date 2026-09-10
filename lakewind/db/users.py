@@ -7,14 +7,12 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import datetime, time, timedelta
-from typing import Any, Optional
+from datetime import datetime, timedelta
+from typing import Any
 from zoneinfo import ZoneInfo
 
-from lakewind.config import load_settings
 from lakewind.db import access
 from lakewind.utils.timeutil import to_local, utcnow
-
 
 # --- Users ---
 
@@ -58,10 +56,10 @@ def register_or_update_user(
             [telegram_user_id],
         ).fetchone()
         cols = [d[0] for d in conn.execute("SELECT * FROM v2_users LIMIT 0").description]
-    return dict(zip(cols, row)) if row else {}
+    return dict(zip(cols, row, strict=False)) if row else {}
 
 
-def get_user(telegram_user_id: int) -> Optional[dict[str, Any]]:
+def get_user(telegram_user_id: int) -> dict[str, Any] | None:
     with access.cursor(read_only=True) as conn:
         cur = conn.execute(
             "SELECT * FROM v2_users WHERE telegram_user_id = ?",
@@ -69,7 +67,7 @@ def get_user(telegram_user_id: int) -> Optional[dict[str, Any]]:
         )
         cols = [d[0] for d in cur.description]
         row = cur.fetchone()
-    return dict(zip(cols, row)) if row else None
+    return dict(zip(cols, row, strict=False)) if row else None
 
 
 def set_user_preference(telegram_user_id: int, key: str, value: Any) -> bool:
@@ -98,7 +96,7 @@ def list_allowed_users() -> list[dict[str, Any]]:
             "SELECT * FROM v2_users WHERE is_allowed = TRUE ORDER BY created_at"
         )
         cols = [d[0] for d in cur.description]
-        return [dict(zip(cols, r)) for r in cur.fetchall()]
+        return [dict(zip(cols, r, strict=False)) for r in cur.fetchall()]
 
 
 def is_user_allowed(telegram_user_id: int) -> bool:
@@ -156,7 +154,7 @@ def list_alerts(telegram_user_id: int) -> list[dict[str, Any]]:
             [telegram_user_id],
         )
         cols = [d[0] for d in cur.description]
-        return [dict(zip(cols, r)) for r in cur.fetchall()]
+        return [dict(zip(cols, r, strict=False)) for r in cur.fetchall()]
 
 
 def delete_alert(alert_id: int, telegram_user_id: int) -> bool:
@@ -180,7 +178,7 @@ def get_active_alerts() -> list[dict[str, Any]]:
             """
         )
         cols = [d[0] for d in cur.description]
-        return [dict(zip(cols, r)) for r in cur.fetchall()]
+        return [dict(zip(cols, r, strict=False)) for r in cur.fetchall()]
 
 
 def mark_alert_triggered(alert_id: int) -> None:
@@ -221,7 +219,7 @@ def list_subscriptions(telegram_user_id: int) -> list[dict[str, Any]]:
             [telegram_user_id],
         )
         cols = [d[0] for d in cur.description]
-        return [dict(zip(cols, r)) for r in cur.fetchall()]
+        return [dict(zip(cols, r, strict=False)) for r in cur.fetchall()]
 
 
 def delete_subscription(sub_id: int, telegram_user_id: int) -> bool:
@@ -245,13 +243,13 @@ def get_due_subscriptions(now_utc: datetime) -> list[dict[str, Any]]:
             """
         )
         cols = [d[0] for d in cur.description]
-        subs = [dict(zip(cols, r)) for r in cur.fetchall()]
+        subs = [dict(zip(cols, r, strict=False)) for r in cur.fetchall()]
 
     due = []
     for s in subs:
         tz_name = s.get("timezone", "Europe/Rome")
         try:
-            tz = ZoneInfo(tz_name)
+            ZoneInfo(tz_name)
             # V6.6 FIX: now_utc is naive UTC — attach UTC explicitly before
             # converting (naive .astimezone() assumed system-local time).
             local_now = to_local(now_utc, tz_name)
@@ -346,7 +344,7 @@ def list_feedback(limit: int = 100) -> list[dict[str, Any]]:
             [limit],
         )
         cols = [d[0] for d in cur.description]
-        return [dict(zip(cols, r)) for r in cur.fetchall()]
+        return [dict(zip(cols, r, strict=False)) for r in cur.fetchall()]
 
 
 # --- Image cache ---

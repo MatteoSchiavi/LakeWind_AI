@@ -13,7 +13,6 @@ import pytest
 
 from lakewind.collector.base import model_init_cadence_hours
 
-
 # --- R5: MeteoSwiss in the model stack ---
 
 
@@ -67,7 +66,6 @@ class TestMeteoSwissStack:
 
     def test_ensemble_demux_prefix_order(self):
         """Longest-prefix matching protects ch1_eps from ch1 shadowing."""
-        from lakewind.collector.open_meteo import OpenMeteoCollector
 
         models = ["meteoswiss_icon_ch1", "meteoswiss_icon_ch2", "icon_eu"]
         match_order = sorted(models, key=len, reverse=True)
@@ -161,8 +159,8 @@ class TestArpaHydroToRows:
         assert ArpaHydroCollector().to_rows(self._raw(valore="")) == []
 
     def test_store_roundtrip(self, temp_db):
-        from lakewind.config import reset_caches
         from lakewind.collector.arpa_hydro import ArpaHydroCollector
+        from lakewind.config import reset_caches
         from lakewind.db import access
         from lakewind.db.schema import init_db
 

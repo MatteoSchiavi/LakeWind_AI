@@ -28,6 +28,7 @@ dependencies = [
     "scikit-learn>=1.5",
     "shap>=0.45",
     "matplotlib>=3.9",
+    "pillow>=10.0",
     "scipy>=1.10",
     "shapely>=2.0",
     "typer>=0.12",
@@ -35,16 +36,17 @@ dependencies = [
     "streamlit>=1.36",
     "plotly>=5.22",
     "python-telegram-bot>=21.4",
-    "apscheduler>=3.10.4",
     "psutil>=5.9",
     "fastapi>=0.115",
     "uvicorn>=0.30",
+    "optuna>=3.6",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.2",
     "pytest-cov>=5.0",
+    "httpx>=0.27",
     "ruff>=0.5",
     "black>=24.4",
     "mypy>=1.10",
@@ -63,7 +65,9 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "N", "W"]
-ignore = ["E501"]
+# E501: long lines allowed (data-heavy code).
+# N803/N806/N812: ML/scientific naming conventions (X, y, df, uppercase arrays) — deliberate.
+ignore = ["E501", "N803", "N806", "N812"]
 
 [tool.black]
 line-length = 100

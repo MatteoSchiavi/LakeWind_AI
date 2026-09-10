@@ -19,6 +19,7 @@ from datetime import datetime
 from typing import Any
 
 import numpy as np
+
 from lakewind.utils.timeutil import utcnow
 
 # ---------------------------------------------------------------------------

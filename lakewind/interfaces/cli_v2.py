@@ -15,8 +15,7 @@ deleted in V4; the stub only returned False).
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta
-from typing import Optional
+from datetime import timedelta
 
 import typer
 from rich.console import Console
@@ -45,7 +44,7 @@ def register_v2_commands(app: typer.Typer) -> None:
     ) -> None:
         """Whitelist a Telegram user."""
         from lakewind.db import users as user_db
-        user = user_db.register_or_update_user(
+        user_db.register_or_update_user(
             telegram_user_id=telegram_user_id,
             username=username,
         )
@@ -106,10 +105,11 @@ def register_v2_commands(app: typer.Typer) -> None:
         """Manually run alert checks (debug)."""
         import asyncio
         logging.basicConfig(level=logging.INFO)
-        from lakewind.interfaces.bot_scheduler import run_scheduler
         # Mock context with bot
         from telegram import Bot
+
         from lakewind.config import load_secrets
+        from lakewind.interfaces.bot_scheduler import run_scheduler
         secrets = load_secrets()
         token = secrets.telegram_bot_token.get_secret_value()
         if not token:
@@ -129,9 +129,9 @@ def register_v2_commands(app: typer.Typer) -> None:
     @app.command("deep-backfill")
     def deep_backfill_cmd(
         years: int = typer.Option(10, help="Years to backfill (default 10, max recommended 10)"),
-        start: Optional[str] = typer.Option(None, help="Start date YYYY-MM-DD"),
-        end: Optional[str] = typer.Option(None, help="End date YYYY-MM-DD"),
-        points: Optional[str] = typer.Option(None, help="Comma-separated point ids"),
+        start: str | None = typer.Option(None, help="Start date YYYY-MM-DD"),
+        end: str | None = typer.Option(None, help="End date YYYY-MM-DD"),
+        points: str | None = typer.Option(None, help="Comma-separated point ids"),
     ) -> None:
         """V4: Deep historical backfill — 10 years of ERA5 reanalysis for climatology.
 
@@ -142,7 +142,8 @@ def register_v2_commands(app: typer.Typer) -> None:
         """
         logging.basicConfig(level=logging.INFO,
                             format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
-        from datetime import datetime as dt, timedelta
+        from datetime import datetime as dt
+
         from lakewind.collector.deep_backfill import deep_backfill
         end_dt = dt.strptime(end, "%Y-%m-%d") if end else utcnow()
         if start:
@@ -158,14 +159,13 @@ def register_v2_commands(app: typer.Typer) -> None:
     @app.command("cpcv-backtest")
     def cpcv_backtest_cmd(
         days: int = typer.Option(30, help="Test window in days"),
-        candidate: Optional[str] = typer.Option(None, help="Model version to evaluate"),
+        candidate: str | None = typer.Option(None, help="Model version to evaluate"),
         n_groups: int = typer.Option(6, help="Number of groups for CPCV"),
         n_test_groups: int = typer.Option(2, help="Test groups per path"),
     ) -> None:
         """V4: Combinatorial Purged Cross-Validation backtest (López de Prado)."""
         logging.basicConfig(level=logging.INFO,
                             format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
-        from datetime import datetime as dt, timedelta
         from lakewind.ml.cpcv_backtest import run_cpcv_backtest
         end = utcnow()
         start = end - timedelta(days=days)
@@ -173,7 +173,7 @@ def register_v2_commands(app: typer.Typer) -> None:
             start=start, end=end, model_version=candidate,
             n_groups=n_groups, n_test_groups=n_test_groups,
         )
-        console.print(f"\n[bold]CPCV Backtest Report[/bold]")
+        console.print("\n[bold]CPCV Backtest Report[/bold]")
         console.print(f"  Paths: {report.n_paths}")
         console.print(f"  Candidate MAE: {report.candidate_mae_mean} ± {report.candidate_mae_std}")
         console.print(f"  NWP MAE: {report.raw_nwp_mae_mean} ± {report.raw_nwp_mae_std}")
@@ -188,7 +188,6 @@ def register_v2_commands(app: typer.Typer) -> None:
         """V4: Train conformal prediction calibrators for calibrated uncertainty."""
         logging.basicConfig(level=logging.INFO,
                             format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
-        from datetime import datetime as dt, timedelta
         from lakewind.ml.conformal import train_conformal_calibrator
         end = utcnow()
         start = end - timedelta(days=days)
@@ -228,8 +227,8 @@ def register_v2_commands(app: typer.Typer) -> None:
     ) -> None:
         """Show all features that would be built for a point (V3 debug)."""
         logging.basicConfig(level=logging.WARNING)
+
         from lakewind.features.build import build_features_for
-        from datetime import datetime as dt
         fr = build_features_for(point, utcnow())
         if fr is None:
             console.print("[red]No data for this point.[/red]")
@@ -286,7 +285,6 @@ def register_v2_commands(app: typer.Typer) -> None:
         """
         logging.basicConfig(level=logging.INFO,
                             format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
-        from datetime import datetime as dt, timedelta
         from lakewind.features.spatial_grid import run_feature_discovery
         end = utcnow()
         start = end - timedelta(days=days)
@@ -301,7 +299,7 @@ def register_v2_commands(app: typer.Typer) -> None:
             Path("data/models/top_features.json").write_text(
                 __import__("json").dumps(top_features, indent=2)
             )
-            console.print(f"\nSaved to data/models/top_features.json")
+            console.print("\nSaved to data/models/top_features.json")
             console.print(f"Run [bold]lakewind retrain --days {days}[/bold] to train Phase 2 with these features.")
         else:
             console.print("[red]Feature discovery failed — not enough data.[/red]")
@@ -323,14 +321,12 @@ def register_v2_commands(app: typer.Typer) -> None:
         - MAE by source (ERA5 vs real stations)
         """
         logging.basicConfig(level=logging.INFO)
-        from datetime import datetime as dt, timedelta
-        from lakewind.ml.validation_diagrams import generate_validation_diagram
         from lakewind.db import access
-        from lakewind.config import load_settings
+        from lakewind.ml.validation_diagrams import generate_validation_diagram
 
         s = load_settings()
         now = utcnow()
-        start = now - timedelta(days=days)
+        now - timedelta(days=days)
 
         # Get predictions
         preds = access.latest_predictions(point_id=point, limit=500)
