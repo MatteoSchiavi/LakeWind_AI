@@ -188,19 +188,25 @@ def register_v2_commands(app: typer.Typer) -> None:
         """V4: Train conformal prediction calibrators for calibrated uncertainty."""
         logging.basicConfig(level=logging.INFO,
                             format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+        # Phase 5 (F12): alpha now comes from settings (model.conformal_alpha,
+        # default 0.2 = the 80% band contract) — it was hardcoded to 0.1 here
+        # while the serving path and the review both used the config value,
+        # so the band's meaning depended on which command trained it.
+        from lakewind.config import load_settings as _ls
         from lakewind.ml.conformal import train_conformal_calibrator
+        alpha = float(getattr(_ls().model, "conformal_alpha", 0.2))
         end = utcnow()
         start = end - timedelta(days=days)
         n = 0
         for target in ("u", "v"):
             for q in [0.1, 0.5, 0.9]:
                 cal = train_conformal_calibrator(
-                    model_version, target, q, start=start, end=end, alpha=0.1
+                    model_version, target, q, start=start, end=end, alpha=alpha
                 )
                 if cal:
                     n += 1
                     console.print(f"  {target} q{q}: q_hat={cal.q_hat:.4f} (n={cal.n_calibration})")
-        console.print(f"[green]Trained {n} conformal calibrators[/green]")
+        console.print(f"[green]Trained {n} conformal calibrators (alpha={alpha})[/green]")
 
     @app.command("auto-pipeline")
     def auto_pipeline_cmd(

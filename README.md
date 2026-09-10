@@ -172,19 +172,25 @@ inference · `/map` burst 26 ms with ZERO renders.
 
 ```
 Core:
-  lakewind init-db              # create schema + auto-recover gaps
+  lakewind init-db              # create schema + migrations + auto-recover
   lakewind doctor               # check config + reachability
   lakewind collect              # run all 6 collectors
   lakewind predict              # generate + store forecasts
-  lakewind retrain              # train new model
+  lakewind review               # daily self-improvement review (S3)
   lakewind backtest             # walk-forward evaluation
   lakewind promote <version>    # promote to production (human review)
-  lakewind recover              # detect + fill data gaps
+  lakewind rollback             # re-promote the previous production model
+  lakewind recover              # detect + fill gaps (--scan for interior holes)
 
 Data:
   lakewind backfill --days N    # backfill historical NWP + ERA5
   lakewind deep-backfill        # 10-year ERA5 for climatology features
   lakewind status               # source health + latest predictions
+
+Persistence:
+  lakewind backup               # CHECKPOINT'd + verified backup (R11/S2)
+  lakewind restore --list       # list backups; restore <file> --yes to restore
+  lakewind maintenance --retention [--dry-run]   # retention pass (config-driven)
 
 Interfaces:
   lakewind serve-bot            # Telegram bot (25 commands)
@@ -192,8 +198,8 @@ Interfaces:
 
 Advanced:
   lakewind cpcv-backtest        # Combinatorial Purged CV (López de Prado)
-  lakewind train-conformal      # conformal prediction calibration
-  lakewind auto-pipeline        # automated retrain + backtest + recommend
+  lakewind train-conformal      # conformal calibration (settings alpha)
+  lakewind coverage-report      # realized interval coverage per week
   lakewind features-info        # inspect all features for a point
 ```
 
@@ -201,21 +207,34 @@ Advanced:
 
 ## Deployment (T420)
 
+The service process OWNS the database (DuckDB single-writer). The pipeline
+loop inside the bot handles collection, prediction, nightly maintenance
+(retention + verified backup + model GC, 04:30 local) and the daily
+self-improvement review (05:00 local) — **no external timers needed**, and
+deploy/t420_pipeline_timer.sh was removed in Phase 5 because a second
+`docker exec` process cannot open the DB while the service runs.
+
 ### Option A: Docker (recommended)
 
 ```bash
-# One-time setup
+# One-time setup (image = python runtime + built Next.js web UI)
 docker compose build
 docker compose up -d
 
-# Auto-update (pulls from GitHub, rebuilds, health-checks, auto-rollback)
-./update.sh --cron    # add to crontab for hourly auto-update
+# Auto-update (pulls from GitHub, backs up via the app's consistent path,
+# rebuilds, health-checks /api/health, auto-rollback on failure)
+./deploy/update.sh --cron    # add to crontab for hourly auto-update
+
+# Offsite backup sync (NAS / USB / remote) — daily, see script header
+deploy/t420_backup_offsite.sh
 ```
+
+Ports: web UI :3000, internal API :8000 (health at /api/health).
 
 ### Option B: systemd (bare metal)
 
 ```bash
-sudo cp lakewind.service /etc/systemd/system/
+sudo cp deploy/lakewind.service /etc/systemd/system/
 sudo systemctl enable lakewind
 sudo systemctl start lakewind
 ```
@@ -223,8 +242,9 @@ sudo systemctl start lakewind
 ### T420 ↔ Laptop sync
 
 1. Develop on laptop, `git push origin main`
-2. T420 auto-updates: `./update.sh --cron` (hourly, silent if no new commits)
+2. T420 auto-updates: `./deploy/update.sh --cron` (hourly, silent if no new commits)
 3. If health check fails → automatic rollback to last good commit
+4. Restore drill after any incident: stop service → `lakewind restore <backup> --yes`
 
 ---
 

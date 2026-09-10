@@ -4,12 +4,14 @@ services:
     container_name: lakewind
     restart: always
     ports:
-      - "8501:8501"
+      - "3000:3000"   # Phase 4/5: Next.js web UI (legacy dashboard retired)
       - "8000:8000"   # Phase 2: internal API (web dashboard proxy target)
     volumes:
       - ./settings.yaml:/app/settings.yaml:ro
       - ./data:/app/data
       - ./lakewind:/app/lakewind:ro
+      # Phase 5 note: the image bakes a built web-ui into /app/web-ui; this
+      # read-only lakewind mount keeps python code hot-patchable like before.
       # V6.6: removed `./data/models:/app/models` — the code reads model
       # artifacts from /app/data/models (MODELS_DIR in ml/train.py); the
       # /app/models mount was never referenced.

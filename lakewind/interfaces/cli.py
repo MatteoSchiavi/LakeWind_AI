@@ -76,6 +76,9 @@ def init_db() -> None:
 def recover_cmd(
     check: bool = typer.Option(False, help="Dry-run: show what's missing without backfilling"),
     force: bool = typer.Option(False, help="Force full recheck of entire history"),
+    from_time: str | None = typer.Option(None, "--from", help="Explicit window start (ISO) — interior-hole backfill (Phase 5 S6)"),
+    to_time: str | None = typer.Option(None, "--to", help="Explicit window end (ISO) — requires --from"),
+    scan: bool = typer.Option(False, "--scan", help="Scan for interior holes in the last 30 days (Phase 5 S6)"),
 ) -> None:
     """V5: Detect and fill data gaps (auto-backfill after downtime).
 
@@ -84,8 +87,48 @@ def recover_cmd(
     Open-Meteo Historical Forecast and Archive APIs.
 
     Called automatically on every startup via init-db / docker-entrypoint.
+
+    Phase 5 (S6): interior holes (e.g. the May–June 2026 quota-kill) are
+    invisible to the trailing-gap check — `--scan` finds them,
+    `--from/--to` backfills an explicit window.
     """
     _setup_logging()
+    from lakewind.recovery import detect_interior_gaps, recover_window
+
+    if from_time or to_time or scan:
+        if scan:
+            console.print("[bold cyan]=== Interior-gap scan (last 30 days) ===[/bold cyan]")
+            found = detect_interior_gaps(lookback_days=30)
+            console.print(
+                f"  scanned {found['scanned_points']} points over 30d: "
+                f"{found['n_gaps']} interior gaps"
+                + (" (TRUNCATED list)" if found["truncated"] else "")
+            )
+            for g in found["gaps"][:20]:
+                console.print(
+                    f"    {g['point_id']}: {g['from']} -> {g['to']} ({g['hours']}h)"
+                )
+            if found["n_gaps"]:
+                console.print(
+                    "[yellow]Backfill a hole: lakewind recover --from <ISO> --to <ISO>[/yellow]"
+                )
+            else:
+                console.print("[green]  No interior holes.[/green]")
+            if not (from_time and to_time):
+                return
+        if from_time and to_time:
+            console.print(
+                f"[bold cyan]=== Windowed recovery {from_time} -> {to_time} ===[/bold cyan]"
+            )
+            result = recover_window(from_time, to_time)
+            console.print(
+                f"[green]Backfilled {result['forecasts']['rows_inserted']} forecast rows, "
+                f"{result['era5']['rows_inserted']} ERA5 rows.[/green]"
+            )
+            return
+        console.print("[red]--to requires --from (and vice versa).[/red]")
+        raise typer.Exit(code=2)
+
     from lakewind.recovery import recover
 
     console.print("[bold cyan]=== Auto-Recovery: Data Gap Detection ===[/bold cyan]")
@@ -467,7 +510,84 @@ def promote_cmd(
         promoted=True,
         notes="Manually promoted (human review)",
     )
+    # Phase 5 (S4): promotion audit trail — rollback needs the history.
+    access.record_promotion(
+        model_version,
+        action="promote",
+        actor="operator",
+        notes="manual promotion",
+    )
     console.print(f"[bold green]Promoted {model_version} to production.[/bold green]")
+
+
+@app.command("rollback")
+def rollback_cmd() -> None:
+    """Re-promote the model that was production before the current one.
+
+    Phase 5 (S3): a bad promotion used to require manual registry surgery —
+    the registry's boolean forgot which version preceded the current one.
+    The model_promotions audit trail (S4) remembers; this command flips
+    production back and records the rollback.
+    """
+    _setup_logging()
+    from lakewind.db import access
+
+    result = access.rollback_production(actor="operator")
+    if result is None:
+        console.print(
+            "[yellow]Nothing to roll back to — no previous promotion recorded.[/yellow]"
+        )
+        raise typer.Exit(code=1)
+    console.print(
+        f"[bold green]Rolled back: {result['previous']} -> {result['rolled_back_to']}[/bold green]"
+    )
+
+
+@app.command("review")
+def review_cmd(
+    check: bool = typer.Option(False, "--check", help="Dry-run: evaluate + alerts, no retrain/persist"),
+    force: bool = typer.Option(False, "--force", help="Retrain even if the data/time thresholds are not met"),
+) -> None:
+    """Run the daily self-improvement review manually (Phase 5 S3).
+
+    Same cycle the pipeline loop schedules after nightly maintenance:
+    data-quality snapshot -> persisted evaluation -> coverage monitor
+    (auto-recalibration on breach) -> residual-drift sentinel -> retrain in
+    the R8 production regime (thresholds permitting) -> promotion
+    recommendation. Auto-promotion stays OFF unless model.auto_promote=true.
+    """
+    _setup_logging()
+    from lakewind.ml.review import run_daily_review
+
+    console.print("[bold cyan]=== Daily self-improvement review ===[/bold cyan]")
+    summary = run_daily_review(check_only=check, force=force)
+    console.print(f"[bold]Status: {summary['status']}[/bold] ({summary['duration_seconds']}s)")
+    steps = summary.get("steps", {})
+    if "evaluation" in steps and "model_version" in steps["evaluation"]:
+        ev = steps["evaluation"]
+        console.print(
+            f"  Evaluation: {ev['model_version']} — station MAE "
+            f"recent={ev.get('mae_station_recent_kn')} vs baseline={ev.get('mae_station_baseline_kn')} kn "
+            f"(n_station={ev.get('n_station_samples')})"
+        )
+    cov = steps.get("coverage", {})
+    if cov.get("coverage_breach"):
+        console.print(f"[red]  Coverage breach: {cov['coverage_breach']}[/red]")
+        if cov.get("recalibration"):
+            console.print(f"  Recalibration: {cov['recalibration']}")
+    if steps.get("drift", {}).get("alert"):
+        console.print(f"[red]  Drift: {steps['drift']}[/red]")
+    rt = steps.get("retrain", {})
+    if rt.get("decision"):
+        console.print(f"  Retrain decision: {rt['decision']}")
+    if rt.get("train"):
+        console.print(f"  Trained: {rt['train']}")
+    promo = steps.get("promotion")
+    if promo:
+        tag = "PROMOTED" if promo.get("promoted") else "recommendation"
+        console.print(f"  Promotion ({tag}): {promo}")
+    for alert in steps.get("quality", {}).get("operational_alerts", []) or []:
+        console.print(f"[red]  Operational: {alert}[/red]")
 
 
 @app.command("status")
@@ -707,7 +827,13 @@ def maintenance(
         label = "would delete" if dry_run else "deleted"
         console.print(
             f"[green]retention: {label} {stats['forecasts_deleted']} operational forecast rows "
-            f"and {stats['predictions_deleted']} prediction rows (backfill training data kept).[/green]"
+            f"and {stats['predictions_deleted']} prediction rows (exempt: {stats['exempt_sources']}).[/green]"
+        )
+        console.print(
+            f"[green]  secondary: source_health={stats['source_health_deleted']}, "
+            f"pipeline_log={stats['pipeline_log_deleted']}, "
+            f"image_cache={stats['image_cache_deleted']}, "
+            f"experiment_attempts={stats['experiment_attempts_deleted']}[/green]"
         )
     if not did_something:
         console.print("Nothing to do — pass --compact-raw-json and/or --retention (see --help).")
@@ -729,7 +855,39 @@ def backup_cmd(
     target = access.backup_database(
         dest_dir, _Path(offsite) if offsite else None
     )
-    console.print(f"[bold green]Backup written: {target}[/bold green]")
+    console.print(f"[bold green]Backup written and verified: {target}[/bold green]")
+
+
+@app.command("restore")
+def restore_cmd(
+    backup: Path = typer.Argument(..., help="Path to a lakewind_backup_*.duckdb file"),  # noqa: B008 — typer idiom
+    list_backups: bool = typer.Option(False, "--list", help="List available backups and exit"),
+    yes: bool = typer.Option(False, "--yes", help="Actually perform the restore (refused otherwise)"),
+) -> None:
+    """Restore the live database from a verified backup (Phase 5 S2 / F7).
+
+    STOP THE SERVICE FIRST (docker compose stop / systemctl stop lakewind) —
+    the restore needs the DuckDB file lock the running service holds. A
+    pre-restore safety copy of the current DB is taken automatically.
+    """
+    _setup_logging()
+    from lakewind.db import access
+
+    s = load_settings()
+    backup_dir = Path(getattr(s.db, "backup_dest_dir", "data/backups"))
+    if list_backups:
+        if not backup_dir.exists():
+            console.print("[yellow]No backup directory yet.[/yellow]")
+            return
+        for p in sorted(backup_dir.glob("lakewind_backup_*.duckdb")):
+            console.print(f"  {p.name}  ({p.stat().st_size / 1e6:.1f} MB)")
+        return
+    result = access.restore_database(backup, yes=yes)
+    console.print(
+        f"[bold green]Restored from {result['restored_from']}[/bold green]\n"
+        f"Pre-restore safety copy: {result['safety_copy']}\n"
+        f"Verified: {result['verify']['tables']} tables."
+    )
 
 
 @app.command("alerts")

@@ -413,40 +413,68 @@ def compact_bloated_raw_json(
 
 def apply_retention_policy(
     dry_run: bool = False,
-    operational_forecast_days: int = 90,
-    predictions_days: int = 545,
+    operational_forecast_days: int | None = None,
+    predictions_days: int | None = None,
 ) -> dict[str, Any]:
-    """Bounded-disk retention (Deep Audit R11 / audit ch. 6).
+    """Bounded-disk retention (Deep Audit R11; hardened Phase 5 S2).
 
     forecast_runs grows unbounded because every 30-min cycle stores a full
-    multi-model, multi-day block for every point. The historical-BACKFILL
-    rows (raw_json source = 'historical_forecast_api') are the irreplaceable
-    training asset and are KEPT; operational rows older than
-    `operational_forecast_days` are training-redundant (the backfill covers
-    the same valid_times) and are deleted. Predictions older than
-    `predictions_days` (~18 months) are dropped; observations are forever.
+    multi-model, multi-day block for every point. Rows whose raw_json source
+    is in `db.retention_exempt_sources` are the irreplaceable training assets
+    and are KEPT; operational rows older than `operational_forecast_days`
+    are training-redundant (the backfills cover the same valid_times) and
+    are deleted. Predictions older than `predictions_days` (~18 months) are
+    dropped; observations are forever.
 
-    Returns counts ({forecasts_deleted, predictions_deleted}) and honours
-    dry_run.
+    Phase 5 S2 changes:
+      - the exemption set is config-driven and now also covers the R15
+        previous-runs backfill ('previous_runs_api') — F5: it used to be
+        silently deleted after 90 days;
+      - the windows default from db.* config instead of call-site constants;
+      - the secondary tables that grew unbounded forever (source_health,
+        v4_pipeline_log, v2_image_cache, experiment_attempts) are pruned
+        here too — F8.
+
+    Returns counts and honours dry_run.
     """
     s = load_settings()
-    stats = {
+    fc_days = int(operational_forecast_days or s.db.retention_operational_forecast_days)
+    pred_days = int(predictions_days or s.db.retention_predictions_days)
+    exempt = list(s.db.retention_exempt_sources or ["historical_forecast_api"])
+    stats: dict[str, Any] = {
         "forecasts_deleted": 0,
         "predictions_deleted": 0,
+        "source_health_deleted": 0,
+        "pipeline_log_deleted": 0,
+        "image_cache_deleted": 0,
+        "experiment_attempts_deleted": 0,
         "dry_run": dry_run,
-        "operational_forecast_days": operational_forecast_days,
-        "predictions_days": predictions_days,
+        "operational_forecast_days": fc_days,
+        "predictions_days": pred_days,
+        "exempt_sources": exempt,
     }
-    fc_cutoff = utcnow() - timedelta(days=operational_forecast_days)
-    pred_cutoff = utcnow() - timedelta(days=predictions_days)
+    fc_cutoff = utcnow() - timedelta(days=fc_days)
+    pred_cutoff = utcnow() - timedelta(days=pred_days)
+    # Parameterized NOT IN over the configured exempt sources (config is
+    # trusted, but the query stays injection-proof and DuckDB-happy).
+    exempt_ph = ", ".join("?" for _ in exempt)
+    exempt_clause = (
+        f"coalesce(json_extract_string(raw_json, '$.source'), '') NOT IN ({exempt_ph})"
+        if exempt
+        else "TRUE"
+    )
+    sh_cutoff = utcnow() - timedelta(days=s.db.source_health_retention_days)
+    pl_cutoff = utcnow() - timedelta(days=s.db.pipeline_log_retention_days)
+    ex_cutoff = utcnow() - timedelta(days=s.db.experiment_retention_days)
+    ic_cutoff = utcnow() - timedelta(days=s.db.image_cache_retention_days)
     with cursor() as conn:
+        params = [fc_cutoff, *exempt]
         rows = conn.execute(
             f"""
             SELECT count(*) FROM {s.db.forecast_table}
-            WHERE valid_time < ?
-              AND coalesce(json_extract_string(raw_json, '$.source'), '') <> 'historical_forecast_api'
+            WHERE valid_time < ? AND {exempt_clause}
             """,
-            [fc_cutoff],
+            params,
         ).fetchone()
         stats["forecasts_deleted"] = int(rows[0]) if rows else 0
         rows = conn.execute(
@@ -454,21 +482,73 @@ def apply_retention_policy(
             [pred_cutoff],
         ).fetchone()
         stats["predictions_deleted"] = int(rows[0]) if rows else 0
+        rows = conn.execute(
+            "SELECT count(*) FROM source_health WHERE checked_at < ?", [sh_cutoff]
+        ).fetchone()
+        stats["source_health_deleted"] = int(rows[0]) if rows else 0
+        if _table_exists(conn, "v4_pipeline_log"):
+            rows = conn.execute(
+                "SELECT count(*) FROM v4_pipeline_log WHERE run_at < ?", [pl_cutoff]
+            ).fetchone()
+            stats["pipeline_log_deleted"] = int(rows[0]) if rows else 0
+        if _table_exists(conn, "v2_image_cache"):
+            rows = conn.execute(
+                "SELECT count(*) FROM v2_image_cache WHERE generated_at < ?", [ic_cutoff]
+            ).fetchone()
+            stats["image_cache_deleted"] = int(rows[0]) if rows else 0
+        rows = conn.execute(
+            "SELECT count(*) FROM experiment_attempts WHERE attempted_at < ?", [ex_cutoff]
+        ).fetchone()
+        stats["experiment_attempts_deleted"] = int(rows[0]) if rows else 0
         if not dry_run:
             conn.execute(
                 f"""
                 DELETE FROM {s.db.forecast_table}
-                WHERE valid_time < ?
-                  AND coalesce(json_extract_string(raw_json, '$.source'), '') <> 'historical_forecast_api'
+                WHERE valid_time < ? AND {exempt_clause}
                 """,
-                [fc_cutoff],
+                params,
             )
             conn.execute(
                 f"DELETE FROM {s.db.predictions_table} WHERE valid_time < ?",
                 [pred_cutoff],
             )
+            conn.execute("DELETE FROM source_health WHERE checked_at < ?", [sh_cutoff])
+            if _table_exists(conn, "v4_pipeline_log"):
+                conn.execute(
+                    "DELETE FROM v4_pipeline_log WHERE run_at < ?", [pl_cutoff]
+                )
+            if _table_exists(conn, "v2_image_cache"):
+                conn.execute(
+                    "DELETE FROM v2_image_cache WHERE generated_at < ?", [ic_cutoff]
+                )
+            conn.execute(
+                "DELETE FROM experiment_attempts WHERE attempted_at < ?", [ex_cutoff]
+            )
             conn.execute("CHECKPOINT")
     return stats
+
+
+def _table_exists(conn: Any, table: str) -> bool:
+    row = conn.execute(
+        "SELECT count(*) FROM information_schema.tables WHERE table_name = ?", [table]
+    ).fetchone()
+    return bool(row and row[0])
+
+
+def verify_backup(path: Path) -> dict[str, Any]:
+    """Open a backup read-only and sanity-check it (Phase 5 S2 / F7).
+
+    A backup that cannot be opened or shows an empty schema is corrupt or
+    torn — better to know now than at restore time. Returns a small report
+    dict; raises on unreadable files.
+    """
+    with duckdb.connect(str(path), read_only=True) as conn:
+        tables = [r[0] for r in conn.execute("SHOW TABLES").fetchall()]
+        counts = {}
+        for t in ("forecast_runs", "observations", "predictions", "model_registry"):
+            if t in tables:
+                counts[t] = int(conn.execute(f"SELECT count(*) FROM {t}").fetchone()[0])
+    return {"path": str(path), "tables": len(tables), "row_counts": counts}
 
 
 def backup_database(dest_dir: Path, offsite_dir: Path | None = None) -> Path:
@@ -479,6 +559,9 @@ def backup_database(dest_dir: Path, offsite_dir: Path | None = None) -> Path:
     mount point on the T420). Returns the backup path. The database is the
     irreplaceable historical training asset — this closes the only
     unrecoverable-failure class the system has.
+
+    Phase 5 S2: every backup is VERIFIED after copy (open read-only, table
+    count) and corrupt copies are deleted instead of silently kept — F7.
     """
     load_settings()
     db_path = get_db_path()
@@ -488,6 +571,17 @@ def backup_database(dest_dir: Path, offsite_dir: Path | None = None) -> Path:
     with cursor() as conn:
         conn.execute("CHECKPOINT")
     shutil.copy2(db_path, target)
+    try:
+        report = verify_backup(target)
+    except Exception as exc:
+        logger.error("Backup verification failed for %s: %s — deleting corrupt copy", target, exc)
+        target.unlink(missing_ok=True)
+        raise
+    logger.info(
+        "Database backup written and verified: %s (%d tables)",
+        target,
+        report["tables"],
+    )
     if offsite_dir is not None:
         offsite_dir.mkdir(parents=True, exist_ok=True)
         shutil.copy2(target, offsite_dir / target.name)
@@ -498,8 +592,49 @@ def backup_database(dest_dir: Path, offsite_dir: Path | None = None) -> Path:
             old.unlink()
         except OSError:  # pragma: no cover
             pass
-    logger.info("Database backup written: %s", target)
     return target
+
+
+def restore_database(backup_path: Path, *, yes: bool = False) -> dict[str, Any]:
+    """Restore the live database from a verified backup (Phase 5 S2 / F7).
+
+    Until now the repo had backups but NO restore path (grep 'restore' = 0
+    hits). Safety rails:
+      1. refuses to run without `yes=True` (CLI wires --yes);
+      2. refuses to restore a backup that fails verify_backup();
+      3. copies the CURRENT live file to data/backups/pre_restore_<ts>
+         first — a bad restore is itself recoverable.
+    The caller must have stopped the service process first (DuckDB
+    single-writer: the restore needs the file lock the service holds).
+    """
+    db_path = get_db_path()
+    if not backup_path.exists():
+        raise FileNotFoundError(f"Backup not found: {backup_path}")
+    if not yes:
+        raise RuntimeError(
+            "Refusing to restore without explicit confirmation (pass --yes). "
+            "Stop the service first: docker compose stop / systemctl stop lakewind."
+        )
+    report = verify_backup(backup_path)
+    if report["tables"] == 0:
+        raise RuntimeError(f"Backup {backup_path} has no tables — refusing to restore")
+    # Release THIS process's cached connections to the live file: DuckDB
+    # refuses to reopen the same file with a different config while handles
+    # are open, and the copy below replaces the file underneath them.
+    close_global_conn()
+    s = load_settings()
+    safety_dir = Path(s.db.backup_dest_dir)
+    safety_dir.mkdir(parents=True, exist_ok=True)
+    stamp = utcnow().strftime("%Y%m%d_%H%M%S")
+    safety_copy = safety_dir / f"pre_restore_{stamp}.duckdb"
+    if db_path.exists():
+        shutil.copy2(db_path, safety_copy)
+    shutil.copy2(backup_path, db_path)
+    post = verify_backup(db_path)
+    logger.info(
+        "Database restored from %s (pre-restore safety copy: %s)", backup_path, safety_copy
+    )
+    return {"restored_from": str(backup_path), "safety_copy": str(safety_copy), "verify": post}
 
 
 # --- observations ---
@@ -991,6 +1126,185 @@ def record_experiment_attempt(
         )
 
 
+# --- Phase 5 (S4): observability writers — the system's own memory ---
+
+
+def record_pipeline_run(
+    kind: str,
+    started_at: datetime,
+    finished_at: datetime,
+    status: str,
+    stats: dict[str, Any] | None = None,
+    error: str | None = None,
+) -> int:
+    """One row per pipeline cycle / maintenance / review (S4).
+
+    Runtimes, row counts and failures accumulate into a queryable history
+    instead of vanishing into container stdout (F9/F13).
+    """
+    rid = _next_id()
+    with cursor() as conn:
+        conn.execute(
+            """
+            INSERT INTO pipeline_runs (id, started_at, finished_at, kind, status, stats, error)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                rid,
+                started_at,
+                finished_at,
+                kind,
+                status,
+                json.dumps(stats or {}, default=str),
+                error,
+            ),
+        )
+    return rid
+
+
+def record_eval_run(
+    model_version: str,
+    window_start: datetime,
+    window_end: datetime,
+    n_samples: int,
+    n_station_samples: int,
+    metrics: dict[str, Any],
+    source: str = "daily_review",
+) -> int:
+    """Persist an evaluation snapshot (S4/F13): model health as a time series."""
+    rid = _next_id()
+    with cursor() as conn:
+        conn.execute(
+            """
+            INSERT INTO eval_runs
+            (id, created_at, model_version, window_start, window_end,
+             n_samples, n_station_samples, metrics, source)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                rid,
+                utcnow(),
+                model_version,
+                window_start,
+                window_end,
+                n_samples,
+                n_station_samples,
+                json.dumps(metrics, default=str),
+                source,
+            ),
+        )
+    return rid
+
+
+def recent_eval_runs(limit: int = 30) -> list[dict[str, Any]]:
+    """Newest-first evaluation history (trends in /admin, drift checks)."""
+    with cursor(read_only=True) as conn:
+        cur = conn.execute(
+            "SELECT * FROM eval_runs ORDER BY created_at DESC LIMIT ?", [limit]
+        )
+        cols = [d[0] for d in cur.description]
+        rows = [dict(zip(cols, row, strict=False)) for row in cur.fetchall()]
+    for r in rows:
+        try:
+            r["metrics"] = json.loads(r.get("metrics") or "{}")
+        except (TypeError, ValueError):
+            r["metrics"] = {}
+    return rows
+
+
+def record_promotion(
+    model_version: str,
+    action: str,
+    actor: str = "operator",
+    notes: str = "",
+) -> None:
+    """Promotion/rollback audit trail (S3/S5).
+
+    `rollback` needs to know which version was production BEFORE the current
+    one — the registry boolean forgets the moment a new model is promoted.
+    """
+    with cursor() as conn:
+        conn.execute(
+            """
+            INSERT INTO model_promotions (id, model_version, action, actor, promoted_at, notes)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (_next_id(), model_version, action, actor, utcnow(), notes),
+        )
+
+
+def promotion_history(limit: int = 20) -> list[dict[str, Any]]:
+    with cursor(read_only=True) as conn:
+        cur = conn.execute(
+            "SELECT * FROM model_promotions ORDER BY promoted_at DESC LIMIT ?", [limit]
+        )
+        cols = [d[0] for d in cur.description]
+        return [dict(zip(cols, row, strict=False)) for row in cur.fetchall()]
+
+
+def demote_current_production() -> str | None:
+    """Demote the current production model; returns the demoted version."""
+    s = load_settings()
+    current = current_production_model()
+    with cursor() as conn:
+        conn.execute(
+            f"UPDATE {s.db.model_registry_table} SET promoted_to_production = FALSE "
+            "WHERE promoted_to_production = TRUE"
+        )
+    return str(current["model_version"]) if current else None
+
+
+def promote_model_version(model_version: str, notes: str = "") -> None:
+    """Set a registered version as production (upsert-safe, idempotent)."""
+    s = load_settings()
+    with cursor() as conn:
+        conn.execute(
+            f"UPDATE {s.db.model_registry_table} SET promoted_to_production = TRUE "
+            "WHERE model_version = ?",
+            [model_version],
+        )
+    record_promotion(model_version, action="promote", notes=notes)
+
+
+def rollback_production(actor: str = "operator") -> dict[str, Any] | None:
+    """Re-promote the version that was production before the current one (S3).
+
+    Reads the promotion audit trail: finds the most recent 'promote' action
+    for a version DIFFERENT from the current production, promotes that, and
+    records the rollback. Returns None when there is nothing to roll back to.
+    """
+    s = load_settings()
+    current = current_production_model()
+    current_version = str(current["model_version"]) if current else None
+    with cursor(read_only=True) as conn:
+        cur = conn.execute(
+            """
+            SELECT model_version FROM model_promotions
+            WHERE action = 'promote' AND model_version <> ?
+            ORDER BY promoted_at DESC LIMIT 1
+            """,
+            [current_version or ""],
+        )
+        row = cur.fetchone()
+    if not row:
+        return None
+    target = str(row[0])
+    demote_current_production()
+    with cursor() as conn:
+        conn.execute(
+            f"UPDATE {s.db.model_registry_table} SET promoted_to_production = TRUE "
+            "WHERE model_version = ?",
+            [target],
+        )
+    record_promotion(
+        target,
+        action="rollback",
+        actor=actor,
+        notes=f"rolled back from {current_version}",
+    )
+    return {"rolled_back_to": target, "previous": current_version}
+
+
 # --- sailing_log ---
 
 
@@ -1244,4 +1558,15 @@ __all__ = [
     "fetch_forecasts_at",
     "fetch_latest_observation_near",
     "fetch_observations_near_range",
+    # Phase 5 (S2/S3/S4)
+    "verify_backup",
+    "restore_database",
+    "record_pipeline_run",
+    "record_eval_run",
+    "recent_eval_runs",
+    "record_promotion",
+    "promotion_history",
+    "demote_current_production",
+    "promote_model_version",
+    "rollback_production",
 ]

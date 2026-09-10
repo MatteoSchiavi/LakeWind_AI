@@ -58,7 +58,7 @@ fi
 
 echo ""
 echo "=== Setup Complete ==="
-echo "Dashboard: http://192.168.0.40:8501"
+echo "Web UI: http://192.168.0.40:3000  (API health: http://192.168.0.40:8000/api/health)"
 echo "Container logs: docker compose logs -f"
 echo ""
 echo "To test auto-start: sudo reboot"

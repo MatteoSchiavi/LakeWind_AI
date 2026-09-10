@@ -64,6 +64,83 @@ def _t(lang: str, key: str) -> str:
     return _TEXTS.get(lang, _TEXTS["en"]).get(key, _TEXTS["en"][key])
 
 
+# Phase 5 (S3/F17): dedup state for the operational digest — each alert key
+# is pushed at most once per 12 h so a persistent collector failure is
+# reported without spamming the admin every 30 min.
+_DIGEST_TTL_S = 12 * 3600.0
+_digest_state: dict[str, float] = {}
+
+
+def _admin_ids() -> list[int]:
+    """Operator push targets: telegram.admin_ids, legacy admin.py fallback."""
+    from lakewind.admin import LEGACY_ADMIN_ID
+
+    ids = list(load_settings().telegram.admin_ids or [])
+    if not ids:
+        ids = [LEGACY_ADMIN_ID]
+    return ids
+
+
+async def _operational_digest(ctx) -> None:
+    """Push operational alerts + review/maintenance outcomes to the admin.
+
+    F17 closure: station silence, quota exhaustion and data starvation were
+    visible only via `lakewind alerts` or /api/alerts — the operator had to
+    ASK. Now the scheduler pushes a digest, deduplicated per alert key, and
+    surfaces last night's maintenance/review outcomes when they failed.
+    """
+    import asyncio
+    import time as _time
+
+    from lakewind.monitoring import operational_alerts
+
+    now_mono = _time.monotonic()
+    found = await asyncio.to_thread(operational_alerts)
+    lines: list[str] = []
+    for a in found or []:
+        key = str(a.get("alert"))
+        last = _digest_state.get(key, 0.0)
+        if now_mono - last < _DIGEST_TTL_S:
+            continue
+        _digest_state[key] = now_mono
+        lines.append(f"• {key}: {a.get('detail') or a.get('message') or a}")
+
+    # Maintenance / review failures (F9): the outcome rows carry the truth.
+    try:
+        from lakewind.db import access as _access
+
+        with _access.cursor(read_only=True) as conn:
+            cur = conn.execute(
+                """
+                SELECT kind, status, error FROM pipeline_runs
+                WHERE kind IN ('maintenance', 'daily_review')
+                ORDER BY started_at DESC LIMIT 6
+                """
+            )
+            rows = cur.fetchall()
+        fails = [r for r in rows if r[1] == "error"]
+        for kind, _status, error in fails[:2]:
+            key = f"{kind}_failure"
+            if now_mono - _digest_state.get(key, 0.0) < _DIGEST_TTL_S:
+                continue
+            _digest_state[key] = now_mono
+            lines.append(f"• {kind} failed: {str(error or '')[:120]}")
+    except Exception:  # noqa: BLE001 — digest is best-effort
+        logger.debug("digest: pipeline_runs check failed", exc_info=True)
+
+    if not lines:
+        return
+    bot: Bot = ctx.bot
+    for admin in _admin_ids():
+        try:
+            await bot.send_message(
+                chat_id=admin,
+                text="\u26a0\ufe0f Operational digest\n" + "\n".join(lines),
+            )
+        except Exception as exc:  # noqa: BLE001 — Telegram failures are non-fatal
+            logger.warning("Operational digest to %s failed: %s", admin, exc)
+
+
 async def run_scheduler(ctx) -> None:
     """Main scheduler entry point — called every 30 min by the bot's job_queue."""
     try:
@@ -74,6 +151,10 @@ async def run_scheduler(ctx) -> None:
         await _check_subscriptions(ctx)
     except Exception as exc:
         logger.exception("Subscription scheduler failed: %s", exc)
+    try:
+        await _operational_digest(ctx)
+    except Exception as exc:
+        logger.exception("Operational digest failed: %s", exc)
 
 
 async def _check_alerts(ctx) -> None:

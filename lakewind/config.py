@@ -156,6 +156,9 @@ class TargetQualityConfig(BaseModel):
     """Deep Audit R2: ground-truth hierarchy training weights.
 
     station: real anemometers (ARPA/Domaso/DIY/Netatmo) — full trust.
+    crowdsourced (Phase 5/S5): human /report observations — beats reanalysis
+      (a person on the water outranks a 25 km grid cell) but never an
+      instrument; tier weight 0.5 x the report's own confidence 0.6 = 0.30.
     intermediate_reanalysis: CERRA-class regional reanalysis.
     era5: global reanalysis surrogate — the audit's measured 100%-of-targets
     defect means ERA5 must be DEMOTED, not removed (it still teaches
@@ -163,6 +166,7 @@ class TargetQualityConfig(BaseModel):
     """
 
     station_weight: float = 1.0
+    crowdsourced_weight: float = 0.5
     intermediate_reanalysis_weight: float = 0.6
     era5_weight: float = 0.4
 
@@ -228,6 +232,26 @@ class ModelConfig(BaseModel):
     # Serving applies the per-regime signed direction residual (train-time
     # artifact, min 50 samples/regime) as a small rotation.
     regime_direction_correction: bool = True
+    # --- Phase 5 (S3): the scheduled self-improvement cycle ---
+    # Promotion stays HUMAN by default (approved Q1): the review retrains,
+    # calibrates and registers candidates, but only recommends. When this
+    # flag is true the existing upgrade gate is applied automatically
+    # (gate additionally requires >= min_promotion_station_samples
+    # STATION-tier samples — crowdsourced rows can never satisfy it).
+    auto_promote: bool = False
+    min_promotion_station_samples: int = 50
+    # Retrain triggers inside the daily review (defaults mirror the former
+    # auto-pipeline heuristics): enough new data AND enough time since the
+    # last training run.
+    retrain_min_new_rows: int = 5000
+    retrain_min_days: int = 7
+    # Residual-drift sentinel (S6): recent vs baseline MAE on station obs.
+    drift_recent_days: int = 14
+    drift_baseline_days: int = 90
+    drift_threshold_kn: float = 1.5
+    # Interval-coverage monitor (F11 closure): below this realized coverage
+    # the review alerts and recalibrates the production bundle.
+    coverage_alert_threshold: float = 0.70
 
 
 class SuccessCriteria(BaseModel):
@@ -293,13 +317,22 @@ class TelegramConfig(BaseModel):
     enabled: bool = True
     token_env: str = "TELEGRAM_BOT_TOKEN"
     allowed_user_ids: list[int] = Field(default_factory=list)
+    # Phase 5 (S3): operator push targets — review digests, maintenance
+    # outcomes, operational alerts. Empty list falls back to the legacy
+    # hardcoded admin ID in admin.py so behavior never silently changes.
+    admin_ids: list[int] = Field(default_factory=list)
 
 
 class ScheduleConfig(BaseModel):
     collectors_nwp_minutes: int = 30
     collectors_stations_minutes: int = 10
-    predict_minutes: int = 30
-    backtest_cron: str = "0 4 * * *"
+    # Phase 5 (S3): the dead `predict_minutes`/`backtest_cron` keys were
+    # removed — the pipeline loop IS the scheduler. Nightly maintenance and
+    # the daily self-improvement review run inside the service process at
+    # these LOCAL (Europe/Rome) times, maintenance strictly before review so
+    # the review sees a freshly backed-up, pruned database.
+    maintenance_time: str = "04:30"
+    daily_review_time: str = "05:00"
 
 
 class DbConfig(BaseModel):
@@ -313,6 +346,24 @@ class DbConfig(BaseModel):
     # Deep Audit R11: nightly consistent backup with optional offsite copy.
     backup_dest_dir: str = "data/backups"
     backup_offsite_dir: str | None = None
+    # --- Phase 5 (S2): retention, fully config-driven (was hard-wired via a
+    # nonexistent DbConfig field read with getattr in pipeline_loop) ---
+    retention_operational_forecast_days: int = 90
+    retention_predictions_days: int = 545
+    # raw_json sources that retention must NEVER delete (irreplaceable
+    # training assets). R11 exempted only historical_forecast_api; the R15
+    # previous-runs backfill was silently deletable after 90 days — F5.
+    retention_exempt_sources: list[str] = Field(
+        default_factory=lambda: ["historical_forecast_api", "previous_runs_api"]
+    )
+    # Secondary-table prune windows (F8: these grew unbounded forever).
+    source_health_retention_days: int = 180
+    pipeline_log_retention_days: int = 180
+    experiment_retention_days: int = 730
+    image_cache_retention_days: int = 7
+    # Model-bundle GC on disk: keep the newest N bundles plus whatever the
+    # registry currently points at as production.
+    model_bundle_keep: int = 8
 
 
 class LoggingConfig(BaseModel):

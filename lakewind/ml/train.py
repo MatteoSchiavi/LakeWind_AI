@@ -36,6 +36,7 @@ from __future__ import annotations
 import json
 import logging
 import pickle
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -56,6 +57,77 @@ MODELS_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "models"
 
 # Backend tags used in artifact filenames and features.json
 _BACKEND_TAG = {"lightgbm": "lgb", "xgboost_gpu": "xgb"}
+
+
+def _git_commit() -> str:
+    """Best-effort git SHA of the training code (Phase 5 S4 / F13).
+
+    The registry's git_commit column was always "" — lineage could not be
+    traced back to code. Empty string in containers without .git (the
+    Docker image ships neither git nor the repo metadata) by design.
+    """
+    import subprocess
+
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        if out.returncode == 0:
+            return out.stdout.strip()[:12]
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return ""
+
+
+def prune_model_bundles(keep: int = 8, protect: list[str] | None = None) -> dict[str, Any]:
+    """Disk GC for data/models (Phase 5 S2 / F8).
+
+    Every training run leaves ~10+ artifact files prefixed with its version
+    (`mos_v1_<ts>_...`); nothing ever deleted them. Groups files by version
+    prefix, keeps the newest `keep` versions plus every version in
+    `protect` (the registry's production pointer), deletes the rest.
+    Returns {deleted_files, freed_mb, kept_versions}.
+    """
+    MODELS_DIR.mkdir(parents=True, exist_ok=True)
+    protected = set(protect or [])
+    versions: dict[str, list[Path]] = {}
+    for f in MODELS_DIR.iterdir():
+        if not f.is_file():
+            continue
+        # Version prefix = everything before the last '_' -separated artifact
+        # kind — but conformal files are <mv>_conformal_<t>_q<q>.pkl and
+        # ensemble members <mv>_u_lgb.pkl, so match on the known prefix.
+        m = _MV_PREFIX_RE.match(f.name)
+        if m:
+            versions.setdefault(m.group(1), []).append(f)
+    ordered = sorted(versions, reverse=True)  # newest first (timestamped)
+    keep_set = set(ordered[: max(0, keep)]) | protected
+    deleted = 0
+    freed = 0
+    for v, files in versions.items():
+        if v in keep_set:
+            continue
+        for f in files:
+            try:
+                freed += f.stat().st_size
+                f.unlink()
+                deleted += 1
+            except OSError:  # pragma: no cover
+                pass
+    return {
+        "deleted_files": deleted,
+        "freed_mb": round(freed / (1024 * 1024), 1),
+        "kept_versions": len(keep_set),
+    }
+
+
+# mos_v1_20260910_153000 followed by the artifact kind — matches every
+# artifact filename convention written by train()/conformal.py.
+_MV_PREFIX_RE = re.compile(r"^(mos_v\w+_\d{8}_\d{6})(?:_|$)")
 
 
 @dataclass
@@ -756,7 +828,7 @@ def train(
         backtest_mae_kn=round(speed_mae, 4) if speed_mae is not None else 0.0,
         backtest_dir_error_deg=round(dir_err, 3) if dir_err is not None else None,
         promoted=False,
-        git_commit="",
+        git_commit=_git_commit(),
         notes=(
             f"backend={backend}; ensemble={members}; "
             f"features={n_features}; samples={n_samples}; "

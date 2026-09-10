@@ -14,8 +14,12 @@ Usage:
     lakewind auto-pipeline --check      # dry-run: show what would be done
     lakewind auto-pipeline --force      # retrain even if not enough new data
 
-Cron setup (daily at 03:00 Europe/Rome):
-    0 3 * * * cd /home/matteos/lakewind && lakewind auto-pipeline >> /var/log/lakewind-pipeline.log 2>&1
+Phase 5 (S3): this module is no longer the scheduled brain — nothing ever
+installed the cron entry suggested below, so the loop stayed manual. The
+scheduled self-improvement cycle now lives in `lakewind/ml/review.py` and
+runs INSIDE the service process after nightly maintenance (config
+`schedule.daily_review_time`, default 05:00 local). This CLI remains for
+manual/ad-hoc runs; `v4_pipeline_log` is shared between both paths.
 """
 from __future__ import annotations
 

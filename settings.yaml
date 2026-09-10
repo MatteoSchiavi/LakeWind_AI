@@ -300,12 +300,15 @@ telegram:
   allowed_user_ids: []   # empty = open; populate to restrict
 
 
-# Section 11 — scheduler (Phase 0 cron-like behavior)
+# Section 11 — scheduler. The pipeline loop IS the scheduler (dead
+# predict_minutes/backtest_cron keys removed in Phase 5 S3 — nothing ever
+# consumed them). Maintenance and the daily self-improvement review run
+# inside the service process at these LOCAL times, maintenance first.
 schedule:
   collectors_nwp_minutes: 30        # Open-Meteo every 30 min
   collectors_stations_minutes: 10   # ground stations every 10 min
-  predict_minutes: 30
-  backtest_cron: "0 4 * * *"        # daily at 04:00 Europe/Rome
+  maintenance_time: "04:30"         # retention + verified backup + model GC
+  daily_review_time: "05:00"        # evaluation + coverage + drift + retrain
 
 # Database
 db:
@@ -316,6 +319,21 @@ db:
   predictions_table: "predictions"
   model_registry_table: "model_registry"
   sailing_log_table: "sailing_log"
+
+  # Phase 5 (S2) — retention & backup, fully config-driven
+  backup_dest_dir: "data/backups"
+  # backup_offsite_dir: "/mnt/nas/lakewind-backups"   # deploy/t420_backup_offsite.sh
+  retention_operational_forecast_days: 90
+  retention_predictions_days: 545
+  # raw_json sources retention must NEVER delete (irreplaceable assets)
+  retention_exempt_sources:
+    - "historical_forecast_api"       # R3 historical backfill
+    - "previous_runs_api"             # R15 leakage-free backfill (F5)
+  source_health_retention_days: 180
+  pipeline_log_retention_days: 180
+  experiment_retention_days: 730
+  image_cache_retention_days: 7
+  model_bundle_keep: 8
 
 # Logging
 logging:

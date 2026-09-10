@@ -26,7 +26,10 @@ set -euo pipefail
 # Configuration
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 BACKUP_DIR="$REPO_DIR/data/backups"
-HEALTH_URL="http://localhost:8501/_stcore/health"
+# Phase 5 (S1/F2): Streamlit :8501 was retired in Phase 4 — health-checking
+# it made EVERY update time out and roll back (auto-update permanently
+# bricked). The API's /api/health is the real service liveness probe.
+HEALTH_URL="http://localhost:8000/api/health"
 HEALTH_TIMEOUT=30  # seconds to wait for health check
 ROLLBACK_MARKER="$REPO_DIR/.last_good_commit"
 
@@ -111,13 +114,25 @@ fi
 # --- Step 3: Backup DB + models ---
 TIMESTAMP=$(date '+%Y%m%d_%H%M%S')
 mkdir -p "$BACKUP_DIR"
-if [ -f "$REPO_DIR/data/lakewind.duckdb" ]; then
-    log "Backing up database..."
-    cp "$REPO_DIR/data/lakewind.duckdb" "$BACKUP_DIR/lakewind_${TIMESTAMP}.duckdb"
-    # Keep only last 5 backups
-    ls -t "$BACKUP_DIR"/lakewind_*.duckdb | tail -n +6 | xargs -r rm
-    ok "DB backed up to $BACKUP_DIR/lakewind_${TIMESTAMP}.duckdb"
+if docker ps --format '{{.Names}}' | grep -q '^lakewind$'; then
+    # Phase 5 (S1/F4): back up through the app's own consistent path
+    # (CHECKPOINT + post-copy verification) instead of a raw cp of the live
+    # file, which can tear while the pipeline writes.
+    log "Backing up database (via lakewind backup)..."
+    docker exec lakewind lakewind backup --dest /app/data/backups >> /tmp/lakewind-update-backup.log 2>&1 \
+        || warn "In-container backup failed — falling back to raw copy"
+    if ! ls "$BACKUP_DIR"/lakewind_backup_*.duckdb >/dev/null 2>&1; then
+        cp "$REPO_DIR/data/lakewind.duckdb" "$BACKUP_DIR/lakewind_${TIMESTAMP}.duckdb"
+    fi
+else
+    # Container not running → no writer holds the lock → plain cp is safe.
+    if [ -f "$REPO_DIR/data/lakewind.duckdb" ]; then
+        log "Backing up database (container down — direct copy)..."
+        cp "$REPO_DIR/data/lakewind.duckdb" "$BACKUP_DIR/lakewind_${TIMESTAMP}.duckdb"
+    fi
 fi
+# Keep only last 5 backups
+ls -t "$BACKUP_DIR"/lakewind_*.duckdb 2>/dev/null | tail -n +6 | xargs -r rm
 if [ -d "$REPO_DIR/data/models" ]; then
     log "Backing up models..."
     tar -czf "$BACKUP_DIR/models_${TIMESTAMP}.tar.gz" -C "$REPO_DIR/data" models/ 2>/dev/null || true

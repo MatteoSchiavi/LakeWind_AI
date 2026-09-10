@@ -34,16 +34,22 @@ from typing import Any
 # target (no wind components) but is classified as a real sensor for
 # reporting and confidence semantics.
 STATION_SOURCE_PREFIXES = ("arpa_", "domaso", "diy_buoy", "netatmo", "lake_water_temp")
-# Tier 1: regional reanalysis — intermediate ground truth for the transition
+# Tier 1 (Phase 5/S5): crowdsourced human reports from the water (/report).
+# A person ON the lake outranks any reanalysis grid cell — but never an
+# instrument, and (per the approved Phase 5 plan) can NEVER satisfy the
+# promotion gate's real-sample requirement, which counts station tiers only.
+CROWDSOURCED_SOURCE_PREFIXES = ("report_",)
+# Tier 2: regional reanalysis — intermediate ground truth for the transition
 # period while the station ledger grows (CERRA at 5.5 km resolves the valley
 # far better than ERA5's 0.25deg; candidate evaluation R2 follow-up).
 INTERMEDIATE_REANALYSIS_SOURCES = ("cerra",)
-# Tier 2: global reanalysis — lowest-trust surrogate.
+# Tier 3: global reanalysis — lowest-trust surrogate.
 ERA5_SOURCES = ("era5_reanalysis",)
 
 TIER_STATION = 0
-TIER_INTERMEDIATE = 1
-TIER_ERA5 = 2
+TIER_CROWDSOURCED = 1
+TIER_INTERMEDIATE = 2
+TIER_ERA5 = 3
 
 
 def source_tier(source: str | None) -> int:
@@ -51,6 +57,8 @@ def source_tier(source: str | None) -> int:
     s = str(source or "")
     if s.startswith(STATION_SOURCE_PREFIXES):
         return TIER_STATION
+    if s.startswith(CROWDSOURCED_SOURCE_PREFIXES):
+        return TIER_CROWDSOURCED
     if any(s == c or s.startswith(c + "_") for c in INTERMEDIATE_REANALYSIS_SOURCES):
         return TIER_INTERMEDIATE
     return TIER_ERA5
@@ -116,10 +124,13 @@ def tier_weight(tier: int, weights: Any) -> float:
     """Configured training weight for a hierarchy tier.
 
     `weights` is a settings.model.target_quality object with
-    station_weight / intermediate_reanalysis_weight / era5_weight.
+    station_weight / crowdsourced_weight / intermediate_reanalysis_weight /
+    era5_weight.
     """
     if tier == TIER_STATION:
         return float(getattr(weights, "station_weight", 1.0))
+    if tier == TIER_CROWDSOURCED:
+        return float(getattr(weights, "crowdsourced_weight", 0.5))
     if tier == TIER_INTERMEDIATE:
         return float(getattr(weights, "intermediate_reanalysis_weight", 0.6))
     return float(getattr(weights, "era5_weight", 0.4))
@@ -143,9 +154,11 @@ def target_quality_weight(
 
 __all__ = [
     "STATION_SOURCE_PREFIXES",
+    "CROWDSOURCED_SOURCE_PREFIXES",
     "INTERMEDIATE_REANALYSIS_SOURCES",
     "ERA5_SOURCES",
     "TIER_STATION",
+    "TIER_CROWDSOURCED",
     "TIER_INTERMEDIATE",
     "TIER_ERA5",
     "source_tier",

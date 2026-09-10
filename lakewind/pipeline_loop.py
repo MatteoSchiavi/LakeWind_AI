@@ -34,6 +34,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from lakewind.config import load_settings
+from lakewind.utils.timeutil import utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -146,23 +147,50 @@ async def precompute_artifacts() -> dict[str, Any]:
     return {"maps": map_summary, "trends": trend_summary}
 
 
-def _next_maintenance_monotonic() -> float:
-    """Monotonic deadline for the next 04:30 Europe/Rome pass (R11)."""
+def _next_local_time_monotonic(hhmm: str, default: str = "04:30") -> float:
+    """Monotonic deadline for the next LOCAL (Europe/Rome) HH:MM pass.
+
+    Phase 5 (S3): maintenance and review times come from settings
+    (`schedule.maintenance_time` / `schedule.daily_review_time`) instead of
+    a hardcoded 04:30; review defaults after maintenance so it sees a
+    freshly backed-up, pruned database.
+    """
     from zoneinfo import ZoneInfo
 
     s = load_settings()
+    try:
+        hour_s, minute_s = (hhmm or default).split(":")
+        hour, minute = int(hour_s), int(minute_s)
+    except ValueError:
+        hour_s, minute_s = default.split(":")
+        hour, minute = int(hour_s), int(minute_s)
     tz = ZoneInfo(s.project.timezone)
     now_local = datetime.now(tz)
-    run_today = now_local.replace(hour=4, minute=30, second=0, microsecond=0)
+    run_today = now_local.replace(hour=hour, minute=minute, second=0, microsecond=0)
     target = run_today if now_local < run_today else run_today + timedelta(days=1)
     return time.monotonic() + (target - now_local).total_seconds()
 
 
+def _next_maintenance_monotonic() -> float:
+    """Monotonic deadline for the nightly maintenance pass (R11, S3)."""
+    return _next_local_time_monotonic(load_settings().schedule.maintenance_time)
+
+
+def _next_review_monotonic() -> float:
+    """Monotonic deadline for the daily self-improvement review (Phase 5 S3)."""
+    return _next_local_time_monotonic(load_settings().schedule.daily_review_time, "05:00")
+
+
 async def _nightly_maintenance(retention_days: int) -> None:
-    """R11: consistent backup + retention prune; failures never stop the loop."""
+    """R11 + Phase 5 S2/S4: retention (incl. secondary tables) + verified
+    backup + model-bundle GC; outcome persisted to pipeline_runs and
+    v4_pipeline_log so 'did last night's backup run' is a query, not a
+    container-log archaeology dig (F8/F9)."""
     from pathlib import Path
 
     from lakewind.db import access
+
+    t_start = utcnow()
 
     def _run() -> dict[str, Any]:
         s = load_settings()
@@ -173,6 +201,7 @@ async def _nightly_maintenance(retention_days: int) -> None:
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("Retention pass failed: %s", exc)
+            out["retention_error"] = str(exc)
         try:
             offsite = getattr(s.db, "backup_offsite_dir", None)
             target = access.backup_database(
@@ -181,10 +210,59 @@ async def _nightly_maintenance(retention_days: int) -> None:
             out["backup"] = str(target)
         except Exception as exc:  # noqa: BLE001
             logger.warning("Backup failed: %s", exc)
+            out["backup_error"] = str(exc)
+        try:
+            # F8: data/models accumulated every training bundle forever.
+            from lakewind.ml.train import prune_model_bundles
+
+            prod = access.current_production_model()
+            protect = [str(prod["model_version"])] if prod else []
+            out["model_gc"] = prune_model_bundles(
+                keep=int(s.db.model_bundle_keep), protect=protect
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Model bundle GC failed: %s", exc)
+            out["model_gc_error"] = str(exc)
         return out
 
-    _state["last_maintenance"] = await asyncio.to_thread(_run)
-    logger.info("Nightly maintenance done: %s", _state["last_maintenance"])
+    started = time.perf_counter()
+    outcome = await asyncio.to_thread(_run)
+    _state["last_maintenance"] = outcome
+    logger.info("Nightly maintenance done: %s", outcome)
+    try:
+        # F9: the outcome is now a ROW, not a stdout line.
+        from lakewind.ml.auto_pipeline import log_step
+
+        log_step(
+            "nightly_maintenance",
+            "ok" if not outcome.get("backup_error") else "error",
+            outcome,
+            time.perf_counter() - started,
+        )
+        access.record_pipeline_run(
+            kind="maintenance",
+            started_at=t_start,
+            finished_at=utcnow(),
+            status="ok" if not outcome.get("backup_error") else "error",
+            stats=outcome,
+            error=outcome.get("backup_error"),
+        )
+    except Exception as exc:  # noqa: BLE001 — never break the loop on logging
+        logger.warning("Maintenance outcome not persisted: %s", exc)
+
+
+async def _daily_review() -> None:
+    """Phase 5 (S3): the scheduled self-improvement review, in a thread."""
+    try:
+        from lakewind.ml.review import run_daily_review
+
+        summary = await asyncio.to_thread(run_daily_review)
+        _state["last_review"] = {
+            k: v for k, v in summary.items() if k != "steps"
+        }
+        _state["last_review_steps"] = summary.get("steps", {})
+    except Exception as exc:  # noqa: BLE001 — the loop must survive anything
+        logger.exception("Daily review crashed: %s", exc)
 
 
 async def _loop(stop: asyncio.Event) -> None:
@@ -199,10 +277,12 @@ async def _loop(stop: asyncio.Event) -> None:
     # a full interval.
     next_nwp = 0.0
     next_station = 0.0
-    # Deep Audit R11: nightly maintenance (backup + retention) at the first
-    # tick after 04:30 local. Never blocks the collection cycle.
+    # Deep Audit R11 + Phase 5 S3: nightly maintenance (backup + retention)
+    # and the daily self-improvement review, both at configured LOCAL times.
+    # Never block the collection cycle.
     next_maintenance = _next_maintenance_monotonic()
-    retention_days = int(getattr(s.db, "retention_operational_forecast_days", 90) or 90)
+    next_review = _next_review_monotonic()
+    retention_days = int(s.db.retention_operational_forecast_days or 90)
 
     cycle_lock = asyncio.Lock()
 
@@ -215,6 +295,11 @@ async def _loop(stop: asyncio.Event) -> None:
             if time.monotonic() >= next_maintenance:
                 await _nightly_maintenance(retention_days)
                 next_maintenance = _next_maintenance_monotonic()
+                # Review runs right AFTER maintenance on the same night.
+                next_review = min(next_review, _next_review_monotonic())
+            if time.monotonic() >= next_review:
+                await _daily_review()
+                next_review = _next_review_monotonic()
             await asyncio.sleep(min(next_nwp, next_station) - now_s)
             continue
 
@@ -225,6 +310,8 @@ async def _loop(stop: asyncio.Event) -> None:
             continue
 
         async with cycle_lock:
+            cycle_kind = "nwp_cycle" if nwp_due else "station_cycle"
+            cycle_start_dt = utcnow()
             try:
                 if nwp_due:
                     t0 = time.perf_counter()
@@ -245,15 +332,43 @@ async def _loop(stop: asyncio.Event) -> None:
                     from lakewind.forecast_store import store
 
                     await store.refresh_projection()
-                    _state["last_station_cycle"] = {
+                    summary = {
                         "results": results,
                         "runtime_seconds": round(time.perf_counter() - t0, 2),
                     }
+                    _state["last_station_cycle"] = summary
                     logger.info("Station collect done in %.1fs", time.perf_counter() - t0)
                     next_station = time.monotonic() + station_every
+                # S4: every cycle leaves a row — runtimes and failures become
+                # a queryable history instead of container-log archaeology.
+                try:
+                    from lakewind.db import access as _access
+
+                    _access.record_pipeline_run(
+                        kind=cycle_kind,
+                        started_at=cycle_start_dt,
+                        finished_at=utcnow(),
+                        status="ok",
+                        stats=summary,
+                    )
+                except Exception:  # noqa: BLE001 — logging must never kill cycles
+                    logger.debug("pipeline_runs row not persisted", exc_info=True)
             except Exception as exc:  # noqa: BLE001 — the loop must survive anything
                 _state["cycle_errors"] += 1
                 logger.exception("Pipeline cycle crashed: %s", exc)
+                try:
+                    from lakewind.db import access as _access
+
+                    _access.record_pipeline_run(
+                        kind=cycle_kind,
+                        started_at=cycle_start_dt,
+                        finished_at=utcnow(),
+                        status="error",
+                        stats={},
+                        error=str(exc),
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
                 if nwp_due:
                     next_nwp = time.monotonic() + nwp_every
                 if station_due:

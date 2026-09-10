@@ -543,7 +543,8 @@ async def _help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "  /status — data source health\n"
         "  /accuracy [point] — model skill vs reality\n"
         "  /why [point] — WHY this forecast (SHAP explainability)\n"
-        "  /report — model quality report\n"
+        "  /report <bft> <dir> [note] — report real conditions (helps the model)\n"
+        "  /log <bft> [dir] [note] — log a sailing session\n"
         "  /webapp — open the web dashboard\n"
         "  /language en|it · /units kn|ms|kmh — preferences",
         reply_markup=_main_menu_kb(),
@@ -1430,6 +1431,80 @@ async def _report_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await update.message.reply_text("❌ Usage: /report <beaufort> <direction> [note]")
 
 
+# --- Phase 5 (S5): /log — sailing session log from the water (Spec §9) ---
+
+async def _log_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/log <beaufort> [direction] [note] — log a sailing session.
+
+    sailing_log existed only behind the interactive CLI (`lakewind
+    log-sailing`) — impossible to reach from the water, exactly when the
+    perception data is freshest. Mirrors /report's parsing: Beaufort +
+    optional cardinal direction + free note; the session is recorded as the
+    last two hours ending now.
+    """
+    allowed, user = await _authorize(update)
+    if not allowed:
+        return
+
+    if not context.args or len(context.args) < 1:
+        await update.message.reply_text(
+            "\U0001F4D3 Log a sailing session\n\n"
+            "Usage: /log <beaufort> [direction] [note]\n\n"
+            "Example: /log 4 SW breva until 15:00, nice chop\n\n"
+            "The session is logged as the last 2 hours ending now, at your "
+            "favorite spot."
+        )
+        return
+
+    try:
+        bf = int(context.args[0])
+        if not 0 <= bf <= 12:
+            raise ValueError
+        bf_to_kn = [0, 1, 4, 7, 11, 17, 22, 28, 35, 42, 50, 59, 68]
+        speed_kn = float(bf_to_kn[bf])
+
+        dir_deg: float | None = None
+        dir_str = ""
+        rest = context.args[1:]
+        if rest:
+            candidate = rest[0].upper()
+            dir_map = {"N": 0, "NE": 45, "E": 90, "SE": 135, "S": 180, "SW": 225, "W": 270, "NW": 315}
+            if candidate in dir_map:
+                dir_deg = float(dir_map[candidate])
+                dir_str = candidate
+                rest = rest[1:]
+        note = " ".join(rest)
+
+        from lakewind.db import access
+        s = load_settings()
+        fav = user.get("favorite_point_id") if user else None
+        vp = next((p for p in s.virtual_points if p.id == (fav or "mid_channel")), None)
+        if vp is None:
+            vp = s.virtual_points[0]
+
+        now = utcnow()
+        access.insert_sailing_log({
+            "session_start": now - timedelta(hours=2),
+            "session_end": now,
+            "point_id": vp.id,
+            "perceived_wind_kn": speed_kn,
+            "perceived_direction_deg": dir_deg,
+            "sail_config": None,
+            "notes": note or None,
+            "gps_track_path": None,
+        })
+
+        await update.message.reply_text(
+            f"✅ Session logged\n"
+            f"🌊 B{bf} ({speed_kn:.0f}kn)"
+            + (f" from {dir_str}" if dir_str else "")
+            + f" at {vp.id}\n"
+            f"📝 {note or '(no note)'}"
+        )
+    except (ValueError, IndexError):
+        await update.message.reply_text("❌ Usage: /log <beaufort> [direction] [note]")
+
+
 # --- Admin commands (ID: 1762615402 only) ---
 
 async def _admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1585,6 +1660,7 @@ def _register_handlers(app) -> None:
     app.add_handler(CommandHandler("accuracy", _accuracy_cmd))
     app.add_handler(CommandHandler("why", _why_cmd))
     app.add_handler(CommandHandler("report", _report_cmd))
+    app.add_handler(CommandHandler("log", _log_cmd))
     app.add_handler(CommandHandler("admin", _admin_cmd))
     app.add_handler(CommandHandler("webapp", _webapp_cmd))
     # Inline keyboard callback (the query builder)

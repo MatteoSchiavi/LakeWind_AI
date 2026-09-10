@@ -21,10 +21,101 @@ import logging
 from datetime import timedelta
 from typing import Any
 
+from lakewind.config import load_settings
 from lakewind.db import access
 from lakewind.utils.timeutil import utcnow
 
 logger = logging.getLogger(__name__)
+
+
+def detect_interior_gaps(
+    *,
+    lookback_days: int = 30,
+    max_hours: float = 1.5,
+    max_gaps: int = 50,
+) -> dict[str, Any]:
+    """Find HOLES inside the forecast history, not just at the end (Phase 5 S6).
+
+    `detect_gaps` compares MAX(valid_time) to now — trailing only. The
+    May-June 2026 hole (chunk-2 backfill killed by API quota) sat in the
+    middle of an otherwise continuous record and was invisible to it. This
+    scanner walks every operational point's hourly grid over the lookback
+    window (bounded — recovery is not analytics) and reports missing slots
+    as contiguous gap windows, interior only (the trailing gap belongs to
+    detect_gaps).
+
+    Returns {scanned_points, window, gaps: [{point_id, from, to, hours}], truncated}.
+    """
+    s = load_settings()
+    now = utcnow()
+    start = now - timedelta(days=lookback_days)
+    point_ids = s.operational_point_ids or [vp.id for vp in s.virtual_points]
+    gaps: list[dict[str, Any]] = []
+    truncated = False
+    with access.cursor(read_only=True) as conn:
+        for pid in point_ids:
+            rows = conn.execute(
+                f"""
+                SELECT DISTINCT valid_time FROM {s.db.forecast_table}
+                WHERE point_id = ? AND valid_time >= ? AND valid_time < ?
+                ORDER BY valid_time
+                """,
+                [pid, start, now],
+            ).fetchall()
+            times = [r[0] for r in rows]
+            if len(times) < 2:
+                continue
+            for prev, cur in zip(times, times[1:], strict=False):
+                delta_h = (cur - prev).total_seconds() / 3600.0
+                if delta_h > max_hours:
+                    if len(gaps) >= max_gaps:
+                        truncated = True
+                        break
+                    gaps.append({
+                        "point_id": pid,
+                        "from": prev.isoformat(),
+                        "to": cur.isoformat(),
+                        "hours": round(delta_h, 1),
+                    })
+            if truncated:
+                break
+    return {
+        "window": {"start": start.isoformat(), "end": now.isoformat()},
+        "scanned_points": len(point_ids),
+        "gaps": gaps,
+        "n_gaps": len(gaps),
+        "truncated": truncated,
+    }
+
+
+def recover_window(start: Any, end: Any) -> dict[str, Any]:
+    """Explicit-window backfill for interior holes (Phase 5 S6).
+
+    `recover()` can only ever extend forward from the latest data; a hole in
+    the middle needs the caller to name the window. Uses the same
+    idempotent backfill paths (ON CONFLICT upserts) as startup recovery.
+    Accepts ISO strings or datetimes; refuses inverted/oversized windows.
+    """
+    from datetime import datetime as _dt
+
+    if isinstance(start, str):
+        start = _dt.fromisoformat(start)
+    if isinstance(end, str):
+        end = _dt.fromisoformat(end)
+    if end <= start:
+        raise ValueError("recovery window: end must be after start")
+    if (end - start).total_seconds() / 86400.0 > 400:
+        raise ValueError("recovery window: >400 days — split it (API quotas)")
+    result: dict[str, Any] = {"start": start.isoformat(), "end": end.isoformat()}
+    from lakewind.collector.historical_backfill import backfill_era5, backfill_forecasts
+
+    logger.info("Windowed recovery: backfilling forecasts %s -> %s", start, end)
+    fc = backfill_forecasts(start=start, end=end, delay_seconds=0.3)
+    result["forecasts"] = {"rows_inserted": sum(fc.values()), "by_point": fc}
+    logger.info("Windowed recovery: backfilling ERA5 observations")
+    era = backfill_era5(start=start, end=end)
+    result["era5"] = {"rows_inserted": sum(era.values()), "by_point": era}
+    return result
 
 
 def detect_gaps() -> dict[str, dict[str, Any]]:

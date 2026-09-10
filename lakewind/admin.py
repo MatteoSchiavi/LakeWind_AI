@@ -23,13 +23,20 @@ from lakewind.utils.timeutil import utcnow
 
 logger = logging.getLogger(__name__)
 
-# Admin Telegram user ID
-ADMIN_ID = 1762615402
+# Legacy hardcoded admin (Phase 5/S3: config `telegram.admin_ids` takes
+# precedence; this fallback preserves behavior for existing deployments).
+LEGACY_ADMIN_ID = 1762615402
+
+
+def _configured_admin_ids() -> list[int]:
+    """Admin IDs from settings.telegram.admin_ids, falling back to legacy."""
+    ids = list(load_settings().telegram.admin_ids or [])
+    return ids or [LEGACY_ADMIN_ID]
 
 
 def is_admin(user_id: int) -> bool:
-    """Check if a user is the admin."""
-    return user_id == ADMIN_ID
+    """Check if the user is an operator (config admin_ids or legacy ID)."""
+    return user_id in _configured_admin_ids()
 
 
 def get_admin_status() -> str:
@@ -242,7 +249,67 @@ def get_admin_status() -> str:
     lines.append("  /admin recover — force data recovery")
     lines.append("  /admin users — list all users")
 
+    lines.extend(get_trends_lines())
     return "\n".join(lines)
+
+
+def get_trends_lines() -> list[str]:
+    """Phase 5 (S4/F13): model-health trends from the observability tables.
+
+    Before Phase 5 nothing trended: MAE lived in console output and vanished,
+    coverage had no history, maintenance outcomes were stdout lines. This
+    section reads eval_runs / pipeline_runs / model_promotions so the admin
+    sees DIRECTION, not just the latest snapshot.
+    """
+    lines: list[str] = ["", "📈 *Trends*"]
+    try:
+        runs = access.recent_eval_runs(limit=10)
+        if runs:
+            lines.append("  Model MAE (station obs, eval_runs):")
+            for r in runs[:5]:
+                m = r.get("metrics") or {}
+                mae = m.get("mae_station_recent_kn")
+                n = m.get("n_station_samples", 0)
+                when = r.get("created_at")
+                when_s = when.strftime("%m/%d") if when else "?"
+                lines.append(f"    {when_s}: {mae if mae is not None else '?'} kn (n={n})")
+        else:
+            lines.append("  No eval_runs yet (first daily review pending)")
+    except Exception as exc:  # noqa: BLE001
+        lines.append(f"  ❌ eval_runs: {exc}")
+    try:
+        with access.cursor(read_only=True) as conn:
+            cur = conn.execute(
+                """
+                SELECT kind, status, finished_at FROM pipeline_runs
+                WHERE kind IN ('maintenance', 'daily_review', 'nwp_cycle')
+                ORDER BY started_at DESC LIMIT 30
+                """
+            )
+            rows = cur.fetchall()
+        if rows:
+            by_kind: dict[str, list[tuple[str, object]]] = {}
+            for kind, status, fin in rows:
+                by_kind.setdefault(kind, []).append((status, fin))
+            for kind, entries in by_kind.items():
+                oks = sum(1 for s, _ in entries if s == "ok")
+                last = entries[0][1]
+                last_s = last.strftime("%m/%d %H:%M") if last else "?"
+                lines.append(f"  {kind}: {oks}/{len(entries)} ok, last {last_s}")
+        else:
+            lines.append("  No pipeline_runs yet")
+    except Exception as exc:  # noqa: BLE001
+        lines.append(f"  ❌ pipeline_runs: {exc}")
+    try:
+        promo = access.promotion_history(limit=3)
+        if promo:
+            for p in promo:
+                at = p.get("promoted_at")
+                at_s = at.strftime("%m/%d") if at else "?"
+                lines.append(f"  {p.get('action')}: {p.get('model_version')} ({at_s})")
+    except Exception as exc:  # noqa: BLE001
+        lines.append(f"  ❌ promotions: {exc}")
+    return lines
 
 
 def get_admin_users_list() -> str:
@@ -270,4 +337,4 @@ def get_admin_users_list() -> str:
     return "\n".join(lines)
 
 
-__all__ = ["is_admin", "get_admin_status", "get_admin_users_list", "ADMIN_ID"]
+__all__ = ["is_admin", "get_admin_status", "get_admin_users_list", "get_trends_lines", "LEGACY_ADMIN_ID"]

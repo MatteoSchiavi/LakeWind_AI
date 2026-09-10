@@ -28,6 +28,12 @@ import numpy as np
 from lakewind.config import load_settings
 from lakewind.db import access
 from lakewind.features.build import build_features_for
+from lakewind.features.targets import (
+    TIER_CROWDSOURCED,
+    TIER_ERA5,
+    TIER_STATION,
+    source_tier,
+)
 from lakewind.ml.infer import predict_at
 from lakewind.ml.train import train as train_model
 from lakewind.utils.timeutil import utcnow
@@ -63,7 +69,12 @@ class BacktestReport:
     # V5: Source-separated metrics (Claude audit)
     n_era5_samples: int = 0
     n_real_samples: int = 0
+    # Phase 5 (S5): tier-resolved counts — the promotion gate consumes
+    # n_station_samples; crowdsourced rows are reported, never gating.
+    n_station_samples: int = 0
+    n_crowdsourced_samples: int = 0
     candidate_mae_vs_era5: float | None = None
+    candidate_mae_vs_station: float | None = None
     candidate_mae_vs_real: float | None = None
     nwp_mae_vs_era5: float | None = None
     nwp_mae_vs_real: float | None = None
@@ -120,10 +131,16 @@ def _materialize_test_samples(
             obs_v = ref_v + fr.target_v
             obs = WindVector.from_uv(obs_u, obs_v)
 
-            # V5: Track whether the observation is from ERA5 or a real station
-            # (Claude audit: separate vs-ERA5 and vs-real-station metrics)
+            # V5: Track whether the observation is from ERA5 or a real source
+            # (Claude audit: separate vs-ERA5 and vs-real-station metrics).
+            # Phase 5 (S5): tier-aware flags — the promotion gate counts
+            # STATION-tier samples only (targets.source_tier), crowdsourced
+            # /report rows are visible as their own bucket (F14).
             obs_source = fr.meta.get("obs_source") or "unknown"
-            is_era5 = obs_source == "era5_reanalysis"
+            tier = source_tier(obs_source)
+            is_era5 = tier == TIER_ERA5
+            is_station = tier == TIER_STATION
+            is_crowdsourced = tier == TIER_CROWDSOURCED
 
             rows.append(
                 {
@@ -135,6 +152,8 @@ def _materialize_test_samples(
                     "obs_dir": obs.direction_deg,
                     "obs_source": obs_source,
                     "is_era5": is_era5,
+                    "is_station": is_station,
+                    "is_crowdsourced": is_crowdsourced,
                     "feature_vector": fr.feature_vector,
                     "regime_tivano": fr.feature_vector.get("tivano_window", False),
                     "regime_breva": fr.feature_vector.get("breva_window", False),
@@ -340,6 +359,11 @@ def run_backtest(
     # V5: Separate errors by observation source (Claude audit)
     cand_errors_era5: list[float] = []
     cand_errors_real: list[float] = []
+    # Phase 5 (S5/F14): the promotion gate counts STATION-tier samples only —
+    # crowdsourced /report rows are 'real' for metrics but can never satisfy
+    # the gate (human Beaufort midpoints gating model promotion was the bug).
+    station_samples: list[float] = []
+    crowdsourced_samples: list[float] = []
     nwp_errors_era5: list[float] = []
     nwp_errors_real: list[float] = []
     per_regime: dict[str, dict[str, list[float]]] = {
@@ -411,13 +435,17 @@ def run_backtest(
                     )
                     event_outcomes[thr].append(s_row["obs_speed"] >= thr)
 
-                # V5: Separate by observation source
+                # V5: Separate by observation source (Phase 5: tier-aware)
                 if s_row.get("is_era5"):
                     cand_errors_era5.append(cand_err)
                     nwp_errors_era5.append(nwp_err)
                 else:
                     cand_errors_real.append(cand_err)
                     nwp_errors_real.append(nwp_err)
+                if s_row.get("is_station"):
+                    station_samples.append(cand_err)
+                elif s_row.get("is_crowdsourced"):
+                    crowdsourced_samples.append(cand_err)
 
                 # Decision usefulness (Spec §1.2: sustained wind >=8 kn for >=2h
                 # in 11:00-16:00 LOCAL time, not UTC)
@@ -533,9 +561,12 @@ def run_backtest(
         confidence_interval_coverage_pct=round(interval_cov, 2),
         decision_precision_pct=round(decision_prec, 2),
         success_criteria_met=success,
-        # V5: Source-separated metrics
+        # V5: Source-separated metrics (+ Phase 5 tier counts)
         n_era5_samples=len(cand_errors_era5),
         n_real_samples=len(cand_errors_real),
+        n_station_samples=len(station_samples),
+        n_crowdsourced_samples=len(crowdsourced_samples),
+        candidate_mae_vs_station=round(float(np.mean(station_samples)), 3) if station_samples else None,
         candidate_mae_vs_era5=round(float(np.mean(cand_errors_era5)), 3) if cand_errors_era5 else None,
         candidate_mae_vs_real=round(float(np.mean(cand_errors_real)), 3) if cand_errors_real else None,
         nwp_mae_vs_era5=round(float(np.mean(nwp_errors_era5)), 3) if nwp_errors_era5 else None,
@@ -559,9 +590,11 @@ def maybe_promote(report: BacktestReport, *, force: bool = False) -> bool:
     prod_mae = prod["backtest_mae_kn"] if prod and prod.get("backtest_mae_kn") else float("inf")
     delta = prod_mae - report.candidate_mae_kn
     dir_delta = (prod["backtest_dir_error_deg"] if prod else float("inf")) - report.candidate_dir_error_deg
-    # V6 B3: Require minimum real observations for promotion (not just ERA5)
-    n_real = report.n_real_samples if hasattr(report, 'n_real_samples') else 0
-    real_sample_ok = n_real >= 50  # minimum 50 real-station observations
+    # Phase 5 (S5/F14): the gate counts STATION-tier samples only —
+    # crowdsourced /report rows (previously counted as "real") can no
+    # longer satisfy the promotion requirement.
+    n_station = report.n_station_samples
+    real_sample_ok = n_station >= int(s.model.min_promotion_station_samples)
     promoted = force or (delta >= gate.min_mae_improvement_kn and dir_delta >= gate.min_dir_improvement_deg and real_sample_ok)
 
     access.record_experiment_attempt(
@@ -599,6 +632,13 @@ def maybe_promote(report: BacktestReport, *, force: bool = False) -> bool:
             backtest_dir_error_deg=report.candidate_dir_error_deg,
             promoted=True,
             notes="Promoted by backtest (human review recommended)",
+        )
+        # Phase 5 (S4): promotion audit trail — rollback needs the history.
+        access.record_promotion(
+            report.candidate_model_version,
+            action="promote",
+            actor="backtest",
+            notes=f"station_samples={n_station}",
         )
     return promoted
 

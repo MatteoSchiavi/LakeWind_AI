@@ -1,7 +1,12 @@
-"""V2 user management, alerts, subscriptions, and feedback.
+"""V2 user management, alerts, and subscriptions.
 
 Supports the multi-user Telegram bot: whitelist, per-user preferences, push
-alerts, daily summary subscriptions, and feedback collection.
+alerts, daily summary subscriptions.
+
+Phase 5 (approved Q3): `v2_feedback`/`submit_feedback`/`list_feedback` were
+deleted — zero callers repo-wide since introduction, and the p5 migration
+drops the table. Feedback surfaces are /report (observations, tiered) and
+the new /log sailing-log command; a half-wired surface was worse than none.
 """
 from __future__ import annotations
 
@@ -311,42 +316,6 @@ def is_in_quiet_hours(user: dict[str, Any], now_utc: datetime) -> bool:
         return cur_min >= s_min or cur_min <= e_min
 
 
-# --- Feedback ---
-
-
-def submit_feedback(
-    telegram_user_id: int,
-    point_id: str,
-    valid_time: datetime,
-    predicted_speed_kn: float,
-    observed_speed_kn: float | None,
-    notes: str,
-) -> int:
-    fid = uuid.uuid1().int >> 65
-    with access.cursor(read_only=False) as conn:
-        conn.execute(
-            """
-            INSERT INTO v2_feedback
-            (id, telegram_user_id, received_at, point_id, valid_time,
-             predicted_speed_kn, observed_speed_kn, notes)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            [fid, telegram_user_id, utcnow(), point_id, valid_time,
-             predicted_speed_kn, observed_speed_kn, notes],
-        )
-    return fid
-
-
-def list_feedback(limit: int = 100) -> list[dict[str, Any]]:
-    with access.cursor(read_only=True) as conn:
-        cur = conn.execute(
-            "SELECT * FROM v2_feedback ORDER BY received_at DESC LIMIT ?",
-            [limit],
-        )
-        cols = [d[0] for d in cur.description]
-        return [dict(zip(cols, r, strict=False)) for r in cur.fetchall()]
-
-
 # --- Image cache ---
 
 
@@ -398,8 +367,6 @@ __all__ = [
     "get_due_subscriptions",
     "mark_subscription_sent",
     "is_in_quiet_hours",
-    "submit_feedback",
-    "list_feedback",
     "cache_image",
     "get_cached_image",
 ]

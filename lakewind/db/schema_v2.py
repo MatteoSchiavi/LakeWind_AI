@@ -119,17 +119,9 @@ CREATE TABLE IF NOT EXISTS v2_kalman_state (
     last_update TIMESTAMP
 );
 
--- V2 feedback (user reports of bad forecasts)
-CREATE TABLE IF NOT EXISTS v2_feedback (
-    id BIGINT PRIMARY KEY,
-    telegram_user_id BIGINT,
-    received_at TIMESTAMP,
-    point_id VARCHAR,
-    valid_time TIMESTAMP,
-    predicted_speed_kn DOUBLE,
-    observed_speed_kn DOUBLE,               -- user-reported (optional)
-    notes VARCHAR
-);
+-- V2 feedback table REMOVED in Phase 5 (approved Q3): zero callers since
+-- introduction; the p5 migration in schema.py drops it from existing DBs.
+-- Feedback surfaces are /report (tiered observations) and bot /log.
 
 -- V2 feature store cache (materialized features for latest predict cycle)
 CREATE TABLE IF NOT EXISTS v2_feature_cache (
