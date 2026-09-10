@@ -41,6 +41,10 @@ class BackfillConfig(BaseModel):
     chunk_days: int = 90
     delay_seconds: float = 1.0
     default_days: int = 365
+    # Deep Audit R3 (V8): multi-level backfill vars are OFF by default —
+    # archive availability is unverified and requesting unavailable vars
+    # triggers the silent window-clamping bug (see historical_backfill.py).
+    multi_level_vars: bool = False
 
 
 class OpenMeteoConfig(BaseModel):

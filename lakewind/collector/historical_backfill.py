@@ -70,6 +70,21 @@ BACKFILL_HOURLY_VARS = [
     "visibility",
 ]
 
+# Deep Audit R3 (V8): multi-level vars for training backfill. Unlike the 13
+# core vars above, archive availability for pressure/height levels is NOT
+# verified for the full depth — requesting them has already caused the
+# archive-window CLAMPING bug once (a Jan-2026 request silently returned
+# Sep-Dec 2025 data). They are therefore OFF by default and appended only
+# when settings open_meteo.backfill.multi_level_vars is true. Verify the
+# returned time windows after enabling (window must match the request).
+BACKFILL_MULTILEVEL_VARS = [
+    "wind_speed_80m",
+    "wind_direction_80m",
+    "wind_speed_850hPa",
+    "wind_direction_850hPa",
+    "temperature_850hPa",
+]
+
 
 def _get_with_retry(session: requests.Session, url: str, params: dict, timeout: int = 60) -> requests.Response | None:
     """GET with 429/5xx retry + exponential backoff. None after giving up."""
@@ -131,9 +146,17 @@ def backfill_forecasts(
     chunk_days = s.open_meteo.backfill.chunk_days
 
     chunks = _chunk_date_range(start, end, chunk_days)
+    include_multilevel = bool(
+        getattr(s.open_meteo.backfill, "multi_level_vars", False)
+    )
+    hourly_vars = list(BACKFILL_HOURLY_VARS) + (
+        list(BACKFILL_MULTILEVEL_VARS) if include_multilevel else []
+    )
     logger.info(
-        "Backfilling %d points × %d models × %d chunks (each ≤%d days) from %s to %s",
+        "Backfilling %d points × %d models × %d chunks (each ≤%d days) from %s to %s "
+        "(multi_level_vars=%s)",
         len(pts), len(mdl_list), len(chunks), chunk_days, start.date(), end.date(),
+        include_multilevel,
     )
 
     summary: dict[str, int] = {p.id: 0 for p in pts}
@@ -148,7 +171,7 @@ def backfill_forecasts(
                     "longitude": pt.lon,
                     "start_date": c_start.date().isoformat(),
                     "end_date": c_end.date().isoformat(),
-                    "hourly": ",".join(BACKFILL_HOURLY_VARS),
+                    "hourly": ",".join(hourly_vars),
                     "models": model_name,
                     "wind_speed_unit": s.open_meteo.wind_speed_unit,
                     "timezone": s.open_meteo.timezone,
@@ -217,6 +240,11 @@ def _parse_to_rows(data: dict[str, Any], point_id: str, model_name: str) -> list
             "precipitation": _safe_idx(hourly, "precipitation", i),
             "weather_code": _safe_idx(hourly, "weather_code", i),
             "visibility": _safe_idx(hourly, "visibility", i),
+            "wind_speed_80m": _safe_idx(hourly, "wind_speed_80m", i),
+            "wind_direction_80m": _safe_idx(hourly, "wind_direction_80m", i),
+            "wind_speed_850hpa": _safe_idx(hourly, "wind_speed_850hPa", i),
+            "wind_direction_850hpa": _safe_idx(hourly, "wind_direction_850hPa", i),
+            "temperature_850hpa": _safe_idx(hourly, "temperature_850hPa", i),
             "raw_json": {"model": model_name, "point": point_id, "source": "historical_forecast_api"},
         }
         rows.append(row)

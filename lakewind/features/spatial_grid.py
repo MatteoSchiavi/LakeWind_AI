@@ -17,6 +17,7 @@ What remains here (and is actually used):
 from __future__ import annotations
 
 import logging
+import math
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -25,9 +26,12 @@ from lakewind.db import access
 
 logger = logging.getLogger(__name__)
 
-# --- Upper-air features (850hPa, 500hPa) ---
-# These require fetching from Open-Meteo's API with additional variables
-# that are NOT in the standard hourly_vars. We add them to the collector.
+# --- Upper-air features (850hPa) ---
+# Deep Audit R3 (V8): 850 hPa wind/direction/temperature live as REAL scalar
+# columns on forecast_runs (wind_speed_850hpa, wind_direction_850hpa,
+# temperature_850hpa), stored by the operational collector. The 500 hPa
+# fields were pruned from the fetch (audit 3.8) — their keys remain here as
+# None so existing model bundles keep loading.
 
 UPPER_AIR_VARS = [
     "wind_speed_850hPa",
@@ -39,26 +43,51 @@ UPPER_AIR_VARS = [
 ]
 
 
+def _sf(v: Any) -> float | None:
+    try:
+        f = float(v)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return f if math.isfinite(f) else None
+
+
 def compute_upper_air_features(forecast: dict[str, Any]) -> dict[str, float | None]:
-    """Extract upper-air features from a forecast row's raw_json.
+    """Extract crest-level features from a forecast row's V8 scalar columns.
 
-    V6.5 FIX: The raw_json contains the ENTIRE hourly response as lists,
-    not scalar values. We cannot extract a single timestamp's value from it
-    without knowing the index. This function now safely returns all None
-    instead of risking a list-vs-float type error in downstream math.
-
-    To properly enable upper-air features, they need to be stored as scalar
-    columns in forecast_runs (like wind_speed_kn, temperature_2m, etc.).
-    That's a schema migration for V7.
+    The V6.5 implementation returned all-None because the upper-air data
+    only existed inside list-valued raw_json, from which no scalar could be
+    extracted — the whole family had never produced a value (audit 4.1).
+    With the V8 schema the reference forecast row carries the 850 hPa level
+    directly:
+      - ua_wind_speed_850hPa / ua_wind_direction_850hPa: the crest-level
+        flow, the textbook Foehn predictor (Foehn is a crest wind).
+      - ua_shear_10_850: 850 hPa minus 10 m speed — boundary-layer coupling.
+      - ua_temp_850_delta: 850 hPa minus 2 m temperature — negative = cold
+        air aloft over a warm surface (destabilization), large positive =
+        warm cap / Foehn-type advection.
+    Rows from databases without the V8 columns return None — the model
+    handles missing values natively.
     """
-    # V6.5: Return all None — upper-air vars in raw_json are lists, not scalars
-    # Extracting the correct value requires knowing the time index, which we
-    # don't have here. Returning None is safe — the ML model handles NaN.
     features: dict[str, float | None] = {}
-    for var in UPPER_AIR_VARS:
-        features[f"ua_{var}"] = None
-    features["ua_shear_10_850"] = None
-    features["ua_thermal_advection"] = None
+    s850 = _sf(forecast.get("wind_speed_850hpa"))
+    d850 = _sf(forecast.get("wind_direction_850hpa"))
+    t850 = _sf(forecast.get("temperature_850hpa"))
+    features["ua_wind_speed_850hPa"] = s850
+    features["ua_wind_direction_850hPa"] = d850
+    features["ua_temperature_850hPa"] = t850
+    # 500 hPa: fetched vars pruned (Deep Audit 3.8). Keys retained.
+    features["ua_geopotential_height_500hPa"] = None
+    features["ua_wind_speed_500hPa"] = None
+    features["ua_wind_direction_500hPa"] = None
+    s10 = _sf(forecast.get("wind_speed_kn"))
+    features["ua_shear_10_850"] = (
+        s850 - s10 if (s850 is not None and s10 is not None) else None
+    )
+    t2 = _sf(forecast.get("temperature_2m"))
+    features["ua_temp_850_delta"] = (
+        t850 - t2 if (t850 is not None and t2 is not None) else None
+    )
+    features["ua_thermal_advection"] = None  # legacy key, schema stability
     return features
 
 

@@ -36,6 +36,17 @@ CREATE TABLE IF NOT EXISTS forecast_runs (
     precipitation DOUBLE,
     weather_code INTEGER,
     visibility DOUBLE,
+    -- Deep Audit R3 (V8 schema): multi-level wind as REAL scalar columns.
+    -- The former design buried these in list-valued raw_json, from which no
+    -- scalar could ever be extracted — the shear and upper-air feature
+    -- families were permanently None while the vars still cost ~1/3 of the
+    -- request payload. Only levels with verified model support are stored:
+    -- 80 m (boundary-layer shear) and 850 hPa (crest-level Foehn flow).
+    wind_speed_80m DOUBLE,
+    wind_direction_80m DOUBLE,
+    wind_speed_850hpa DOUBLE,
+    wind_direction_850hpa DOUBLE,
+    temperature_850hpa DOUBLE,
     raw_json JSON,
     UNIQUE(model_name, point_id, run_time, valid_time)
 );
@@ -154,8 +165,27 @@ def init_db(path=None, echo: bool = True) -> None:
     with duckdb.connect(str(db_path)) as conn:
         conn.execute(SCHEMA_SQL)
         conn.execute(INDEXES_SQL)
+        apply_v8_migration(conn)
     if echo:
         console.print(f"[green]DuckDB initialized[/green] at {db_path}")
+
+
+# Deep Audit R3 (V8): scalar multi-level columns. CREATE TABLE IF NOT EXISTS
+# cannot upgrade an EXISTING database, so the columns are added idempotently
+# on every init. DuckDB supports ADD COLUMN IF NOT EXISTS.
+V8_MULTILEVEL_COLUMNS = (
+    ("wind_speed_80m", "DOUBLE"),
+    ("wind_direction_80m", "DOUBLE"),
+    ("wind_speed_850hpa", "DOUBLE"),
+    ("wind_direction_850hpa", "DOUBLE"),
+    ("temperature_850hpa", "DOUBLE"),
+)
+
+
+def apply_v8_migration(conn: duckdb.DuckDBPyConnection) -> None:
+    """Add the V8 multi-level scalar columns to an existing forecast_runs table."""
+    for col, typ in V8_MULTILEVEL_COLUMNS:
+        conn.execute(f"ALTER TABLE forecast_runs ADD COLUMN IF NOT EXISTS {col} {typ}")
 
 
 def connect() -> duckdb.DuckDBPyConnection:

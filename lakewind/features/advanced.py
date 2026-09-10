@@ -198,53 +198,44 @@ def compute_macro_area_pressure_differentials(
 def compute_stability_indices(
     feature_vector: dict[str, Any],
 ) -> dict[str, float | None]:
-    """Atmospheric stability indices derived from surface data.
+    """Atmospheric stability indices derived from surface + V8 multi-level data.
 
-    We don't have multi-level (500hPa, 700hPa) data from Open-Meteo's surface
-    API, so these are approximations:
+    Deep Audit 4.2 fixes:
+      - The "Lifted Index proxy" (−CAPE/100) was REMOVED entirely: an affine
+        transform of a feature that already exists (fc_icon_eu_cape) carries
+        strictly zero extra information for tree models.
+      - The Bulk Richardson Number no longer substitutes gust-minus-sustained
+        for vertical shear: it now uses the REAL 80 m − 10 m shear from the
+        V8 schema columns when available, and is None otherwise (a wrong
+        proxy is worse than a missing value).
 
-    - **Lifted Index (LI) approximation**: LI ≈ -CAPE / 100 (rough inverse
-      relationship: high CAPE → very negative LI → unstable). Standard LI
-      range: < -6 extremely unstable, > 0 stable.
-
-    - **Bulk Richardson Number (BRN)**: BRN = CAPE / (0.5 * shear²).
-      We approximate shear from the difference between gust and sustained wind
-      (gust is a proxy for wind aloft). BRN < 10 = sheared environment,
-      BRN > 50 = weak shear.
+    - **Bulk Richardson Number (BRN)**: BRN = CAPE / (0.5 * shear²) with the
+      real 10–80 m shear. BRN < 10 = sheared environment, BRN > 50 = weak shear.
 
     - **Stability score**: composite 0-1 (0 = very stable, 1 = very unstable).
-      Used as a feature for the ML model.
-
     - **Convective potential**: boolean flag (CAPE > 1000 + unstable + daytime).
     """
     cape = _safe_float(feature_vector.get("fc_icon_eu_cape"))
     blh = _safe_float(feature_vector.get("fc_icon_eu_blh"))
     speed = _safe_float(feature_vector.get("fc_icon_eu_speed"))
-    gust = _safe_float(feature_vector.get("fc_icon_eu_gust"))
+    speed_80 = _safe_float(feature_vector.get("fc_icon_eu_speed_80m"))
     temp = _safe_float(feature_vector.get("fc_icon_eu_temp"))
     dewpt = _safe_float(feature_vector.get("fc_icon_eu_dewpt"))
     is_day = feature_vector.get("solar_is_daytime", False)
 
-    # Lifted Index approximation
-    li = None
-    if cape is not None:
-        li = -cape / 100.0  # proxy: higher CAPE → more negative → more unstable
-
-    # Bulk Richardson Number (using gust-sustained as shear proxy)
+    # Bulk Richardson Number using REAL boundary-layer shear (V8 columns)
     brn = None
-    if cape is not None and speed is not None and gust is not None:
-        shear = gust - speed
+    if cape is not None and speed is not None and speed_80 is not None:
+        shear = speed_80 - speed
         if shear > 0.1:
             brn = cape / (0.5 * shear * shear)
 
     # Stability score (0 = stable, 1 = unstable)
-    score = 0.5  # neutral default
-    if li is not None:
-        # LI: -10 (very unstable) → 1.0; 0 (neutral) → 0.5; +10 (stable) → 0.0
-        score = max(0.0, min(1.0, 0.5 - li / 20.0))
-    elif blh is not None:
+    if blh is not None:
         # BLH: < 500m (stable) → 0.0; > 2000m (unstable) → 1.0
         score = max(0.0, min(1.0, (blh - 500.0) / 1500.0))
+    else:
+        score = 0.5  # neutral default
 
     # Convective potential
     convective = 1.0 if (cape is not None and cape > 1000 and score > 0.6 and is_day) else 0.0
@@ -253,7 +244,6 @@ def compute_stability_indices(
     temp_dewpt_spread = (temp - dewpt) if (temp is not None and dewpt is not None) else None
 
     return {
-        "cape_instability_proxy": round(li, 2) if li is not None else None,
         "surface_shear_proxy": round(brn, 2) if brn is not None else None,
         "stability_score": round(score, 4),
         "stability_convective_potential": convective,

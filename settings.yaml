@@ -65,39 +65,32 @@ open_meteo:
     - icon_seamless
     - gfs_seamless
     - ecmwf_ifs025
+  # Deep Audit R3 (V8) — pruned fetch list. The former 31-var payload spent
+  # ~1/3 of its bytes on variables nothing ever consumed: 120 m winds and the
+  # 500 hPa fields (their feature families are retired — 80 m and 850 hPa
+  # carry the shear/crest signal), plus surface_pressure, relative_humidity,
+  # cloud_cover_low/mid/high, rain, snowfall and uv_index which no parser
+  # ever read. The five multi-level vars below ARE stored as scalar columns
+  # now (wind_speed_80m ... temperature_850hpa) — see db/schema.py.
   hourly_vars:
     - wind_speed_10m
     - wind_direction_10m
     - wind_gusts_10m
-    - wind_speed_80m           # multi-level wind (wind shear features)
+    - wind_speed_80m            # boundary-layer shear (V8 column)
     - wind_direction_80m
-    - wind_speed_120m
-    - wind_direction_120m
+    - wind_speed_850hPa         # crest-level Foehn flow (V8 column)
+    - wind_direction_850hPa
+    - temperature_850hPa        # cold-air advection / Foehn cap (V8 column)
     - temperature_2m
     - dew_point_2m
-    - relative_humidity_2m
     - pressure_msl
-    - surface_pressure
     - cloud_cover
-    - cloud_cover_low
-    - cloud_cover_mid
-    - cloud_cover_high
     - shortwave_radiation
     - cape
     - boundary_layer_height
     - precipitation             # V5: rain (mm/h) — for weather display + wet-sail warning
-    - rain                     # V5: rain specifically (mm/h)
-    - snowfall                 # V5: snowfall (cm/h) — winter sailing safety
-    - weather_code             # V5: WMO weather code (0=clear, 61=light rain, etc.)
-    - visibility               # V5: visibility (m) — safety feature
-    - uv_index                 # V5: UV index — sunburn warning for sailors
-    # V6.2: Upper-air features (windmojo-inspired)
-    - wind_speed_850hPa        # wind at ~1500m (boundary layer top)
-    - wind_direction_850hPa
-    - temperature_850hPa       # cold-air advection indicator
-    - geopotential_height_500hPa  # mid-troposphere (trough/ridge)
-    - wind_speed_500hPa        # steering level for storms
-    - wind_direction_500hPa
+    - weather_code              # V5: WMO weather code (display + one-hot flags)
+    - visibility                # V5: visibility (m) — safety feature
   wind_speed_unit: "kn"
   # V6.6 FIX (Phase 1 audit): was "auto" — Open-Meteo then returned LOCAL time
   # (Europe/Rome for lake points), which was stored as if it were UTC. Every
@@ -153,10 +146,12 @@ diy_buoy:
 
 # Section 7.1 — LightGBM quantile MOS model
 model:
-  # Phase 3: V7 feature set (adds physics features — terrain channeling,
-  # pressure tendency, thermal contrasts, gust factors, cross-model
-  # aggregates, effective insolation, stability interactions).
-  feature_set_version: "v7"
+  # Deep Audit R3: V8 feature set — activates the dead shear/upper-air
+  # families against real V8 scalar columns, removes wrong features (numeric
+  # weather_code, is_weekend, LI proxy, gust-shear BRN), adds the wx_* one-hot
+  # flags. RETRAIN + re-promotion required before the new features carry
+  # weight; legacy v7 bundles keep serving (missing columns are NaN-neutral).
+  feature_set_version: "v8"
   # Backend: "lightgbm" (default, CPU) or "xgboost_gpu" (RTX 3070).
   # Phase 3: when model.ensemble is true, BOTH backends are trained per
   # (target, quantile) and their predictions averaged.

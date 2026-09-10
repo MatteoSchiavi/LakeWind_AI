@@ -207,8 +207,9 @@ def insert_forecast_run(row: dict[str, Any]) -> int:
             (id, model_name, point_id, run_time, valid_time,
              wind_speed_kn, wind_dir_deg, wind_gust_kn,
              pressure_msl, temperature_2m, dew_point_2m, cloud_cover,
-             shortwave_radiation, cape, boundary_layer_height, precipitation, weather_code, visibility, raw_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             shortwave_radiation, cape, boundary_layer_height, precipitation, weather_code, visibility,
+             wind_speed_80m, wind_direction_80m, wind_speed_850hpa, wind_direction_850hpa, temperature_850hpa, raw_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (model_name, point_id, run_time, valid_time) DO UPDATE SET
                 wind_speed_kn = EXCLUDED.wind_speed_kn,
                 wind_dir_deg = EXCLUDED.wind_dir_deg,
@@ -223,6 +224,11 @@ def insert_forecast_run(row: dict[str, Any]) -> int:
                 precipitation = EXCLUDED.precipitation,
                 weather_code = EXCLUDED.weather_code,
                 visibility = EXCLUDED.visibility,
+                wind_speed_80m = EXCLUDED.wind_speed_80m,
+                wind_direction_80m = EXCLUDED.wind_direction_80m,
+                wind_speed_850hpa = EXCLUDED.wind_speed_850hpa,
+                wind_direction_850hpa = EXCLUDED.wind_direction_850hpa,
+                temperature_850hpa = EXCLUDED.temperature_850hpa,
                 raw_json = EXCLUDED.raw_json
             """,
             (
@@ -244,6 +250,11 @@ def insert_forecast_run(row: dict[str, Any]) -> int:
                 row.get("precipitation"),
                 row.get("weather_code"),
                 row.get("visibility"),
+                row.get("wind_speed_80m"),
+                row.get("wind_direction_80m"),
+                row.get("wind_speed_850hpa"),
+                row.get("wind_direction_850hpa"),
+                row.get("temperature_850hpa"),
                 json.dumps(row.get("raw_json") or {}, default=str),
             ),
         )
@@ -273,6 +284,8 @@ def bulk_insert_forecast_runs(rows: list[dict[str, Any]]) -> int:
             r.get("shortwave_radiation"),
             r.get("cape"),
             r.get("boundary_layer_height"), r.get("precipitation"), r.get("weather_code"), r.get("visibility"),
+            r.get("wind_speed_80m"), r.get("wind_direction_80m"),
+            r.get("wind_speed_850hpa"), r.get("wind_direction_850hpa"), r.get("temperature_850hpa"),
             json.dumps(r.get("raw_json") or {}, default=str),
         )
         for r in rows
@@ -284,8 +297,9 @@ def bulk_insert_forecast_runs(rows: list[dict[str, Any]]) -> int:
             (id, model_name, point_id, run_time, valid_time,
              wind_speed_kn, wind_dir_deg, wind_gust_kn,
              pressure_msl, temperature_2m, dew_point_2m, cloud_cover,
-             shortwave_radiation, cape, boundary_layer_height, precipitation, weather_code, visibility, raw_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             shortwave_radiation, cape, boundary_layer_height, precipitation, weather_code, visibility,
+             wind_speed_80m, wind_direction_80m, wind_speed_850hpa, wind_direction_850hpa, temperature_850hpa, raw_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (model_name, point_id, run_time, valid_time) DO UPDATE SET
                 wind_speed_kn = EXCLUDED.wind_speed_kn,
                 wind_dir_deg = EXCLUDED.wind_dir_deg,
@@ -300,6 +314,11 @@ def bulk_insert_forecast_runs(rows: list[dict[str, Any]]) -> int:
                 precipitation = EXCLUDED.precipitation,
                 weather_code = EXCLUDED.weather_code,
                 visibility = EXCLUDED.visibility,
+                wind_speed_80m = EXCLUDED.wind_speed_80m,
+                wind_direction_80m = EXCLUDED.wind_direction_80m,
+                wind_speed_850hpa = EXCLUDED.wind_speed_850hpa,
+                wind_direction_850hpa = EXCLUDED.wind_direction_850hpa,
+                temperature_850hpa = EXCLUDED.temperature_850hpa,
                 raw_json = EXCLUDED.raw_json
             """,
             payload,
@@ -927,7 +946,9 @@ def fetch_forecasts_bulk(
     cols = ("id, model_name, point_id, run_time, valid_time, wind_speed_kn, "
             "wind_dir_deg, wind_gust_kn, pressure_msl, temperature_2m, "
             "dew_point_2m, cloud_cover, shortwave_radiation, cape, "
-            "boundary_layer_height, precipitation, weather_code, visibility")
+            "boundary_layer_height, precipitation, weather_code, visibility, "
+            "wind_speed_80m, wind_direction_80m, wind_speed_850hpa, "
+            "wind_direction_850hpa, temperature_850hpa")
     sql = f"""
         SELECT {cols} FROM {s.db.forecast_table}
         WHERE point_id IN ({marks})

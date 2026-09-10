@@ -163,6 +163,14 @@ class OpenMeteoCollector(BaseCollector):
                     "precipitation": _safe_get(hourly, "precipitation", i),
                     "weather_code": _safe_get(hourly, "weather_code", i),
                     "visibility": _safe_get(hourly, "visibility", i),
+                    # Deep Audit R3 (V8): multi-level wind as real scalars —
+                    # boundary-layer shear (80 m) and crest-level Foehn flow
+                    # (850 hPa). Models without these levels simply store NULL.
+                    "wind_speed_80m": _safe_get(hourly, "wind_speed_80m", i),
+                    "wind_direction_80m": _safe_get(hourly, "wind_direction_80m", i),
+                    "wind_speed_850hpa": _safe_get(hourly, "wind_speed_850hPa", i),
+                    "wind_direction_850hpa": _safe_get(hourly, "wind_direction_850hPa", i),
+                    "temperature_850hpa": _safe_get(hourly, "temperature_850hPa", i),
                     # Deep Audit R1: the former `raw_json: {"hourly": hourly, ...}`
                     # embedded the ENTIRE multi-day payload (~31 vars x 168 steps,
                     # 50-60 KB) into EVERY row of the block — multi-GB/day of

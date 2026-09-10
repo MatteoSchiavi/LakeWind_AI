@@ -209,25 +209,29 @@ def build_features_for(
         fv[f"{prefix}_rad"] = f.get("shortwave_radiation")
         fv[f"{prefix}_cape"] = f.get("cape")
         fv[f"{prefix}_blh"] = f.get("boundary_layer_height")
-        # V5: Weather features (precipitation, weather_code, visibility)
+        # V5: Weather features (precipitation, visibility). The numeric WMO
+        # weather_code feature was REMOVED (Deep Audit 4.2: a categorical code
+        # fed as a number teaches spurious orderings like 3 < 61) and replaced
+        # with reference-model one-hot flags computed after this loop.
         fv[f"{prefix}_precip"] = f.get("precipitation")
-        fv[f"{prefix}_weather_code"] = f.get("weather_code")
         fv[f"{prefix}_visibility"] = f.get("visibility")
-        # V5: Multi-level wind shear features (80m, 120m)
-        # V6.5 FIX: raw_json contains entire hourly arrays (lists), not scalar values.
-        # We cannot extract a single timestamp's value without knowing the index.
-        # Multi-level wind data is stored in raw_json as lists — skip extraction
-        # until schema migration stores them as scalar columns (V7).
-        # The shear features will be None, which LightGBM handles natively.
-        fv[f"{prefix}_speed_80m"] = None
-        fv[f"{prefix}_dir_80m"] = None
+        # Deep Audit R3 (V8 schema): multi-level wind now lives in REAL scalar
+        # columns (wind_speed_80m / wind_direction_80m), so the boundary-layer
+        # shear family is finally populated. The former code hardwired these
+        # to None because the data only existed as list-valued raw_json.
+        speed_80 = f.get("wind_speed_80m")
+        dir_80 = f.get("wind_direction_80m")
+        fv[f"{prefix}_speed_80m"] = speed_80
+        fv[f"{prefix}_dir_80m"] = dir_80
+        # 120 m level: pruned from the fetch list (Deep Audit 3.8 — no model
+        # edge beyond 80 m + 850 hPa for this valley; payload funds R5).
+        # Keys kept for schema stability with existing bundles.
         fv[f"{prefix}_speed_120m"] = None
         fv[f"{prefix}_dir_120m"] = None
-        # V5: Wind shear (10m → 80m, 10m → 120m) — will be None until V7 schema migration
-        speed_80 = fv.get(f"{prefix}_speed_80m")
-        speed_120 = fv.get(f"{prefix}_speed_120m")
+        # V5: Wind shear (10 m → 80 m)
         if speed is not None and speed_80 is not None:
             fv[f"{prefix}_shear_10_80"] = speed_80 - speed
+        speed_120 = fv.get(f"{prefix}_speed_120m")
         if speed is not None and speed_120 is not None:
             fv[f"{prefix}_shear_10_120"] = speed_120 - speed
         if speed is not None and direction is not None:
@@ -255,6 +259,16 @@ def build_features_for(
                 fv[f"agree_dir_{m1}_{m2}"] = None
             fv[f"agree_press_{m1}_{m2}"] = (abs(p1 - p2) if p1 is not None and p2 is not None else None)
             fv[f"agree_temp_{m1}_{m2}"] = (abs(t1 - t2) if t1 is not None and t2 is not None else None)
+
+    # 2a) Reference-model weather-code one-hot flags (Deep Audit 4.2).
+    # WMO codes that matter for sailing, as boolean flags instead of a
+    # spurious numeric ordering.
+    ref_wx = ref.get("weather_code")
+    ref_wx = int(ref_wx) if ref_wx is not None else None
+    fv["wx_rain"] = 1 if (ref_wx is not None and 51 <= ref_wx <= 82) else 0
+    fv["wx_snow"] = 1 if (ref_wx is not None and (71 <= ref_wx <= 77 or ref_wx in (85, 86))) else 0
+    fv["wx_storm"] = 1 if (ref_wx is not None and 95 <= ref_wx <= 99) else 0
+    fv["wx_fog"] = 1 if (ref_wx is not None and ref_wx in (45, 48)) else 0
 
     # 2b) ENSEMBLE SPREAD FEATURES (Spec §4.3)
     ensemble_models_present = [m for m in model_names if m.endswith("_ens")]
@@ -444,7 +458,8 @@ def build_features_for(
     fv["day_of_year"] = local_time.timetuple().tm_yday
     fv["month"] = local_time.month
     fv["season"] = _season_index(local_time.month)
-    fv["is_weekend"] = local_time.weekday() >= 5
+    # is_weekend REMOVED (Deep Audit 4.2): no plausible physical pathway into
+    # lake wind at hourly resolution — pure noise column.
 
     # 6) GROUND STATION FEATURES (Spec §6 priority 6) — obs fetched once at
     # the top of this function (shared with §3b and the target).
