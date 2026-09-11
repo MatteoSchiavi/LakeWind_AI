@@ -321,3 +321,45 @@ class TestBuilderV7Presence:
         assert any(k.startswith("valley_align") for k in v7)
         assert any(k.startswith("gust_factor") for k in v7)
         assert "therm_north_advection" in v7
+
+
+class TestReferenceModelResolution:
+    """Phase 5.5 integration fix: the trained bundle must carry its reference
+    model, and infer.predict_at must resolve features against it (bundle
+    first) instead of the hardcoded icon_eu default."""
+
+    def test_bundle_persists_reference_model(self, temp_db):
+        from lakewind.ml.train import MODELS_DIR, bundle_reference_model
+
+        df = _synthetic_dataset(700)
+        res = train(
+            dataset=df,
+            backend="lightgbm",
+            model_version="refmeta_v1",
+            reference_forecast_model="ecmwf_ifs025",
+        )
+        assert res is not None
+        meta_path = MODELS_DIR / "refmeta_v1_features.json"
+        assert meta_path.exists()
+        import json as _json
+        meta = _json.loads(meta_path.read_text())
+        assert meta["reference_model"] == "ecmwf_ifs025"
+        assert bundle_reference_model("refmeta_v1") == "ecmwf_ifs025"
+        bundle = load_model_bundle("refmeta_v1")
+        assert bundle["reference_model"] == "ecmwf_ifs025"
+
+    def test_bundle_reference_none_for_legacy_metadata(self, temp_db, tmp_path):
+        from lakewind.ml import train as train_mod
+        from lakewind.ml.train import bundle_reference_model
+
+        import json as _json
+
+        df = _synthetic_dataset(700)
+        res = train(dataset=df, backend="lightgbm", model_version="refmeta_legacy")
+        assert res is not None
+        # simulate a pre-Phase-5.5 sidecar without the field
+        meta_path = train_mod.MODELS_DIR / "refmeta_legacy_features.json"
+        meta = _json.loads(meta_path.read_text()) if meta_path.exists() else {}
+        meta.pop("reference_model", None)
+        meta_path.write_text(_json.dumps(meta))
+        assert bundle_reference_model("refmeta_legacy") is None

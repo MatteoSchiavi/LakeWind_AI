@@ -754,6 +754,10 @@ def train(
         "feature_set_version": s.model.feature_set_version,
         "validation_fraction": val_fraction,
         "early_stopping_rounds": es_rounds,
+        # Phase 5.5 integration fix: the serving path MUST build features
+        # against the same reference model the bundle was trained on.
+        # predict_at() reads this back (bundle-first resolution).
+        "reference_model": reference_forecast_model,
     }, indent=2))
     model_paths["features"] = feature_path
 
@@ -856,6 +860,26 @@ def train(
 
 
 # Public re-exports for infer.py
+def bundle_reference_model(model_version: str) -> str | None:
+    """Reference model a bundle was trained with (light metadata read).
+
+    Reads ONLY the features.json sidecar — the full model artifacts are not
+    loaded. Returns None for pre-Phase-5.5 bundles (metadata predates the
+    field); callers fall back to settings.
+    """
+    feat_path = MODELS_DIR / f"{model_version}_features.json"
+    if not feat_path.exists():
+        return None
+    try:
+        meta = json.loads(feat_path.read_text())
+    except Exception:
+        return None
+    if isinstance(meta, dict):
+        ref = meta.get("reference_model")
+        return ref if isinstance(ref, str) and ref else None
+    return None
+
+
 def load_model_bundle(model_version: str) -> dict[str, Any]:
     """Load the per-(target, quantile) models + feature column list.
 
@@ -892,6 +916,8 @@ def load_model_bundle(model_version: str) -> dict[str, Any]:
     bundle["features"] = feat_meta["features"] if isinstance(feat_meta, dict) else feat_meta
     bundle["backend"] = actual_backend
     bundle["ensemble_members"] = members
+    if isinstance(feat_meta, dict) and feat_meta.get("reference_model"):
+        bundle["reference_model"] = feat_meta["reference_model"]
     _BUNDLE_CACHE[model_version] = bundle
     return bundle
 

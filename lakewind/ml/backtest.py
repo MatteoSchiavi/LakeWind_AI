@@ -403,6 +403,7 @@ def run_backtest(
                     cand = predict_at(
                         pid, s_row["valid_time"],
                         model_version=candidate_model_version,
+                        reference_forecast_model=reference_forecast_model,
                         compute_shap=False,
                     )
                 except Exception as exc:

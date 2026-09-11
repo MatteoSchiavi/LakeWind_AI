@@ -18,7 +18,7 @@ import pandas as pd
 from lakewind.config import load_settings
 from lakewind.db import access
 from lakewind.features.build import build_features_for
-from lakewind.ml.train import load_model_bundle, predict_with_bundle
+from lakewind.ml.train import bundle_reference_model, load_model_bundle, predict_with_bundle
 from lakewind.utils.wind import WindVector, bias_correct
 
 logger = logging.getLogger(__name__)
@@ -223,12 +223,19 @@ def predict_at(
     valid_time: datetime,
     *,
     model_version: str | None = None,
-    reference_forecast_model: str = "icon_eu",
+    reference_forecast_model: str | None = None,
     compute_shap: bool = True,
 ) -> InferenceResult | None:
     """End-to-end prediction for one virtual point + time.
 
     Returns None if no NWP forecast is available.
+
+    `reference_forecast_model` resolution order (Phase 5.5 integration fix):
+    explicit argument -> the trained bundle's stored reference model (the
+    model MUST be served with the same reference it was trained on) ->
+    `model.reference_model` from settings -> legacy icon_eu. The previous
+    hardcoded icon_eu default silently built icon-referenced features for
+    ecmwf-referenced bundles after the Phase 5.5 reference switch.
 
     `compute_shap=False` skips SHAP top-contributors (used by backtest where
     explanation text is not needed and SHAP is the dominant cost).
@@ -250,6 +257,12 @@ def predict_at(
             model_version = dict(zip(cols, rows[0], strict=False))["model_version"]
         else:
             model_version = prod["model_version"]
+
+    # Resolve the reference model BEFORE building features (bundle-first).
+    if reference_forecast_model is None:
+        reference_forecast_model = bundle_reference_model(model_version)
+    if reference_forecast_model is None:
+        reference_forecast_model = s.model.reference_model
 
     # 1) Build features (Spec §8 step 3)
     fr = build_features_for(point_id, valid_time, reference_forecast_model=reference_forecast_model)

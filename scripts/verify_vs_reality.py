@@ -28,6 +28,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -39,7 +40,11 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 log = logging.getLogger("verify")
 
 ROOT = Path(__file__).resolve().parent.parent
-OUT_DIR = ROOT / "data" / "cache" / "verify"
+# LAKEWIND_VERIFY_TAG isolates the whole state (parquets, markers, results)
+# per reference-model candidate so the honest harness can A/B
+# ecmwf_ifs025 vs icon_eu without cache contamination.
+_TAG = os.environ.get("LAKEWIND_VERIFY_TAG", "").strip()
+OUT_DIR = ROOT / "data" / "cache" / ("verify" if not _TAG else f"verify_{_TAG}")
 ASSET_DIR = ROOT / "docs" / "assets"
 
 TRAIN_START = datetime(2025, 9, 15)
