@@ -14,6 +14,7 @@ from datetime import datetime
 
 import duckdb
 import pytest
+from conftest import seed_forecast_row  # noqa: E402
 
 from lakewind.collector.base import (
     MODEL_INIT_CADENCE_HOURS,
@@ -107,24 +108,24 @@ class TestOpenMeteoToRows:
     def test_raw_json_is_compact_provenance(self):
         from lakewind.collector.open_meteo import OpenMeteoCollector
 
-        rows = OpenMeteoCollector().to_rows([_om_item("icon_eu", "dongo_shore")])
+        rows = OpenMeteoCollector().to_rows([_om_item("icon_eu", "dongo")])
         assert rows
         for r in rows:
             rj = r["raw_json"]
             assert "hourly" not in rj  # the bloat bug: full payload embedded per row
             assert rj["model"] == "icon_eu"
-            assert rj["point"] == "dongo_shore"
+            assert rj["point"] == "dongo"
             assert len(json.dumps(rj)) < 200  # ~90 bytes expected
 
     def test_run_time_uses_model_cadence(self):
         from lakewind.collector.open_meteo import OpenMeteoCollector
 
-        item = _om_item("icon_d2", "dongo_shore")
+        item = _om_item("icon_d2", "dongo")
         item["json"]["hourly"]["time"] = ["2026-09-10T16:00", "2026-09-10T17:00"]
         rows = OpenMeteoCollector().to_rows([item])
         assert rows[0]["run_time"] == datetime(2026, 9, 10, 15, 0)  # 3h cadence
 
-        item6 = _om_item("ecmwf_ifs025", "dongo_shore")
+        item6 = _om_item("ecmwf_ifs025", "dongo")
         item6["json"]["hourly"]["time"] = ["2026-09-10T16:00", "2026-09-10T17:00"]
         rows6 = OpenMeteoCollector().to_rows([item6])
         assert rows6[0]["run_time"] == datetime(2026, 9, 10, 12, 0)  # 6h cadence
@@ -132,7 +133,7 @@ class TestOpenMeteoToRows:
     def test_run_time_constant_across_block_enables_upsert(self):
         from lakewind.collector.open_meteo import OpenMeteoCollector
 
-        rows = OpenMeteoCollector().to_rows([_om_item("icon_eu", "dongo_shore", n_hours=5)])
+        rows = OpenMeteoCollector().to_rows([_om_item("icon_eu", "dongo", n_hours=5)])
         assert len({r["run_time"] for r in rows}) == 1
 
 
@@ -154,7 +155,7 @@ class TestEnsembleDirectionStats:
     def test_direction_mean_is_circular_across_wraparound(self):
         from lakewind.collector.open_meteo_ensemble import OpenMeteoEnsembleCollector
 
-        item = _ens_item("icon_seamless", "dongo_shore", [350.0, 5.0, 15.0])
+        item = _ens_item("icon_seamless", "dongo", [350.0, 5.0, 15.0])
         rows = OpenMeteoEnsembleCollector().to_rows([item])
         rj = rows[0]["raw_json"]
         # arithmetic mean would be 123.3; circular mean is ~3.3 (near north)
@@ -164,14 +165,14 @@ class TestEnsembleDirectionStats:
     def test_direction_std_positive_and_meaningful(self):
         from lakewind.collector.open_meteo_ensemble import OpenMeteoEnsembleCollector
 
-        item = _ens_item("icon_seamless", "dongo_shore", [350.0, 5.0, 15.0])
+        item = _ens_item("icon_seamless", "dongo", [350.0, 5.0, 15.0])
         rows = OpenMeteoEnsembleCollector().to_rows([item])
         assert rows[0]["raw_json"]["dir_std"] > 0
 
     def test_agreed_members_have_zero_std(self):
         from lakewind.collector.open_meteo_ensemble import OpenMeteoEnsembleCollector
 
-        item = _ens_item("icon_seamless", "dongo_shore", [180.0, 180.0, 180.0])
+        item = _ens_item("icon_seamless", "dongo", [180.0, 180.0, 180.0])
         rows = OpenMeteoEnsembleCollector().to_rows([item])
         rj = rows[0]["raw_json"]
         assert rj["dir_std"] == pytest.approx(0.0, abs=1e-6)
@@ -180,7 +181,7 @@ class TestEnsembleDirectionStats:
     def test_ensemble_run_time_uses_cadence(self):
         from lakewind.collector.open_meteo_ensemble import OpenMeteoEnsembleCollector
 
-        item = _ens_item("icon_eu", "dongo_shore", [180.0])
+        item = _ens_item("icon_eu", "dongo", [180.0])
         item["json"]["hourly"]["time"] = ["2026-09-10T16:00"]
         rows = OpenMeteoEnsembleCollector().to_rows([item])
         # icon_eu family: 3h cadence -> 15:00 (was 12:00 under blanket 6h)
@@ -292,15 +293,14 @@ class TestModelSlugGuard:
         assert n == 1
 
     def test_unknown_slug_storage_warns_but_stores(self, temp_db, caplog):
-        from lakewind.db import access
         from lakewind.db.schema import init_db
 
         init_db(temp_db, echo=False)
         reset_caches()
-        rid = access.insert_forecast_run(
+        rid = seed_forecast_row(
             {
                 "model_name": "not_a_real_model",
-                "point_id": "dongo_shore",
+                "point_id": "dongo",
                 "run_time": datetime(2026, 9, 10, 12, 0),
                 "valid_time": datetime(2026, 9, 10, 13, 0),
             }
@@ -347,7 +347,7 @@ class TestCompactBloatedRawJson:
         init_db(temp_db, echo=False)
         reset_caches()
         big = json.dumps({"hourly": {"wind_speed_10m": [1.0] * 5000}})
-        ens = json.dumps({"model": "icon_seamless_ens", "point": "dongo_shore",
+        ens = json.dumps({"model": "icon_seamless_ens", "point": "dongo",
                           "speed_std": 1.5, "n_members": 11})
         with duckdb.connect(str(temp_db)) as conn:
             self._insert_bloated(conn, 1, "icon_eu", big)

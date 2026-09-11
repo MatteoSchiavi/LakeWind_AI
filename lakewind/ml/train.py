@@ -147,7 +147,7 @@ def _build_dataset(
     point_id: str | None,
     start: datetime,
     end: datetime,
-    reference_forecast_model: str = "icon_eu",
+    reference_forecast_model: str | None = None,
 ) -> pd.DataFrame:
     """Materialize a training dataset by calling the shared feature builder.
 
@@ -155,6 +155,8 @@ def _build_dataset(
     observation, build the feature vector and the (target_u, target_v) target.
     """
     s = load_settings()
+    if reference_forecast_model is None:
+        reference_forecast_model = s.model.reference_model
     # Train only on operational points (exclude aux points like zurich/milano_linate
     # which are used as feature inputs only, not prediction targets).
     op_ids = s.operational_point_ids or [p.id for p in s.virtual_points]
@@ -552,7 +554,7 @@ def train(
     point_id: str | None = None,
     start: datetime | None = None,
     end: datetime | None = None,
-    reference_forecast_model: str = "icon_eu",
+    reference_forecast_model: str | None = None,
     model_version: str | None = None,
     backend: str | None = None,
     dataset: pd.DataFrame | None = None,
@@ -573,6 +575,8 @@ def train(
     against the full run via experiment_attempts/upgrade gate.
     """
     s = load_settings()
+    if reference_forecast_model is None:
+        reference_forecast_model = s.model.reference_model
     backend = backend or _get_backend()
     end = end or utcnow()
     # Deep Audit R8: production retraining uses the LONG window (12-18 months)

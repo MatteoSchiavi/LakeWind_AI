@@ -16,6 +16,25 @@ from lakewind.db.schema import INDEXES_SQL, SCHEMA_SQL  # noqa: E402
 from lakewind.db.schema_v2 import V2_SCHEMA_SQL  # noqa: E402
 
 
+def seed_forecast_row(row: dict) -> None:
+    """Insert a forecast run, mirroring it under the configured reference model.
+
+    Phase 5.5: build_features_for() requires a forecast from
+    `model.reference_model` (now ecmwf_ifs025, was icon_eu). Tests seed
+    whatever single model their scenario needs; the mirror guarantees the
+    builder's reference-model precondition holds without touching production
+    code or weakening assertions about the seeded model itself.
+    """
+    import lakewind.db.access as _access
+    from lakewind.config import load_settings
+
+    rid = _access.insert_forecast_run(row)
+    ref = load_settings().model.reference_model
+    if row.get("model_name") != ref:
+        _access.insert_forecast_run(dict(row, model_name=ref))
+    return rid
+
+
 @pytest.fixture()
 def temp_db(tmp_path, monkeypatch):
     """Full v1+v2 schema in a throwaway DuckDB file, wired into access.py."""

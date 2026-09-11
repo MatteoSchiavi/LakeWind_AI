@@ -306,7 +306,7 @@ def test_open_meteo_demux_multi_model_response(temp_db, monkeypatch):
 
     # to_rows must work unchanged on demuxed items (scoped to one point)
     rows = collector.to_rows(raw)
-    d2_rows = [r for r in rows if r["model_name"] == "icon_d2" and r["point_id"] == "dongo_shore"]
+    d2_rows = [r for r in rows if r["model_name"] == "icon_d2" and r["point_id"] == "dongo"]
     assert len(d2_rows) == 2
     assert d2_rows[0]["wind_speed_kn"] == 10.0
     assert d2_rows[0]["run_time"].hour in (0, 6, 12, 18)
@@ -393,17 +393,17 @@ def _seed_predictions(point_ids: list[str], hours: int = 24) -> None:
 async def test_store_serves_from_projection(temp_db):
     from lakewind.forecast_store import ForecastStore
 
-    _seed_predictions(["dervio_shore"])
+    _seed_predictions(["dervio"])
     st = ForecastStore()
     await st.refresh_projection(force=True)
 
     target = (utcnow() + timedelta(hours=3)).replace(tzinfo=None)
-    pred = await st.get_pred("dervio_shore", target)
+    pred = await st.get_pred("dervio", target)
     assert pred is not None
-    assert pred["point_id"] == "dervio_shore"
+    assert pred["point_id"] == "dervio"
 
     # Projection is fresh → second call served from memory, same values.
-    pred2 = await st.get_pred("dervio_shore", target)
+    pred2 = await st.get_pred("dervio", target)
     assert pred2["wind_speed_kn"] == pred["wind_speed_kn"]
     assert st.stats()["projection_rows"] == 24
 
@@ -414,7 +414,7 @@ async def test_store_burst_of_50_hits_db_once(temp_db, monkeypatch):
     from lakewind.db import access
     from lakewind.forecast_store import ForecastStore
 
-    _seed_predictions(["dervio_shore"])
+    _seed_predictions(["dervio"])
 
     queries = {"n": 0}
     real_batch = access.latest_prediction_batch
@@ -429,7 +429,7 @@ async def test_store_burst_of_50_hits_db_once(temp_db, monkeypatch):
     target = (utcnow() + timedelta(hours=2)).replace(tzinfo=None)
 
     async def one() -> Any:
-        return await st.get_pred("dervio_shore", target)
+        return await st.get_pred("dervio", target)
 
     results = await asyncio.gather(*(one() for _ in range(50)))
     assert len(results) == 50
@@ -441,9 +441,9 @@ async def test_store_burst_of_50_hits_db_once(temp_db, monkeypatch):
 async def test_store_series_covers_today_window(temp_db):
     from lakewind.forecast_store import ForecastStore
 
-    _seed_predictions(["dongo_shore"], hours=25)
+    _seed_predictions(["dongo"], hours=25)
     st = ForecastStore()
-    series = await st.get_series("dongo_shore", hours=25)
+    series = await st.get_series("dongo", hours=25)
     assert len(series) == 25
     speeds = [s["wind_speed_kn"] for s in series]
     assert all(s is not None for s in speeds)
@@ -480,12 +480,12 @@ async def test_run_cycle_uses_settings_horizons_and_bulk_insert(temp_db, monkeyp
     # Only one point, short horizon list via settings override
     s = engine.load_settings()
     monkeypatch.setattr(engine, "load_settings", lambda: s)
-    monkeypatch.setattr(s, "operational_point_ids", ["dervio_shore"], raising=False)
+    monkeypatch.setattr(s, "operational_point_ids", ["dervio"], raising=False)
 
     summary = engine.run_cycle(collect=False, horizons_hours=[0, 1, 2])
     assert summary["status"] == "ok"
     assert n_calls["n"] == 3
-    preds = access.latest_predictions(point_id="dervio_shore", limit=10)
+    preds = access.latest_predictions(point_id="dervio", limit=10)
     assert len(preds) == 3
 
 
@@ -498,7 +498,7 @@ def test_precompute_maps_writes_and_lookups_hit(temp_db, monkeypatch):
     now = utcnow().replace(tzinfo=None)
     preds = [
         {
-            "point_id": "dervio_shore",
+            "point_id": "dervio",
             "wind_speed_kn": 9.0,
             "wind_dir_deg": 200.0,
             "wind_gust_kn": 13.0,
@@ -525,7 +525,7 @@ def test_artifact_max_age_forces_miss(temp_db, monkeypatch):
     now = utcnow().replace(tzinfo=None)
     preds = [
         {
-            "point_id": "dervio_shore",
+            "point_id": "dervio",
             "wind_speed_kn": 9.0,
             "wind_dir_deg": 200.0,
             "wind_gust_kn": 13.0,
@@ -554,7 +554,7 @@ async def test_api_points_wind_health(temp_db, monkeypatch):
 
     from lakewind.api import create_app
 
-    _seed_predictions(["dervio_shore", "dongo_shore"], hours=6)
+    _seed_predictions(["dervio", "dongo"], hours=6)
 
     app = create_app()
     transport = ASGITransport(app=app)
@@ -562,22 +562,22 @@ async def test_api_points_wind_health(temp_db, monkeypatch):
         r = await client.get("/api/points")
         assert r.status_code == 200
         pts = r.json()["points"]
-        assert {p["id"] for p in pts} >= {"dervio_shore", "dongo_shore", "zurich"}
-        assert next(p for p in pts if p["id"] == "dervio_shore")["is_operational"] is True
+        assert {p["id"] for p in pts} >= {"dervio", "dongo", "zurich"}
+        assert next(p for p in pts if p["id"] == "dervio")["is_operational"] is True
 
-        r = await client.get("/api/wind", params={"point": "dervio_shore", "horizon": 1})
+        r = await client.get("/api/wind", params={"point": "dervio", "horizon": 1})
         assert r.status_code == 200
         body = r.json()
-        assert "dervio_shore" in body
-        assert body["dervio_shore"]["wind_speed_kn"] is not None
+        assert "dervio" in body
+        assert body["dervio"]["wind_speed_kn"] is not None
 
         r = await client.get("/api/wind", params={"horizon": 0})
         assert r.status_code == 200
         assert len(r.json()) >= 2
 
-        r = await client.get("/api/trend", params={"point": "dervio_shore", "hours": 6})
+        r = await client.get("/api/trend", params={"point": "dervio", "hours": 6})
         assert r.status_code == 200
-        series = r.json()["dervio_shore"]
+        series = r.json()["dervio"]
         assert len(series) == 6
         assert all(row["wind_speed_kn"] is not None for row in series)
 

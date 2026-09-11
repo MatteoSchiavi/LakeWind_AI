@@ -35,6 +35,14 @@ class VirtualPoint(BaseModel):
     id: str
     lat: float
     lon: float
+    # Phase 5.5 multi-spot provenance/presentation metadata (optional — aux
+    # gradient points omit them). `anchor_lat/anchor_lon` is the VERIFIED town
+    # coordinate (OSM + Wikipedia cross-check); lat/lon is the on-water
+    # sampling point projected from that anchor. See settings.yaml.
+    label: str | None = None
+    sector: str | None = None
+    anchor_lat: float | None = None
+    anchor_lon: float | None = None
 
 
 class BackfillConfig(BaseModel):
@@ -122,6 +130,16 @@ class DiyBuoyConfig(BaseModel):
     source_id: str = "diy_buoy"
 
 
+class MetarStationsConfig(BaseModel):
+    # Phase 5.5: regional airport METAR ground truth (aviationweather.gov,
+    # keyless). Station-tier observations used by verify-truth for ERA5/NWP
+    # fidelity vs real anemometers; too far from the lake spots to ever
+    # become their training targets (25 km target-match cap).
+    enabled: bool = True
+    stations: list[str] = Field(default_factory=lambda: ["LIML", "LIMC", "LSZA"])
+    hours_back: int = 36
+
+
 class LgbmParams(BaseModel):
     objective: str = "quantile"
     metric: str = "quantile"
@@ -174,6 +192,13 @@ class TargetQualityConfig(BaseModel):
 class ModelConfig(BaseModel):
     feature_set_version: str
     backend: str = "lightgbm"  # "lightgbm" or "xgboost_gpu"
+    # Reference NWP model the MOS bias target is built against
+    # (target_u/v = obs_uv - <reference>_uv). Phase 5.5 walk-forward evidence:
+    # ecmwf_ifs025 is near-unbiased in the Como basin (bias +0.03 kn vs ERA5
+    # over 8 months of operational runs, MAE 0.68 vs icon_eu 1.34 with +0.79
+    # bias) — correcting a small stable bias beats correcting a large one:
+    # pooled OOS MAE 0.443 (ecmwf ref) vs 0.497 (icon ref), 3 folds x 7 points.
+    reference_model: str = "ecmwf_ifs025"
     target_u: str
     target_v: str
     quantiles: list[float]
@@ -391,6 +416,7 @@ class Settings(BaseModel):
     arpa_lombardia: ArpaConfig
     arpa_hydro: ArpaHydroConfig = Field(default_factory=ArpaHydroConfig)
     diy_buoy: DiyBuoyConfig
+    metar_stations: MetarStationsConfig = Field(default_factory=MetarStationsConfig)
     model: ModelConfig
     success_criteria: SuccessCriteria
     pipeline: PipelineConfig

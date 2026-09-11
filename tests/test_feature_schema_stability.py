@@ -31,7 +31,7 @@ VT = datetime(2026, 7, 20, 14, 0)
 def _forecast(model_name: str) -> dict:
     return {
         "model_name": model_name,
-        "point_id": "dongo_shore",
+        "point_id": "dongo",
         "run_time": VT - timedelta(hours=3),
         "valid_time": VT,
         "wind_speed_kn": 8.0 + len(model_name) % 3,
@@ -67,7 +67,7 @@ def test_agree_pair_names_are_order_invariant(seeded_db, monkeypatch):
         by_name = {r["model_name"]: r for r in rows}
         return [by_name[m] for m in order if m in by_name]
 
-    fv_a = build_features_for("dongo_shore", VT).feature_vector
+    fv_a = build_features_for("dongo", VT).feature_vector
     keys_a = _agree_keys(fv_a)
 
     # A reversed SQL order must yield the SAME schema (values may swap pairs
@@ -77,7 +77,7 @@ def test_agree_pair_names_are_order_invariant(seeded_db, monkeypatch):
         "fetch_forecasts_at",
         lambda *a, **k: ordered(*a, order=list(reversed(models)), **k),
     )
-    fv_b = build_features_for("dongo_shore", VT).feature_vector
+    fv_b = build_features_for("dongo", VT).feature_vector
     keys_b = _agree_keys(fv_b)
 
     assert keys_a == keys_b, (
@@ -97,7 +97,7 @@ def test_climatology_keys_survive_readonly_process(seeded_db, monkeypatch):
     access.set_readonly_mode(True)
     try:
         deep_backfill._CLIMATOLOGY_TABLE_READY = False
-        fv = build_features_for("dongo_shore", VT).feature_vector
+        fv = build_features_for("dongo", VT).feature_vector
         for key in (
             "climatology_wind_speed_normal",
             "climatology_temp_normal",
@@ -125,7 +125,7 @@ def test_climatology_keys_survive_subsystem_failure(seeded_db, monkeypatch):
     monkeypatch.setattr(
         "lakewind.features.climatology.compute_climatology_features", boom
     )
-    fv = build_features_for("dongo_shore", VT).feature_vector
+    fv = build_features_for("dongo", VT).feature_vector
     assert "climatology_wind_speed_normal" in fv
     assert fv["climatology_wind_speed_normal"] is None
 

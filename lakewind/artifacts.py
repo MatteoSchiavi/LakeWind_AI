@@ -33,7 +33,10 @@ from lakewind.utils.timeutil import utcnow
 logger = logging.getLogger(__name__)
 
 # Bot menu offsets — kept in one place so precompute covers the whole keyboard.
-MAP_OFFSET_HOURS = (0, 2, 4, 6)
+# Phase 5.5: offsets now MATCH the web-ui horizon chips (0/1/3/6/12/24h in
+# page.tsx) — the old (0,2,4,6) set never matched, so 4 of 6 heatmap tabs
+# always fell back to slow on-demand renders behind the render semaphore.
+MAP_OFFSET_HOURS = (0, 1, 3, 6, 12, 24)
 
 # Artifact lifetime guard: beyond this age a file is ignored even if present
 # (e.g. the pipeline died), forcing the on-demand path.

@@ -137,7 +137,7 @@ class TestCoverageMonitor:
         access.insert_predictions_bulk(
             [
                 {
-                    "point_id": "dongo_shore",
+                    "point_id": "dongo",
                     "generated_at": vt - timedelta(hours=1),
                     "valid_time": vt,
                     "model_version": "mv_cov",
@@ -153,8 +153,8 @@ class TestCoverageMonitor:
             {
                 "source": obs["source"],
                 "timestamp": obs["ts"],
-                "lat": 46.1230,
-                "lon": 9.2850,
+                "lat": 46.1203,
+                "lon": 9.2863,
                 "wind_speed_kn": obs["speed"],
                 "wind_dir_deg": 180.0,
                 "confidence": 0.85,

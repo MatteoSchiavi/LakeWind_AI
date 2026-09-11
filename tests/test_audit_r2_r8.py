@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 import numpy as np
 import pandas as pd
 import pytest
+from conftest import seed_forecast_row  # noqa: E402
 
 from lakewind.features.targets import (
     TIER_ERA5,
@@ -142,10 +143,10 @@ class TestBuilderTargetHierarchy:
         reset_caches()
         valid = datetime(2026, 6, 15, 14, 0)
         # Reference forecast (icon_eu)
-        access.insert_forecast_run(
+        seed_forecast_row(
             {
                 "model_name": "icon_eu",
-                "point_id": "dongo_shore",
+                "point_id": "dongo",
                 "run_time": valid - timedelta(hours=3),
                 "valid_time": valid,
                 "wind_speed_kn": 8.0,
@@ -154,7 +155,7 @@ class TestBuilderTargetHierarchy:
                 "temperature_2m": 24.0,
             }
         )
-        vp = {"lat": 46.1230, "lon": 9.2850}
+        vp = {"lat": 46.1203, "lon": 9.2863}
         # ERA5 row: distance-zero, fresher — the old selector picked this.
         access.insert_observation(
             {
@@ -179,7 +180,7 @@ class TestBuilderTargetHierarchy:
                 "confidence": 0.85,
             }
         )
-        fr = build_features_for("dongo_shore", valid)
+        fr = build_features_for("dongo", valid)
         assert fr is not None and fr.target_u is not None
         assert fr.meta["obs_source"] == "arpa_999"
         assert fr.meta["target_tier"] == TIER_STATION
@@ -195,10 +196,10 @@ class TestBuilderTargetHierarchy:
         init_db(temp_db, echo=False)
         reset_caches()
         valid = datetime(2026, 6, 15, 14, 0)
-        access.insert_forecast_run(
+        seed_forecast_row(
             {
                 "model_name": "icon_eu",
-                "point_id": "dongo_shore",
+                "point_id": "dongo",
                 "run_time": valid - timedelta(hours=3),
                 "valid_time": valid,
                 "wind_speed_kn": 8.0,
@@ -216,7 +217,7 @@ class TestBuilderTargetHierarchy:
                 "confidence": 0.75,
             }
         )
-        fr = build_features_for("dongo_shore", valid)
+        fr = build_features_for("dongo", valid)
         assert fr is not None and fr.target_u is not None
         assert fr.meta["obs_source"] == "era5_reanalysis"
         assert fr.meta["target_weight"] == pytest.approx(0.4 * 0.75)

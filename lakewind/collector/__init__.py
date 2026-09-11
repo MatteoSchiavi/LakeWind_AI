@@ -15,6 +15,7 @@ from lakewind.collector.base import BaseCollector, CollectResult
 from lakewind.collector.diy_buoy import DiyBuoyCollector
 from lakewind.collector.domaso_station import DomasoCollector
 from lakewind.collector.era5_reanalysis import Era5ReanalysisCollector
+from lakewind.collector.metar_stations import MetarStationsCollector
 from lakewind.collector.open_meteo import OpenMeteoCollector
 from lakewind.collector.open_meteo_ensemble import OpenMeteoEnsembleCollector
 from lakewind.config import load_settings
@@ -38,6 +39,8 @@ def all_collectors() -> list[BaseCollector]:
         ArpaLombardiaCollector(),
         # Lake water temperature (Deep Audit R6) — feeds lake_breeze_* features
         ArpaHydroCollector(),
+        # Phase 5.5 — regional airport METAR ground truth (verify-truth anchor)
+        MetarStationsCollector(),
         Era5ReanalysisCollector(),
         # Tier 0 — DIY buoy (Spec §4.1, disabled until hardware exists)
         DiyBuoyCollector(),

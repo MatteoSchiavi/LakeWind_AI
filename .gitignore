@@ -47,5 +47,5 @@ web-ui/out/
 next-env.d.ts
 *.tsbuildinfo
 
-# Backup artifacts
-data/backups/
+# Runtime data (DB, backups, model bundles, caches) — never in git
+data/

@@ -237,6 +237,46 @@ def _check_url(url: str, timeout: float = 5.0) -> str:
         return f"FAIL ({exc.__class__.__name__})"
 
 
+@app.command("verify-truth")
+def verify_truth(
+    days: int = typer.Option(30, help="Trailing window in days"),
+) -> None:
+    """Compare ERA5 + stored NWP against REAL METAR anemometers.
+
+    Answers "what is our truth?" with physical instruments: ERA5-vs-METAR
+    fidelity at the near-co-located aux sites (Linate/Lugano), plus raw NWP
+    error vs the same stations. Results are appended to eval_runs.
+    """
+    _setup_logging()
+    import json as _json
+
+    from lakewind.ml.truth_check import run_truth_check
+
+    out = run_truth_check(days=days)
+    for pair, data in out["pairs"].items():
+        console.rule(pair)
+        if "status" in data:
+            console.print(f"  [yellow]{data['status']}[/yellow] - {data.get('hint', '')}")
+            continue
+        console.print(f"  station distance: {data['station_distance_km']} km "
+                      f"(tolerance {'OK' if data['within_site_tolerance'] else 'EXCEEDED'})")
+        e5 = data.get("era5_vs_metar")
+        if e5:
+            console.print(
+                f"  ERA5 vs METAR : n={e5['n']:5d}  MAE={e5['mae_kn']:.3f} kn  "
+                f"bias={e5['bias_kn']:+.3f} kn  p90={e5['p90_abs_err_kn']:.2f} kn"
+            )
+        else:
+            console.print("  ERA5 vs METAR : no paired samples")
+        for model, m in data.get("nwp_vs_metar", {}).items():
+            if m:
+                console.print(
+                    f"  {model:28s} n={m['n']:5d}  MAE={m['mae_kn']:.3f} kn  "
+                    f"bias={m['bias_kn']:+.3f} kn"
+                )
+    console.print(f"[dim]recorded to eval_runs (source=truth_check) {_json.dumps({'n': 1})}[/dim]")
+
+
 @app.command("collect")
 def collect() -> None:
     """Run all collectors once."""

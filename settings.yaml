@@ -6,46 +6,73 @@ project:
   version: "0.1.0"
   timezone: "Europe/Rome"
 
-# Section 2.1 — operating area bounding box (Dongo-Dervio corridor)
+# Section 2.1 — operating area bounding box (whole Lake Como basin)
 operating_area:
-  name: "Dongo-Dervio corridor"
-  lat_min: 46.04
-  lat_max: 46.17
-  lon_min: 9.27
-  lon_max: 9.34
+  name: "Lake Como basin"
+  lat_min: 45.74
+  lat_max: 46.22
+  lon_min: 9.02
+  lon_max: 9.42
 
-# Section 2.2 — virtual observation points
-# V4 FIX: Cut from 15 to 8 operational points. The V3 expansion to 15 included
-# shore/offshore pairs within 1-2km of each other — below the resolution of
-# every NWP model (icon_d2 is 2.2km, all others are >=6km). The pairs received
-# IDENTICAL forecasts, doubling API calls for zero skill gain.
-# Plus 4 auxiliary points for macro-area pressure gradients.
+# Section 2.2 — virtual observation points (15 operational spots + 4 auxiliary)
+# Phase 5.5 multi-spot expansion — ALL coordinates verified via TWO independent
+# sources (OpenStreetMap/Nominatim + it.wikipedia, cross-checked < 1.5 km) and
+# validated against the real Lake Como shoreline polygon
+# (lakewind/data/lake_como_shoreline.geojson, OSM relation 541757, 144.4 km2).
+# Each spot has:
+#   lat/lon      — water sampling point (verified town anchor projected onto
+#                  open water along the shortest path, 0.13-0.52 km offshore;
+#                  keeps the on-water climatology of the previous 7 points)
+#   anchor       — the verified town coordinate itself (display/audit)
+#   label/sector — presentation metadata (web-ui, Telegram, heatmap)
+# Precedent note: the V4-era 15-point plan was cut to 7 because it duplicated
+# shore/offshore pairs < 2 km apart. These 15 are DISTINCT named towns spread
+# over the whole lake (> 2 km spacing, verified), so each earns its own grid
+# sampling and identity feature.
 virtual_points:
-  # --- Operational points (8) — coordinates validated by scripts/validate_points.py ---
-  # V5 FIX: Dervio and Bellano were 1.5-1.7km off. All coordinates now validated
-  # against the Lake Como water polygon to ensure they sit on water, not mountainside.
-  - {id: dongo_shore,       lat: 46.1230, lon: 9.2850}   # on water, near Dongo
-  - {id: gravedona_shore,   lat: 46.1460, lon: 9.3050}   # on water, Gravedona bay
-  - {id: domaso_offshore,   lat: 46.1500, lon: 9.3230}   # on water, off Domaso
-  - {id: mid_channel,       lat: 46.1000, lon: 9.3040}   # mid-lake
-  - {id: piona_entrance,    lat: 46.1140, lon: 9.3100}   # on water, Piona entrance
-  - {id: dervio_shore,      lat: 46.0763, lon: 9.2980}   # V5 FIX: on water, off Dervio
-  - {id: bellano_offshore,  lat: 46.0550, lon: 9.3000}   # V5 FIX: on water, off Bellano
+  # --- Operational spots (15) — sectors group the web-ui grid ---
+  # Alto Lario (north basin, Breva corridor)
+  - {id: colico,     lat: 46.14191, lon: 9.36743, label: "Colico",             sector: alto_lario,     anchor_lat: 46.13631, anchor_lon: 9.37382}
+  - {id: sorico,     lat: 46.16686, lon: 9.37255, label: "Sorico",             sector: alto_lario,     anchor_lat: 46.17226, anchor_lon: 9.37995}
+  - {id: gera_lario, lat: 46.16389, lon: 9.37257, label: "Gera Lario",         sector: alto_lario,     anchor_lat: 46.17110, anchor_lon: 9.37190}
+  - {id: domaso,     lat: 46.14699, lon: 9.32155, label: "Domaso",             sector: alto_lario,     anchor_lat: 46.15099, anchor_lon: 9.32814}
+  - {id: gravedona,  lat: 46.14492, lon: 9.31233, label: "Gravedona ed Uniti", sector: alto_lario,     anchor_lat: 46.14719, anchor_lon: 9.30526}
+  - {id: dongo,      lat: 46.12030, lon: 9.28634, label: "Dongo",              sector: alto_lario,     anchor_lat: 46.12294, anchor_lon: 9.27908}
+  - {id: piona,      lat: 46.12774, lon: 9.33569, label: "Piona (Olgiasca)",   sector: alto_lario,     anchor_lat: 46.12359, anchor_lon: 9.33137}
+  - {id: cremia,     lat: 46.08681, lon: 9.28480, label: "Cremia",             sector: alto_lario,     anchor_lat: 46.08610, anchor_lon: 9.27260}
+  - {id: dervio,     lat: 46.07980, lon: 9.29490, label: "Dervio",             sector: alto_lario,     anchor_lat: 46.07657, anchor_lon: 9.30453}
+  # Lario Centrale (mid-lake)
+  - {id: varenna,    lat: 46.00439, lon: 9.28407, label: "Varenna",            sector: lario_centrale, anchor_lat: 46.00998, anchor_lon: 9.28316}
+  - {id: menaggio,   lat: 46.01614, lon: 9.24443, label: "Menaggio",           sector: lario_centrale, anchor_lat: 46.01978, anchor_lon: 9.23895}
+  - {id: bellagio,   lat: 45.98757, lon: 9.25324, label: "Bellagio",           sector: lario_centrale, anchor_lat: 45.98725, anchor_lon: 9.26130}
+  # Branca di Lecco (south-east branch)
+  - {id: mandello,   lat: 45.91524, lon: 9.30640, label: "Mandello del Lario", sector: branca_lecco,   anchor_lat: 45.91918, anchor_lon: 9.31934}
+  - {id: lecco,      lat: 45.85402, lon: 9.38194, label: "Lecco / Valmadrera", sector: branca_lecco,   anchor_lat: 45.85538, anchor_lon: 9.38960}
+  # Branca di Como (south-west branch)
+  - {id: como_city,  lat: 45.81676, lon: 9.07533, label: "Como",               sector: branca_como,    anchor_lat: 45.81156, anchor_lon: 9.08304}
   # --- Auxiliary points (4) — macro-area pressure gradients ---
   - {id: zurich,          lat: 47.376, lon: 8.541}
   - {id: milano_linate,   lat: 45.445, lon: 9.278}
   - {id: sondrio,         lat: 46.170, lon: 9.870}
   - {id: lugano,          lat: 46.005, lon: 8.952}
 
-# Operational virtual points (8) — used by prediction engine + Telegram
+# Operational virtual points (15) — used by prediction engine + Telegram
 operational_point_ids:
-  - dongo_shore
-  - gravedona_shore
-  - domaso_offshore
-  - mid_channel
-  - piona_entrance
-  - dervio_shore
-  - bellano_offshore
+  - colico
+  - sorico
+  - gera_lario
+  - domaso
+  - gravedona
+  - dongo
+  - piona
+  - cremia
+  - dervio
+  - varenna
+  - menaggio
+  - bellagio
+  - mandello
+  - lecco
+  - como_city
 
 # Section 4.3 — Open-Meteo multi-model NWP
 open_meteo:
@@ -164,8 +191,26 @@ diy_buoy:
   ingestion_url: "http://localhost:8080/buoy"
   source_id: "diy_buoy"
 
+# Phase 5.5 — regional airport METAR ground truth (aviationweather.gov, no key).
+# Real anemometers 35-60 km from the lake: anchors ERA5/NWP fidelity via
+# `lakewind verify-truth`. Never a training target for lake spots (25 km cap).
+metar_stations:
+  enabled: true
+  stations: ["LIML", "LIMC", "LSZA"]   # Milano Linate, Milano Malpensa, Lugano
+  hours_back: 36
+
 # Section 7.1 — LightGBM quantile MOS model
 model:
+  # Phase 5.5 — reference NWP model for the MOS bias target
+  # (target_u/v = obs_uv - <reference>_uv; training, backtest and serving all
+  # follow this key). Walk-forward evidence (3 folds x 7 points, Jan-Apr +
+  # Jul-Aug 2026): pooled OOS speed MAE 0.443 kn with ecmwf_ifs025 reference
+  # vs 0.497 kn with the former icon_eu reference (-11%). Reason: ECMWF is
+  # nearly unbiased in the Como basin (+0.03 kn over 8 months of operational
+  # runs) while icon_eu overpredicts (+0.79 kn) — correcting a small stable
+  # bias beats correcting a large one. Conformal bands and coverage gates are
+  # reference-agnostic (they recalibrate on realized residuals).
+  reference_model: "ecmwf_ifs025"
   # Deep Audit R3: V8 feature set — activates the dead shear/upper-air
   # families against real V8 scalar columns, removes wrong features (numeric
   # weather_code, is_weekend, LI proxy, gust-shear BRN), adds the wx_* one-hot

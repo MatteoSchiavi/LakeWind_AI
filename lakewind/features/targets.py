@@ -33,7 +33,7 @@ from typing import Any
 # 'lake_water_temp' is station-class too (R6) — it can never become a wind
 # target (no wind components) but is classified as a real sensor for
 # reporting and confidence semantics.
-STATION_SOURCE_PREFIXES = ("arpa_", "domaso", "diy_buoy", "netatmo", "lake_water_temp")
+STATION_SOURCE_PREFIXES = ("arpa_", "domaso", "diy_buoy", "netatmo", "lake_water_temp", "metar_")
 # Tier 1 (Phase 5/S5): crowdsourced human reports from the water (/report).
 # A person ON the lake outranks any reanalysis grid cell — but never an
 # instrument, and (per the approved Phase 5 plan) can NEVER satisfy the

@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 import pytest
+from conftest import seed_forecast_row  # noqa: E402
 
 from lakewind.collector.base import model_init_cadence_hours
 
@@ -46,7 +47,7 @@ class TestMeteoSwissStack:
         from lakewind.collector.open_meteo import OpenMeteoCollector
 
         item = {
-            "point_id": "dongo_shore",
+            "point_id": "dongo",
             "model_name": "meteoswiss_icon_ch1",
             "json": {
                 "hourly": {
@@ -189,10 +190,10 @@ class TestLakeBreezeActivation:
         init_db(temp_db, echo=False)
         reset_caches()
         vt = datetime(2026, 7, 20, 14, 0)
-        access.insert_forecast_run(
+        seed_forecast_row(
             {
                 "model_name": "icon_eu",
-                "point_id": "dongo_shore",
+                "point_id": "dongo",
                 "run_time": vt - timedelta(hours=3),
                 "valid_time": vt,
                 "wind_speed_kn": 5.0,
@@ -216,7 +217,7 @@ class TestLakeBreezeActivation:
                 "confidence": 0.8,
             }
         )
-        fr = build_features_for("dongo_shore", vt)
+        fr = build_features_for("dongo", vt)
         fv = fr.feature_vector
         assert fv["lake_breeze_air_water_delta"] == pytest.approx(4.0)
 

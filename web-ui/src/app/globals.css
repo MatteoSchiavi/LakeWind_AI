@@ -51,6 +51,34 @@ body {
   background: #0b1220;
 }
 
+/* Phase 5.5: permanent spot-name labels on the interactive map — compact,
+   theme-aware chips that don't fight the wind-field overlay. */
+.lakewind-spot-label {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  padding: 0;
+}
+.lakewind-spot-label::before {
+  display: none; /* hide the default tooltip arrow */
+}
+.lakewind-spot-label .label-chip,
+.lakewind-spot-label span {
+  display: inline-block;
+  padding: 1px 5px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.92);
+  color: #0b1220;
+  border: 1px solid rgba(10, 61, 92, 0.35);
+  text-shadow: none;
+  white-space: nowrap;
+}
+.dark .lakewind-spot-label span {
+  background: rgba(11, 18, 32, 0.92);
+  color: #e2e8f0;
+  border-color: rgba(56, 189, 248, 0.45);
+}
+
 /* Leaflet popups follow the theme instead of hard-coded white */
 .leaflet-popup-content-wrapper,
 .leaflet-popup-tip {

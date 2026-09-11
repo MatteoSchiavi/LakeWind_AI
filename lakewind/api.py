@@ -25,11 +25,12 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 from datetime import timedelta
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response
 
 logger = logging.getLogger(__name__)
 
@@ -99,10 +100,33 @@ def create_app() -> FastAPI:
                         "lat": vp.lat,
                         "lon": vp.lon,
                         "is_operational": vp.id in operational,
+                        # Phase 5.5 provenance/presentation metadata (aux
+                        # gradient points have none)
+                        "label": vp.label,
+                        "sector": vp.sector,
+                        "anchor_lat": vp.anchor_lat,
+                        "anchor_lon": vp.anchor_lon,
                     }
                     for vp in s.virtual_points
                 ]
             }
+        )
+
+    @app.get("/api/lake.geojson")
+    async def lake_geojson() -> FileResponse:
+        """Real Lake Como shoreline (OSM relation 541757 via Nominatim).
+
+        Consumed by the web-ui interactive map for the IDW wind-field overlay
+        and the lake silhouette. Single source of truth:
+        lakewind/data/lake_como_shoreline.geojson (same file the heatmap
+        renderer clips with — drift is guarded by tests/test_phase55_spots.py).
+        """
+        path = Path(__file__).resolve().parent / "data" / "lake_como_shoreline.geojson"
+        if not path.exists():
+            raise HTTPException(status_code=503, detail="shoreline geojson missing")
+        return FileResponse(
+            path, media_type="application/geo+json",
+            headers={"Cache-Control": "public, max-age=86400"},
         )
 
     @app.get("/api/wind")

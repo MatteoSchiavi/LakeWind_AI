@@ -11,6 +11,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 import pytest
+from conftest import seed_forecast_row  # noqa: E402
 
 from lakewind.config import reset_caches
 from lakewind.db import access
@@ -24,10 +25,10 @@ def _seed_standard_db(temp_db):
     """icon_eu run 3h before VT + a couple of obs; returns nothing."""
     init_db(temp_db, echo=False)
     reset_caches()
-    access.insert_forecast_run(
+    seed_forecast_row(
         {
             "model_name": "icon_eu",
-            "point_id": "dongo_shore",
+            "point_id": "dongo",
             "run_time": VT - timedelta(hours=3),
             "valid_time": VT,
             "wind_speed_kn": 8.0,
@@ -41,7 +42,7 @@ def _seed_standard_db(temp_db):
 class TestLeadHours:
     def test_lead_hours_computed_from_run_time(self, temp_db):
         _seed_standard_db(temp_db)
-        fv = build_features_for("dongo_shore", VT).feature_vector
+        fv = build_features_for("dongo", VT).feature_vector
         assert fv["lead_hours"] == pytest.approx(3.0)
 
     def test_lead_hours_none_without_run_time(self, temp_db):
@@ -52,7 +53,7 @@ class TestLeadHours:
         from lakewind.features.feature_pack import compute_feature_pack
 
         fv: dict = {}
-        compute_feature_pack(fv, "dongo_shore", VT, {"model_name": "icon_eu", "run_time": None},
+        compute_feature_pack(fv, "dongo", VT, {"model_name": "icon_eu", "run_time": None},
                              fetch_at=lambda *a: [])
         assert fv["lead_hours"] is None
 
@@ -62,14 +63,14 @@ class TestPointIdentity:
         _seed_standard_db(temp_db)
         from lakewind.config import load_settings
 
-        fv = build_features_for("dongo_shore", VT).feature_vector
+        fv = build_features_for("dongo", VT).feature_vector
         for pid in load_settings().operational_point_ids:
-            expected = 1 if pid == "dongo_shore" else 0
+            expected = 1 if pid == "dongo" else 0
             assert fv[f"spot_{pid}"] == expected
 
     def test_other_point_gets_its_own_hot(self, temp_db):
         _seed_standard_db(temp_db)
-        fv = build_features_for("dervio_shore", VT)
+        fv = build_features_for("dervio", VT)
         if fv is None:
             pytest.skip("no forecast for dervio_shore seeded")
         assert fv.feature_vector["spot_dervio_shore"] == 1
@@ -79,7 +80,7 @@ class TestPointIdentity:
 class TestHarmonics:
     def test_harmonic_bounds_and_consistency(self, temp_db):
         _seed_standard_db(temp_db)
-        fv = build_features_for("dongo_shore", VT).feature_vector
+        fv = build_features_for("dongo", VT).feature_vector
         for k in ("hour_sin", "hour_cos", "doy_sin", "doy_cos"):
             assert fv[k] is not None and -1.0 <= fv[k] <= 1.0
         # sin^2 + cos^2 == 1 for both pairs
@@ -106,7 +107,7 @@ class TestObsLags:
                     "confidence": 0.85,
                 }
             )
-        fv = build_features_for("dongo_shore", VT).feature_vector
+        fv = build_features_for("dongo", VT).feature_vector
         assert fv["obs_lag1h_speed"] == pytest.approx(10.0)
         assert fv["obs_lag2h_speed"] == pytest.approx(8.0)
         assert fv["obs_lag3h_speed"] == pytest.approx(6.0)
@@ -137,7 +138,7 @@ class TestObsLags:
                     "confidence": 0.85,
                 }
             )
-        fv = build_features_for("dongo_shore", VT).feature_vector
+        fv = build_features_for("dongo", VT).feature_vector
         for key in (
             "obs_nearest_speed", "obs_lag1h_speed", "obs_lag2h_speed",
             "obs_lag3h_speed",
@@ -146,7 +147,7 @@ class TestObsLags:
 
     def test_lags_none_without_obs(self, temp_db):
         _seed_standard_db(temp_db)
-        fv = build_features_for("dongo_shore", VT).feature_vector
+        fv = build_features_for("dongo", VT).feature_vector
         assert fv["obs_lag1h_speed"] is None
         assert fv["obs_trend_3h"] is None
 
@@ -160,10 +161,10 @@ class TestOnlineBias:
         # their valid times — realistic).
         # fc 10 kn at both hours; obs 13 and 14 → diffs +3, +4 → bias 3.5
         for off, obs_speed in ((1, 13.0), (2, 14.0)):
-            access.insert_forecast_run(
+            seed_forecast_row(
                 {
                     "model_name": "icon_eu",
-                    "point_id": "dongo_shore",
+                    "point_id": "dongo",
                     "run_time": VT - timedelta(hours=6),
                     "valid_time": VT - timedelta(hours=3 + off),
                     "wind_speed_kn": 10.0,
@@ -181,17 +182,18 @@ class TestOnlineBias:
                     "confidence": 0.85,
                 }
             )
-        fv = build_features_for("dongo_shore", VT).feature_vector
+        fv = build_features_for("dongo", VT).feature_vector
+        # obs at t-1h = 13 (fc 10 → +3); obs at t-2h = 14 (fc 10 → +4)
         assert fv["online_bias_6h"] == pytest.approx((13.0 - 10.0 + 14.0 - 10.0) / 2, abs=0.5)
         assert fv["online_bias_24h"] is not None
 
     def test_online_bias_excludes_post_issue_observations(self, temp_db):
         """An observation from the target hour must not enter the bias window."""
         _seed_standard_db(temp_db)
-        access.insert_forecast_run(
+        seed_forecast_row(
             {
                 "model_name": "icon_eu",
-                "point_id": "dongo_shore",
+                "point_id": "dongo",
                 "run_time": VT - timedelta(hours=6),
                 "valid_time": VT - timedelta(hours=4),
                 "wind_speed_kn": 10.0,
@@ -222,19 +224,19 @@ class TestOnlineBias:
                 "confidence": 0.85,
             }
         )
-        fv = build_features_for("dongo_shore", VT).feature_vector
+        fv = build_features_for("dongo", VT).feature_vector
         assert fv["online_bias_6h"] == pytest.approx(3.0, abs=0.5)
 
     def test_bias_none_without_history(self, temp_db):
         _seed_standard_db(temp_db)
-        fv = build_features_for("dongo_shore", VT).feature_vector
+        fv = build_features_for("dongo", VT).feature_vector
         assert fv["online_bias_6h"] is None
 
 
 class TestRegimeWiring:
     def test_regime_one_hots_present_and_exclusive(self, temp_db):
         _seed_standard_db(temp_db)
-        fv = build_features_for("dongo_shore", VT).feature_vector
+        fv = build_features_for("dongo", VT).feature_vector
         labels = ("storm", "foehn", "breva", "tivano", "calm")
         assert all(f"regime_{lab}" in fv for lab in labels)
         assert sum(fv[f"regime_{lab}"] for lab in labels) == 1  # exactly one regime
@@ -254,23 +256,23 @@ class TestRampShape:
         _seed_standard_db(temp_db)
         # future: 9, 12, 16 kn at +1/+2/+3h (building wind = sailor-relevant)
         for off, speed in ((1, 9.0), (2, 12.0), (3, 16.0)):
-            access.insert_forecast_run(
+            seed_forecast_row(
                 {
                     "model_name": "icon_eu",
-                    "point_id": "dongo_shore",
+                    "point_id": "dongo",
                     "run_time": VT - timedelta(hours=3),
                     "valid_time": VT + timedelta(hours=off),
                     "wind_speed_kn": speed,
                     "wind_dir_deg": 180.0,
                 }
             )
-        fv = build_features_for("dongo_shore", VT).feature_vector
+        fv = build_features_for("dongo", VT).feature_vector
         assert fv["ramp_max_3h"] == pytest.approx(16.0 - 8.0)  # max |Δ| = +8
         assert fv["ramp_sign"] == 1
 
     def test_ramp_zero_without_future_rows(self, temp_db):
         _seed_standard_db(temp_db)
-        fv = build_features_for("dongo_shore", VT).feature_vector
+        fv = build_features_for("dongo", VT).feature_vector
         assert fv["ramp_max_3h"] is None
         assert fv["ramp_sign"] == 0
 
@@ -282,7 +284,7 @@ class TestPackIntegration:
 
         s = load_settings()
         monkeypatch.setattr(s.model, "feature_pack_enabled", False)
-        fv = build_features_for("dongo_shore", VT).feature_vector
+        fv = build_features_for("dongo", VT).feature_vector
         assert "lead_hours" not in fv
         assert "spot_dongo_shore" not in fv
 

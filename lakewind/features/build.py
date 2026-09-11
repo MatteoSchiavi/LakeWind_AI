@@ -125,7 +125,7 @@ def build_features_for(
     point_id: str,
     valid_time: datetime,
     *,
-    reference_forecast_model: str = "icon_eu",
+    reference_forecast_model: str | None = None,
     observation_lookback_minutes: int = 60,
 ) -> FeatureResult | None:
     """Build the feature vector for a single (point, valid_time) sample.
@@ -135,8 +135,10 @@ def build_features_for(
 
     `reference_forecast_model` is the model whose bias is being corrected.
     Spec §6 says the bias is `observed - forecast`, so we need to pick a
-    reference forecast. Default `icon_eu` per Spec §4.3 (ICON is the most
-    important model for Lake Como — Spec v1 §4.2).
+    reference forecast. Phase 5.5: defaults to `model.reference_model` from
+    settings (ecmwf_ifs025 — see config.py for the walk-forward evidence);
+    was icon_eu before, which carried a +0.79 kn systematic bias in the
+    Como basin.
 
     Phase 3: a call-scoped memo deduplicates repeated fetch_forecasts_at
     lookups within this sample (thermal inertia, lake-breeze, lag and aux
@@ -144,6 +146,8 @@ def build_features_for(
     results, because all fetches inside one sample read the same DB snapshot.
     """
     s = load_settings()
+    if reference_forecast_model is None:
+        reference_forecast_model = s.model.reference_model
     memo: dict[tuple[str, datetime, int], list[dict[str, Any]]] = {}
 
     # Phase 3: one bulk range query covers every forecast lookup this sample

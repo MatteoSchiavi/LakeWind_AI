@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 
 import duckdb
 import pytest
+from conftest import seed_forecast_row  # noqa: E402
 
 from lakewind.collector.historical_backfill import (
     BACKFILL_HOURLY_VARS,
@@ -85,7 +86,7 @@ class TestV8CollectorAndStorage:
     def test_to_rows_stores_multilevel_scalars(self):
         from lakewind.collector.open_meteo import OpenMeteoCollector
 
-        rows = OpenMeteoCollector().to_rows([_om_item("icon_eu", "dongo_shore")])
+        rows = OpenMeteoCollector().to_rows([_om_item("icon_eu", "dongo")])
         r = rows[0]
         assert r["wind_speed_80m"] == 12.5
         assert r["wind_direction_80m"] == 175.0
@@ -96,7 +97,7 @@ class TestV8CollectorAndStorage:
     def test_models_without_levels_store_null(self):
         from lakewind.collector.open_meteo import OpenMeteoCollector
 
-        item = _om_item("gfs_seamless", "dongo_shore")
+        item = _om_item("gfs_seamless", "dongo")
         for k in ("wind_speed_80m", "wind_direction_80m", "wind_speed_850hPa",
                   "wind_direction_850hPa", "temperature_850hPa"):
             item["json"]["hourly"].pop(k)
@@ -112,10 +113,10 @@ class TestV8CollectorAndStorage:
         init_db(temp_db, echo=False)
         reset_caches()
         vt = datetime(2026, 9, 10, 12, 0)
-        access.insert_forecast_run(
+        seed_forecast_row(
             {
                 "model_name": "icon_eu",
-                "point_id": "dongo_shore",
+                "point_id": "dongo",
                 "run_time": vt - timedelta(hours=3),
                 "valid_time": vt,
                 "wind_speed_kn": 8.0,
@@ -125,7 +126,7 @@ class TestV8CollectorAndStorage:
                 "temperature_850hpa": 7.5,
             }
         )
-        rows = access.fetch_forecasts_at("dongo_shore", vt, lead_minutes_window=30)
+        rows = access.fetch_forecasts_at("dongo", vt, lead_minutes_window=30)
         row = next(r for r in rows if r["model_name"] == "icon_eu")
         assert row["wind_speed_80m"] == 12.5
         assert row["wind_speed_850hpa"] == 18.0
@@ -193,16 +194,15 @@ class TestStabilityIndicesRework:
 class TestBuilderV8Integration:
     def _seed(self, temp_db, weather_code=63):
         from lakewind.config import reset_caches
-        from lakewind.db import access
         from lakewind.db.schema import init_db
 
         init_db(temp_db, echo=False)
         reset_caches()
         vt = datetime(2026, 6, 15, 14, 0)
-        access.insert_forecast_run(
+        seed_forecast_row(
             {
                 "model_name": "icon_eu",
-                "point_id": "dongo_shore",
+                "point_id": "dongo",
                 "run_time": vt - timedelta(hours=3),
                 "valid_time": vt,
                 "wind_speed_kn": 8.0,
@@ -225,7 +225,7 @@ class TestBuilderV8Integration:
         from lakewind.features.build import build_features_for
 
         vt = self._seed(temp_db)
-        fr = build_features_for("dongo_shore", vt)
+        fr = build_features_for("dongo", vt)
         fv = fr.feature_vector
         assert fv["fc_icon_eu_speed_80m"] == 12.0
         assert fv["fc_icon_eu_shear_10_80"] == pytest.approx(4.0)
@@ -234,7 +234,7 @@ class TestBuilderV8Integration:
         from lakewind.features.build import build_features_for
 
         vt = self._seed(temp_db, weather_code=63)  # rain
-        fv = build_features_for("dongo_shore", vt).feature_vector
+        fv = build_features_for("dongo", vt).feature_vector
         assert fv["wx_rain"] == 1
         assert fv["wx_snow"] == 0
         assert fv["wx_storm"] == 0
@@ -244,7 +244,7 @@ class TestBuilderV8Integration:
         from lakewind.features.build import build_features_for
 
         vt = self._seed(temp_db)
-        fv = build_features_for("dongo_shore", vt).feature_vector
+        fv = build_features_for("dongo", vt).feature_vector
         assert "fc_icon_eu_weather_code" not in fv
         assert "is_weekend" not in fv
 
@@ -252,7 +252,7 @@ class TestBuilderV8Integration:
         from lakewind.features.build import build_features_for
 
         vt = self._seed(temp_db)
-        fv = build_features_for("dongo_shore", vt).feature_vector
+        fv = build_features_for("dongo", vt).feature_vector
         assert fv["ua_wind_speed_850hPa"] == 18.0
         assert fv["ua_shear_10_850"] == pytest.approx(10.0)
 

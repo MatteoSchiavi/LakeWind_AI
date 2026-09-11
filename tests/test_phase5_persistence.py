@@ -417,15 +417,16 @@ class TestReviewUnits:
         init_db(temp_db, echo=False)
         reset_caches()
         t = utcnow().replace(tzinfo=None)
-        # A prediction at dongo_shore + a station observation at the same coords.
+        # A prediction at a current operational spot + a station observation
+        # at the same coords (evaluate_recent iterates settings operational ids).
         access.insert_prediction({
-            "point_id": "dongo_shore", "generated_at": t - timedelta(hours=2),
+            "point_id": "dongo", "generated_at": t - timedelta(hours=2),
             "valid_time": t, "model_version": "mos_v1_test",
             "wind_speed_kn": 8.0, "wind_dir_deg": 180.0, "wind_gust_kn": None,
             "confidence_pct": 80.0, "expected_error_kn": 2.0,
         })
         access.insert_observation({
-            "source": "arpa_test", "timestamp": t, "lat": 46.1230, "lon": 9.2850,
+            "source": "arpa_test", "timestamp": t, "lat": 46.1203, "lon": 9.2863,
             "wind_speed_kn": 7.0, "wind_dir_deg": 185.0, "confidence": 0.85,
         })
         from lakewind.ml.review import evaluate_recent
@@ -466,7 +467,9 @@ class TestInteriorGaps:
         hours = [0, 1, 2, 3, 4, 10, 11, 12]  # 5-hour hole between h4 and h10
         for h in hours:
             access.insert_forecast_run({
-                "model_name": "icon_eu", "point_id": "dongo_shore",
+                # "dongo" is a Phase 5.5 operational spot — the scanner walks
+                # settings.operational_point_ids, not legacy ids.
+                "model_name": "icon_eu", "point_id": "dongo",
                 "run_time": base + timedelta(hours=h - 3),
                 "valid_time": base + timedelta(hours=h),
                 "wind_speed_kn": 6.0,
@@ -476,7 +479,7 @@ class TestInteriorGaps:
         found = detect_interior_gaps(lookback_days=3)
         assert found["n_gaps"] == 1
         gap = found["gaps"][0]
-        assert gap["point_id"] == "dongo_shore"
+        assert gap["point_id"] == "dongo"
         assert gap["hours"] == pytest.approx(6.0)
 
     def test_continuous_history_has_no_gaps(self, temp_db):
@@ -485,7 +488,7 @@ class TestInteriorGaps:
         base = (NOW - timedelta(days=2)).replace(minute=0, second=0, microsecond=0)
         for h in range(10):
             access.insert_forecast_run({
-                "model_name": "icon_eu", "point_id": "dongo_shore",
+                "model_name": "icon_eu", "point_id": "dongo",
                 "run_time": base + timedelta(hours=h - 3),
                 "valid_time": base + timedelta(hours=h),
                 "wind_speed_kn": 6.0,

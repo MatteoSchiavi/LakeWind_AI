@@ -27,7 +27,7 @@ interface TrendRow {
 
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
-  const pointId = searchParams.get('point') || 'mid_channel';
+  const pointId = searchParams.get('point') || 'dongo';
   const hours = parseInt(searchParams.get('hours') || '24', 10);
 
   try {

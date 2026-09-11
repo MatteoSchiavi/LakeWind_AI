@@ -12,8 +12,9 @@ def test_settings_load():
     from lakewind.config import load_settings
 
     s = load_settings()
-    assert len(s.virtual_points) == 11  # 7 operational + 4 auxiliary
-    assert len(s.operational_point_ids) == 7
+    # Phase 5.5: 15 operational spots + 4 auxiliary gradient points
+    assert len(s.virtual_points) == 19
+    assert len(s.operational_point_ids) == 15
     # V6.6: collectors must request UTC — the systemic timezone fix
     assert s.open_meteo.timezone == "UTC"
     assert s.model.quantiles == [0.1, 0.5, 0.9]
@@ -22,8 +23,8 @@ def test_settings_load():
 def test_get_virtual_point():
     from lakewind.config import get_virtual_point
 
-    vp = get_virtual_point("mid_channel")
-    assert vp.lat == pytest.approx(46.10)
+    vp = get_virtual_point("dongo")
+    assert vp.lat == pytest.approx(46.12030)
     with pytest.raises(KeyError):
         get_virtual_point("does_not_exist")
 
@@ -80,26 +81,27 @@ def test_feature_builder_returns_obs_source(temp_db):
     """V6.6 REGRESSION: backtest source-split metrics read meta['obs_source'];
     the key was never set. With an ERA5 observation on the point, the meta must
     carry the source through."""
+    from lakewind.config import load_settings
     from lakewind.db import access
     from lakewind.features.build import build_features_for
 
     now = utcnow().replace(minute=0, second=0, microsecond=0)
-    # Store a forecast for the point (icon_eu reference)
-    access.bulk_insert_forecast_runs(
-        [
-            {
-                "model_name": "icon_eu",
-                "point_id": "mid_channel",
-                "run_time": now - timedelta(hours=6),
-                "valid_time": now,
-                "wind_speed_kn": 10.0,
-                "wind_dir_deg": 180.0,
-                "pressure_msl": 1013.0,
-                "temperature_2m": 24.0,
-                "shortwave_radiation": 500.0,
-            }
-        ]
-    )
+    # Store forecasts for the point (reference model + icon_eu)
+    fc_rows = [
+        {
+            "model_name": name,
+            "point_id": "dongo",
+            "run_time": now - timedelta(hours=6),
+            "valid_time": now,
+            "wind_speed_kn": 10.0,
+            "wind_dir_deg": 180.0,
+            "pressure_msl": 1013.0,
+            "temperature_2m": 24.0,
+            "shortwave_radiation": 500.0,
+        }
+        for name in ("icon_eu", load_settings().model.reference_model)
+    ]
+    access.bulk_insert_forecast_runs(fc_rows)
     # Store an ERA5 ground-truth observation exactly at the point (TARGET
     # side — anchored at the valid time)
     access.bulk_insert_observations(
@@ -107,8 +109,8 @@ def test_feature_builder_returns_obs_source(temp_db):
             {
                 "source": "era5_reanalysis",
                 "timestamp": now,
-                "lat": 46.10,
-                "lon": 9.304,
+                "lat": 46.1203,
+                "lon": 9.2863,
                 "wind_speed_kn": 8.0,
                 "wind_dir_deg": 200.0,
                 "confidence": 0.75,
@@ -131,7 +133,7 @@ def test_feature_builder_returns_obs_source(temp_db):
             }
         ]
     )
-    fr = build_features_for("mid_channel", now)
+    fr = build_features_for("dongo", now)
     assert fr is not None
     assert fr.meta.get("obs_source") == "era5_reanalysis"
     # Target must be present (obs + ref both complete)

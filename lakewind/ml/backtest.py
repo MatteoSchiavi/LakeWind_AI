@@ -112,7 +112,7 @@ def _materialize_test_samples(
     point_id: str,
     start: datetime,
     end: datetime,
-    reference_forecast_model: str = "icon_eu",
+    reference_forecast_model: str | None = None,
 ) -> list[dict[str, Any]]:
     """Build feature+target rows for the test window."""
     rows: list[dict[str, Any]] = []
@@ -315,7 +315,7 @@ def run_backtest(
     start: datetime | None = None,
     end: datetime | None = None,
     points: list[str] | None = None,
-    reference_forecast_model: str = "icon_eu",
+    reference_forecast_model: str | None = None,
 ) -> BacktestReport:
     """Walk-forward backtest comparing candidate vs. persistence vs. raw NWP.
 
@@ -324,6 +324,8 @@ def run_backtest(
     production would retrain per window).
     """
     s = load_settings()
+    if reference_forecast_model is None:
+        reference_forecast_model = s.model.reference_model
     end = end or utcnow()
     start = start or (end - timedelta(days=s.model.walk_forward.train_window_days + s.model.walk_forward.test_window_days * 4))
     pts = points or [p.id for p in s.virtual_points]

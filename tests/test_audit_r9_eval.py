@@ -12,12 +12,17 @@ from datetime import datetime, timedelta
 import numpy as np
 import pytest
 
+from lakewind.config import load_settings
 from lakewind.ml.backtest import (
     brier_score,
     event_probability,
     lead_bucket,
     reliability_bins,
 )
+
+
+def settings_ref() -> str:
+    return load_settings().model.reference_model
 
 
 class TestLeadBucket:
@@ -119,9 +124,10 @@ class TestRegistrySpeedMetrics:
         df = pd.DataFrame(
             {
                 "valid_time": [vt0 + timedelta(hours=i) for i in range(n)],
-                "point_id": "dongo_shore",
+                "point_id": "dongo",
                 "fc_icon_eu_speed": rng.uniform(4, 14, n),
-                "fc_icon_eu_dir": rng.uniform(0, 360, n),
+                f"fc_{settings_ref()}_speed": rng.uniform(4, 14, n),
+                f"fc_{settings_ref()}_dir": rng.uniform(0, 360, n),
                 "fc_icon_eu_gust": rng.uniform(6, 20, n),
                 "fc_ecmwf_ifs025_speed": rng.uniform(4, 14, n),
                 "target_u": rng.normal(0, 1.0, n),

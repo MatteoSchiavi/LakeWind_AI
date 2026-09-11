@@ -33,9 +33,19 @@ def get_shoreline() -> list[tuple[float, float]]:
         try:
             with open(geojson_path) as f:
                 data = json.load(f)
-            coords = data["features"][0]["geometry"]["coordinates"][0]
+            # Accept both FeatureCollection and bare Feature shapes
+            if data.get("type") == "FeatureCollection":
+                feature = data["features"][0]
+            else:
+                feature = data
+            coords = feature["geometry"]["coordinates"][0]
             _CACHE = [(float(lon), float(lat)) for lon, lat in coords]
-            logger.info("Loaded shoreline from %s (%d points)", geojson_path, len(_CACHE))
+            props = feature.get("properties", {})
+            logger.info(
+                "Loaded shoreline from %s (%d points, source=%s, area~%s km2)",
+                geojson_path, len(_CACHE), props.get("source", "unknown"),
+                props.get("area_km2_approx", "?"),
+            )
             return _CACHE
         except Exception as exc:
             logger.warning("Failed to load shoreline geojson: %s — using fallback", exc)

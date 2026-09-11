@@ -8,7 +8,11 @@ from datetime import datetime, timedelta
 import numpy as np
 import pandas as pd
 
-from lakewind.config import reset_caches
+from lakewind.config import load_settings, reset_caches
+
+
+def settings_ref() -> str:
+    return load_settings().model.reference_model
 
 
 class TestAblation:
@@ -25,9 +29,10 @@ class TestAblation:
         df = pd.DataFrame(
             {
                 "valid_time": [datetime(2026, 6, 1) + timedelta(hours=i) for i in range(n)],
-                "point_id": "dongo_shore",
+                "point_id": "dongo",
                 "fc_icon_eu_speed": rng.uniform(4, 14, n),
-                "fc_icon_eu_dir": rng.uniform(0, 360, n),
+                f"fc_{settings_ref()}_speed": rng.uniform(4, 14, n),
+                f"fc_{settings_ref()}_dir": rng.uniform(0, 360, n),
                 "fc_gfs_seamless_speed": rng.uniform(4, 14, n),
                 "fc_gfs_seamless_temp": rng.uniform(10, 25, n),
                 "target_u": rng.normal(0, 0.5, n),
@@ -59,9 +64,10 @@ class TestRegimeDirectionArtifact:
         df = pd.DataFrame(
             {
                 "valid_time": [datetime(2026, 6, 1) + timedelta(hours=i) for i in range(n)],
-                "point_id": "dongo_shore",
+                "point_id": "dongo",
                 "fc_icon_eu_speed": rng.uniform(4, 14, n),
-                "fc_icon_eu_dir": rng.uniform(150, 250, n),
+                f"fc_{settings_ref()}_speed": rng.uniform(4, 14, n),
+                f"fc_{settings_ref()}_dir": rng.uniform(150, 250, n),
                 "regime_breva": 1,
                 "regime_tivano": 0,
                 "regime_foehn": 0,
@@ -96,9 +102,10 @@ class TestRegimeDirectionArtifact:
         df = pd.DataFrame(
             {
                 "valid_time": [datetime(2026, 6, 1) + timedelta(hours=i) for i in range(n)],
-                "point_id": "dongo_shore",
+                "point_id": "dongo",
                 "fc_icon_eu_speed": rng.uniform(4, 14, n),
-                "fc_icon_eu_dir": rng.uniform(0, 360, n),
+                f"fc_{settings_ref()}_speed": rng.uniform(4, 14, n),
+                f"fc_{settings_ref()}_dir": rng.uniform(0, 360, n),
                 "target_u": rng.normal(0, 0.5, n),
                 "target_v": rng.normal(0, 0.5, n),
                 "target_weight": 1.0,
@@ -153,7 +160,7 @@ class TestPreviousRunsParser:
     def test_run_time_from_api_metadata(self):
         from lakewind.collector.historical_backfill import _parse_previous_runs
 
-        rows = _parse_previous_runs(self._payload(), "dongo_shore", "icon_eu")
+        rows = _parse_previous_runs(self._payload(), "dongo", "icon_eu")
         assert len(rows) == 2
         assert rows[0]["run_time"] == datetime(2026, 9, 9, 0, 0)
         assert rows[0]["lead_hours"] if False else True
@@ -165,13 +172,13 @@ class TestPreviousRunsParser:
 
         payload = self._payload(with_run_meta=False)
         payload["hourly"]["time"] = ["2026-09-09T16:00", "2026-09-09T17:00"]
-        rows = _parse_previous_runs(payload, "dongo_shore", "icon_eu")
+        rows = _parse_previous_runs(payload, "dongo", "icon_eu")
         assert rows[0]["run_time"] == datetime(2026, 9, 9, 15, 0)  # 3h cadence
 
     def test_rows_tagged_as_previous_runs_source(self):
         from lakewind.collector.historical_backfill import _parse_previous_runs
 
-        rows = _parse_previous_runs(self._payload(), "dongo_shore", "icon_eu")
+        rows = _parse_previous_runs(self._payload(), "dongo", "icon_eu")
         assert all(r["raw_json"]["source"] == "previous_runs_api" for r in rows)
 
     def test_empty_response_returns_no_rows(self):

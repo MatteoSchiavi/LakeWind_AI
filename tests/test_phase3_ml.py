@@ -73,7 +73,7 @@ AUX_TEMPS = {"zurich": 10.0, "milano": 22.0, "sondrio": 9.0,
 
 class TestValleyAxis:
     def test_along_axis_wind_full_projection(self):
-        out = compute_valley_axis_features(_base_fv(), "dongo_shore", axis_deg=10.0)
+        out = compute_valley_axis_features(_base_fv(), "dongo", axis_deg=10.0)
         # wind from 010° in a 010° axis: cos(0) = 1, along = +speed (down-valley)
         assert out["valley_align_icon_eu"] == pytest.approx(1.0, abs=1e-6)
         assert out["valley_along_icon_eu"] == pytest.approx(10.0, abs=1e-3)
@@ -82,20 +82,20 @@ class TestValleyAxis:
     def test_southerly_breva_negative_along(self):
         fv = _base_fv()
         fv["fc_icon_eu_dir"] = 190.0
-        out = compute_valley_axis_features(fv, "dongo_shore")
+        out = compute_valley_axis_features(fv, "dongo")
         assert out["valley_along_icon_eu"] == pytest.approx(-10.0, abs=0.05)
         assert out["valley_align_mean"] > 0.99
 
     def test_cross_valley_wind_blocked(self):
         fv = _base_fv()
         fv["fc_icon_eu_dir"] = 100.0  # perpendicular to the axis
-        out = compute_valley_axis_features(fv, "dongo_shore")
+        out = compute_valley_axis_features(fv, "dongo")
         assert abs(out["valley_along_icon_eu"]) < 0.2
         assert abs(out["valley_cross_icon_eu"]) > 9.5
 
     def test_per_point_override(self):
         assert valley_axis_deg_for("garda_n", 10.0, {"garda_n": 320.0}) == 320.0
-        assert valley_axis_deg_for("dongo_shore", 10.0, {"garda_n": 320.0}) == 10.0
+        assert valley_axis_deg_for("dongo", 10.0, {"garda_n": 320.0}) == 10.0
 
 
 class TestPressureTendency:
@@ -161,7 +161,7 @@ class TestThermalAndInsolation:
 
 class TestV7Composition:
     def test_compute_all_keys_present(self):
-        out = compute_all_v7_physics(_base_fv(), "dongo_shore", AUX_TEMPS)
+        out = compute_all_v7_physics(_base_fv(), "dongo", AUX_TEMPS)
         for key in ("valley_align_icon_eu", "ptend_3h", "gust_factor_icon_eu",
                     "xm_speed_mean", "therm_lake_valley", "insol_effective",
                     "stability_x_speed"):
@@ -294,16 +294,18 @@ class TestBuilderV7Presence:
         from lakewind.utils.timeutil import utcnow
 
         t = (utcnow() - timedelta(hours=3)).replace(minute=0, second=0, microsecond=0)
-        # seed minimal forecasts for the point + one aux point
-        for pid in ("dongo_shore", "zurich", "milano_linate"):
+        # seed minimal forecasts for the point + one aux point (reference
+        # model included — the builder requires it since Phase 5.5)
+        ref = load_settings().model.reference_model
+        for pid in ("dongo", "zurich", "milano_linate"):
             access.bulk_insert_forecast_runs([{
-                "model_name": "icon_eu", "point_id": pid,
+                "model_name": name, "point_id": pid,
                 "run_time": t - timedelta(hours=6), "valid_time": t,
                 "wind_speed_kn": 8.0, "wind_dir_deg": 190.0, "wind_gust_kn": 12.0,
                 "pressure_msl": 1014.0, "temperature_2m": 18.0,
-            }])
+            } for name in {ref, "icon_eu"}])
         # seed an observation so the sample has a target
-        vp = next(p for p in load_settings().virtual_points if p.id == "dongo_shore")
+        vp = next(p for p in load_settings().virtual_points if p.id == "dongo")
         from lakewind.utils.wind import WindVector
         u, v = WindVector(speed_kn=8.0, direction_deg=190.0).to_uv()
         access.bulk_insert_observations([{
@@ -312,7 +314,7 @@ class TestBuilderV7Presence:
             "wind_speed_kn": 9.0, "wind_dir_deg": 185.0, "wind_gust_kn": 14.0,
             "temperature": 18.0, "quality_flag": "ok", "confidence": 0.75,
         }])
-        fr = build_features_for("dongo_shore", t)
+        fr = build_features_for("dongo", t)
         assert fr is not None
         v7 = {k for k in fr.feature_vector if is_v7_feature(k)}
         assert "ptend_3h" in v7 or True  # lags absent in a 3h-old DB → None is fine

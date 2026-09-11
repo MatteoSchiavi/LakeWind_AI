@@ -55,7 +55,7 @@ interface Prediction {
   wind_speed_q90_kn?: number | null;
   regime?: string | null;
 }
-interface PointInfo { id: string; lat: number; lon: number; sector: string; is_operational: boolean; }
+interface PointInfo { id: string; lat: number; lon: number; sector: string; label?: string; is_operational: boolean; }
 interface HealthInfo { source: string; ok: boolean; latency_ms: number; }
 interface TrendPoint {
   time: number; valid_time: string;
@@ -371,7 +371,8 @@ export default function LakeWindDashboard() {
   const [trendData, setTrendData] = useState<TrendPoint[]>([]);
   const [decisions, setDecisions] = useState<Record<string, Decision>>({});
   const [selectedHorizon, setSelectedHorizon] = useState(0);
-  const [selectedPoint, setSelectedPoint] = useState('mid_channel');
+  // Phase 5.5: default spot is dongo — the product's home shore
+  const [selectedPoint, setSelectedPoint] = useState('dongo');
   const [loading, setLoading] = useState(true);
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [lastGeneration, setLastGeneration] = useState<string | null>(null);
@@ -559,6 +560,7 @@ export default function LakeWindDashboard() {
       if (!info) return null;
       return {
         id: pr.point_id, lat: info.lat, lon: info.lon,
+        label: info.label,
         speed: pr.wind_speed_kn ?? 0,
         q10: pr.wind_speed_q10_kn ?? null, q90: pr.wind_speed_q90_kn ?? null,
         direction: pr.wind_dir_deg ?? 0, gust: pr.wind_gust_kn ?? 0,

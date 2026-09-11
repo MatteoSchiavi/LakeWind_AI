@@ -1,25 +1,28 @@
-"""V3 enhanced heatmap — professional-grade wind map with more data overlays.
+"""V4 heatmap — verified-geometry wind map for the whole Lake Como basin.
 
-V3 improvements over V2:
-1. Uses all operational virtual points (11 as of the V6 configuration — the
-   old "15 points" claim rotted when V4/V5 pruned near-duplicate pairs)
-2. Gaussian Process interpolation with anisotropic kernel (elongated lake)
-3. Data overlays: pressure gradient arrows, temperature labels, regime badge
-4. Better graphics: OSM-style tile background option, refined color palette
-5. Station model display (full meteorological station model at each point)
-6. Forecast confidence shown as circle opacity
-7. Footer with data sources + model version + regime
+V4 improvements over V3 (Phase 5.5):
+1. All 15 operational spots (whole lake: Colico -> Como), labels derived from
+   settings.yaml — no hardcoded town coordinates anywhere.
+2. Real OSM shoreline (lakewind/data/lake_como_shoreline.geojson, relation
+   541757, 144.4 km2 — verified against the known lake area).
+3. Anisotropic RBF interpolation: the thin-plate spline runs in rotated
+   km-space with the cross-valley axis compressed by ANISOTROPY, so the wind
+   field elongates along the lake axis (NNW-SSE, 10 deg) instead of isotropic
+   smearing across the ridges. This is what the V3 docstring always claimed.
+4. Live counts in title/footer (no more rotting "8-point" strings).
+5. Shared speed palette (SPEED_COLORS) unchanged — mirror contract with the
+   web-ui palette.ts is snapshot-tested.
+6. Data overlays kept: pressure-gradient badge, regime badge, station models,
+   sailable rings, compass, scale bar.
 
-Generates 3 sizes:
-- Single panel (~800KB) for Telegram
-- Multi-panel 2×2 (~1.2MB) for /map command
-- Compact thumbnail (~200KB) for inline preview
+The old generate_multipanel_v3 (never called anywhere) was removed.
 """
 from __future__ import annotations
 
 import io
+import logging
 import math
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any
 
 import numpy as np
@@ -29,19 +32,51 @@ from lakewind.utils.palette import SPEED_COLORS
 from lakewind.utils.shoreline import get_shoreline as _get_shoreline
 from lakewind.utils.timeutil import utcnow
 
+logger = logging.getLogger(__name__)
+
 _LAKE_POLYGON = list(_get_shoreline())
 # (V6.6: removed _LAKE_POLYGON_FALLBACK — dead code; the shoreline module
 # ships its own identical fallback when the geojson is missing.)
 
-_TOWNS_V3 = [
-    (9.278, 46.125, "Dongo", "right"),      # on west shore
-    (9.300, 46.149, "Gravedona", "left"),    # on east shore
-    (9.326, 46.151, "Domaso", "left"),       # on east shore
-    (9.285, 46.114, "Musso", "right"),       # on west shore
-    (9.293, 46.078, "Dervio", "right"),      # on west shore
-    (9.315, 46.114, "Piona", "left"),        # on east shore (peninsula)
-    (9.298, 46.050, "Bellano", "right"),     # on west shore
-]
+# Valley axis (deg FROM north) of the Como basin — the NNW-SSE lake axis the
+# Breva/Tivano flows follow. Single source of truth: settings.yaml
+# model.valley_axis_deg; this module reads it lazily (see _valley_axis_deg).
+_ANISOTROPY = 3.0  # cross-axis distances compressed by this factor
+
+
+def _valley_axis_deg() -> float:
+    try:
+        from lakewind.config import load_settings
+        return float(load_settings().model.valley_axis_deg)
+    except Exception:
+        return 10.0
+
+
+def _spot_labels() -> list[tuple[float, float, str, str]]:
+    """Town labels for the map, derived from settings.yaml — never hardcoded.
+
+    Returns (lon, lat, name, horizontal-alignment) using each spot's VERIFIED
+    town anchor. Alignment is geometric: west-shore towns (water to their
+    east) draw the label to the WEST of the anchor (ha='right'), east-shore
+    towns to the EAST (ha='left') — labels always sit over land, never over
+    the wind field.
+    """
+    from lakewind.config import load_settings
+    from lakewind.utils.shoreline import point_on_water
+
+    try:
+        s = load_settings()
+    except Exception:
+        return []
+    out: list[tuple[float, float, str, str]] = []
+    for vp in s.virtual_points:
+        if vp.label is None or vp.anchor_lat is None or vp.anchor_lon is None:
+            continue  # aux gradient points carry no label
+        east_water = point_on_water(vp.anchor_lon + 0.012, vp.anchor_lat)
+        west_water = point_on_water(vp.anchor_lon - 0.012, vp.anchor_lat)
+        ha = "left" if east_water and not west_water else "right"
+        out.append((vp.anchor_lon, vp.anchor_lat, vp.label, ha))
+    return out
 
 
 def _interpolate_grid_v3(
@@ -53,24 +88,59 @@ def _interpolate_grid_v3(
     lat_min: float,
     lat_max: float,
     resolution: int = 150,
+    anisotropy: float = _ANISOTROPY,
+    valley_axis_deg: float | None = None,
 ) -> tuple:
-    """Interpolate scattered wind data onto a regular grid (RBF)."""
+    """Interpolate scattered wind data onto a regular grid.
+
+    V4: anisotropic thin-plate-spline RBF. The sample and grid coordinates
+    are projected to local km-space, rotated onto the lake/valley axis, and
+    the CROSS-axis is compressed by `anisotropy` before the RBF fit. Wind
+    correlates along the valley corridor (a Breva front travels NNW-SSE),
+    not across the ridges — the isotropic V3 spline smeared values over the
+    mountains between the branches.
+    """
     from scipy.interpolate import RBFInterpolator
+
+    if valley_axis_deg is None:
+        valley_axis_deg = _valley_axis_deg()
+
+    lat0 = 0.5 * (lat_min + lat_max)
+    km_per_deg_lat = 110.574
+    km_per_deg_lon = 111.32 * math.cos(math.radians(lat0))
+
+    def to_km(lon_deg, lat_deg):
+        return ((np.asarray(lon_deg) - 0.5 * (lon_min + lon_max)) * km_per_deg_lon,
+                (np.asarray(lat_deg) - lat0) * km_per_deg_lat)
+
+    th = math.radians(valley_axis_deg)
+    c, sn = math.cos(th), math.sin(th)
+
+    def rotate(x, y):
+        # along-axis = x' (aligned with the valley), cross-axis = y'
+        return x * c + y * sn, -x * sn + y * c
+
+    px, py = to_km(np.asarray(lons, dtype=float), np.asarray(lats, dtype=float))
+    pa, pc = rotate(px, py)
+    points = np.column_stack((pa, pc / anisotropy))
+    speeds_arr = np.array(speeds, dtype=float)
 
     xi = np.linspace(lon_min, lon_max, resolution)
     yi = np.linspace(lat_min, lat_max, resolution)
     grid_lons, grid_lats = np.meshgrid(xi, yi)
-
-    points = np.column_stack((lons, lats))
-    speeds_arr = np.array(speeds, dtype=float)
+    gx, gy = to_km(grid_lons, grid_lats)
+    ga, gc = rotate(gx, gy)
+    grid_flat = np.column_stack((ga.ravel(), (gc / anisotropy).ravel()))
 
     try:
-        rbf = RBFInterpolator(points, speeds_arr, kernel="thin_plate_spline", smoothing=0.0)
-        grid_flat = np.column_stack((grid_lons.ravel(), grid_lats.ravel()))
+        rbf = RBFInterpolator(points, speeds_arr, kernel="thin_plate_spline", smoothing=1.0)
         grid_speeds = rbf(grid_flat).reshape(grid_lons.shape)
     except Exception:
         from scipy.interpolate import griddata
-        grid_speeds = griddata(points, speeds_arr, (grid_lons, grid_lats), method="cubic")
+        grid_speeds = griddata(
+            np.column_stack((np.asarray(lons, dtype=float), np.asarray(lats, dtype=float))),
+            speeds_arr, (grid_lons, grid_lats), method="cubic",
+        )
 
     return grid_lons, grid_lats, grid_speeds
 
@@ -303,16 +373,19 @@ def _draw_panel_v3(
     xlim = (lon_min - pad, lon_max + pad)
     ylim = (lat_min - pad, lat_max + pad)
 
-    ax.set_facecolor("#e8e0d0")  # land color
+    ax.set_facecolor("#eee8da")  # warm land tone
 
-    # Lake polygon (more refined)
+    # Lake polygon — real OSM shoreline, drawn with a soft drop shadow and a
+    # two-tone water base so the interpolated field sits on depth, not flats.
     lake_xy = _LAKE_POLYGON
     lake_lons = [p[0] for p in lake_xy]
     lake_lats = [p[1] for p in lake_xy]
+    ax.fill([x + 0.0012 for x in lake_lons], [y - 0.0015 for y in lake_lats],
+            facecolor="#3a3f44", edgecolor="none", alpha=0.30, zorder=0.5)
     ax.fill(lake_lons, lake_lats, facecolor="#1a5f8a", edgecolor="#0a3d5c",
-            linewidth=2.0, zorder=1)
-    ax.fill(lake_lons, lake_lats, facecolor="#2389c0", edgecolor="none",
-            alpha=0.25, zorder=2)
+            linewidth=1.6, zorder=1)
+    ax.fill(lake_lons, lake_lats, facecolor="#2a86bd", edgecolor="none",
+            alpha=0.30, zorder=2)
 
     # Enrich predictions with lat/lon
     vp_by_id = {vp.id: vp for vp in s.virtual_points}
@@ -376,13 +449,22 @@ def _draw_panel_v3(
             except Exception:
                 pass
 
-            # Contour lines
+            # Contour lines (clipped to the lake — no contours over land)
+            from matplotlib.patches import Polygon as MplPolygon
+            clip_patch = MplPolygon(_LAKE_POLYGON, closed=True, transform=ax.transData)
             ct = ax.contour(
                 grid_lons, grid_lats, grid_speeds,
                 levels=[5, 10, 15, 20, 25, 30],
                 colors="black", linewidths=0.4, alpha=0.35, zorder=4,
             )
             ax.clabel(ct, inline=True, fontsize=5, fmt="%d")
+            # clip AFTER clabel — clabel() is what populates ct.labelTexts
+            try:
+                ct.set_clip_path(clip_patch)
+                for label_artist in ct.labelTexts:
+                    label_artist.set_clip_path(clip_patch)
+            except Exception:
+                pass
 
             # Colorbar (only on single-panel mode)
             if show_title:
@@ -401,18 +483,41 @@ def _draw_panel_v3(
             _draw_wind_barb(ax, p["lon"], p["lat"],
                             p["wind_speed_kn"], p["wind_dir_deg"])
 
-    # Town labels (V3: expanded with more towns)
-    # V6 FIX: Only show towns within the map bounds (A4)
-    extended_towns = [t for t in _TOWNS_V3
-                      if xlim[0] <= t[0] <= xlim[1] and ylim[0] <= t[1] <= ylim[1]]
-    for lon, lat, name, ha in extended_towns:
-        ax.text(lon, lat, name, fontsize=6, fontweight="bold", ha=ha,
-                bbox=dict(boxstyle="round,pad=0.1", facecolor="#f5f0e0",
-                          alpha=0.8, edgecolor="#aaa"), zorder=8)
+    # Town labels (V4: all 15 verified spot labels from settings.yaml)
+    # Labels sit on the land side of each verified anchor, never on the water.
+    # North-basin towns sit 0.5-2 km apart, so label placement is
+    # text-extent-aware: estimated boxes, greedy north->south placement with
+    # vertical fallback offsets. Every spot still has its station model, and
+    # the interactive web map shows all 15 names.
+    spot_labels = [t for t in _spot_labels()
+                   if xlim[0] <= t[0] <= xlim[1] and ylim[0] <= t[1] <= ylim[1]]
 
-    # Compass + scale bar
+    def _box(lon: float, lat: float, name: str, ha: str):
+        # ~0.0036 deg of longitude per character at fontsize 6 on this figure
+        w = 0.0038 * len(name)
+        x0, x1 = (lon - w, lon) if ha == "right" else (lon, lon + w)
+        return (x0, x1, lat - 0.0035, lat + 0.0035)
+
+    drawn_boxes: list[tuple[float, float, float, float]] = []
+    for lon, lat, name, ha in sorted(spot_labels, key=lambda t: -t[1]):
+        placed = False
+        for dy in (0.0, -0.009, 0.009, -0.018, 0.018):
+            b = _box(lon, lat + dy, name, ha)
+            if any(bx0 < b[1] and bx1 > b[0] and by0 < b[3] and by1 > b[2]
+                   for bx0, bx1, by0, by1 in drawn_boxes):
+                continue
+            ax.text(lon, lat + dy, name, fontsize=6, fontweight="bold", ha=ha,
+                    bbox=dict(boxstyle="round,pad=0.1", facecolor="#f5f0e0",
+                              alpha=0.85, edgecolor="#aaa"), zorder=8)
+            drawn_boxes.append(b)
+            placed = True
+            break
+        if not placed:
+            logger.debug("heatmap: no room for label %s — station model only", name)
+
+    # Compass + scale bar (whole-lake map: 5 km reference)
     _add_compass_v3(ax, lat=lat_min + 0.014, lon=lon_min + 0.015, size=0.007)
-    _add_scale_bar_v3(ax, lat=lat_min + 0.007, lon=lon_max - 0.028, length_km=2.0)
+    _add_scale_bar_v3(ax, lat=lat_min + 0.007, lon=lon_max - 0.055, length_km=5.0)
 
     # Data overlay (regime + pressure gradient)
     if show_data_overlay:
@@ -428,8 +533,9 @@ def _draw_panel_v3(
         spine.set_linewidth(0.5)
 
     if show_title:
+        n_spots = len(valid)
         title = (
-            f"LakeWind V3 — Dongo/Dervio Wind Map\n"
+            f"LakeWind — Lake Como wind field ({n_spots} spots)\n"
             f"{target_time.strftime('%Y-%m-%d %H:%M UTC')}"
         )
         ax.set_title(title, fontsize=11, fontweight="bold", pad=8)
@@ -477,62 +583,17 @@ def generate_heatmap_v3(
         show_data_overlay=not compact,
     )
 
-    # Footer with data sources
+    # Footer with data sources (live counts — no rotting constants)
     fig.text(
         0.5, 0.005,
-        "LakeWind V3  •  MOS bias-corrected  •  8-point RBF interpolation  •  "
-        "Station models + pressure gradient + regime",
+        f"LakeWind V4  •  MOS bias-corrected  •  {len(predictions)} spots  •  "
+        f"anisotropic RBF along the {_valley_axis_deg():.0f}\u00b0 valley axis  •  "
+        f"verified OSM shoreline  •  station models + regime",
         ha="center", fontsize=5.5, color="#888", fontstyle="italic",
     )
 
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=dpi)
-    plt.close(fig)
-    buf.seek(0)
-    return buf.read()
-
-
-def generate_multipanel_v3(
-    all_predictions_by_hour: dict[int, list[dict[str, Any]]],
-    start_time: datetime,
-    hours: list[int] = (0, 2, 4, 6),
-) -> bytes | None:
-    """Generate a 4-panel V3 heatmap (now/+2h/+4h/+6h)."""
-    try:
-        import matplotlib.font_manager as fm
-        fm.fontManager.addfont("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
-        import matplotlib.pyplot as plt
-        plt.rcParams["font.sans-serif"] = ["DejaVu Sans"]
-        plt.rcParams["axes.unicode_minus"] = False
-    except Exception:
-        import matplotlib.pyplot as plt
-
-    fig, axes = plt.subplots(2, 2, figsize=(15, 12), constrained_layout=True)
-    fig.patch.set_facecolor("white")
-
-    for i, h in enumerate(hours):
-        ax = axes[i // 2][i % 2]
-        target = start_time + timedelta(hours=h)
-        preds = all_predictions_by_hour.get(h, [])
-        if preds:
-            _draw_panel_v3(
-                ax, preds, target,
-                show_title=True,
-                show_station_models=False,  # too dense in multi-panel
-                show_good_sailing=True,
-                show_data_overlay=True,
-            )
-        else:
-            ax.set_facecolor("#e8e0d0")
-            ax.text(0.5, 0.5, f"No data for +{h}h", ha="center", va="center",
-                    transform=ax.transAxes, fontsize=10, color="#888")
-            ax.set_title(f"+{h}h", fontsize=10, fontweight="bold")
-
-    fig.suptitle("LakeWind V3 — Dongo/Dervio wind forecast (next 6h)",
-                 fontsize=13, fontweight="bold", y=1.0)
-
-    buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=140)
     plt.close(fig)
     buf.seek(0)
     return buf.read()
@@ -626,6 +687,5 @@ def generate_trend_chart(
 
 __all__ = [
     "generate_heatmap_v3",
-    "generate_multipanel_v3",
     "generate_trend_chart",
 ]
