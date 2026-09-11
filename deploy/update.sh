@@ -4,11 +4,12 @@
 # This script runs ON THE T420 to pull the latest code from your git repo
 # and restart the services. It's designed to be safe:
 #   1. Pulls latest code from git
-#   2. Backs up the current DB + models
-#   3. Rebuilds the Docker image
-#   4. Restarts the container
-#   5. Health-checks the new container
-#   6. If health check fails, rolls back automatically
+#   2. Rebuilds the Docker image (old container keeps serving during build)
+#   3. Stops the container (releases the DuckDB single-writer lock)
+#   4. Backs up the DB + models (no writer — a plain copy is consistent)
+#   5. Starts the new container
+#   6. Health-checks the new container
+#   7. If health check fails, rolls back automatically
 #
 # Usage on T420:
 #   ./update.sh              # pull from origin/main and restart
@@ -111,36 +112,7 @@ if $DO_PULL; then
     log "Updated to commit: $NEW_COMMIT"
 fi
 
-# --- Step 3: Backup DB + models ---
-TIMESTAMP=$(date '+%Y%m%d_%H%M%S')
-mkdir -p "$BACKUP_DIR"
-if docker ps --format '{{.Names}}' | grep -q '^lakewind$'; then
-    # Phase 5 (S1/F4): back up through the app's own consistent path
-    # (CHECKPOINT + post-copy verification) instead of a raw cp of the live
-    # file, which can tear while the pipeline writes.
-    log "Backing up database (via lakewind backup)..."
-    docker exec lakewind lakewind backup --dest /app/data/backups >> /tmp/lakewind-update-backup.log 2>&1 \
-        || warn "In-container backup failed — falling back to raw copy"
-    if ! ls "$BACKUP_DIR"/lakewind_backup_*.duckdb >/dev/null 2>&1; then
-        cp "$REPO_DIR/data/lakewind.duckdb" "$BACKUP_DIR/lakewind_${TIMESTAMP}.duckdb"
-    fi
-else
-    # Container not running → no writer holds the lock → plain cp is safe.
-    if [ -f "$REPO_DIR/data/lakewind.duckdb" ]; then
-        log "Backing up database (container down — direct copy)..."
-        cp "$REPO_DIR/data/lakewind.duckdb" "$BACKUP_DIR/lakewind_${TIMESTAMP}.duckdb"
-    fi
-fi
-# Keep only last 5 backups
-ls -t "$BACKUP_DIR"/lakewind_*.duckdb 2>/dev/null | tail -n +6 | xargs -r rm
-if [ -d "$REPO_DIR/data/models" ]; then
-    log "Backing up models..."
-    tar -czf "$BACKUP_DIR/models_${TIMESTAMP}.tar.gz" -C "$REPO_DIR/data" models/ 2>/dev/null || true
-    ls -t "$BACKUP_DIR"/models_*.tar.gz | tail -n +6 | xargs -r rm
-    ok "Models backed up"
-fi
-
-# --- Step 4: Rebuild Docker image ---
+# --- Step 3: Rebuild Docker image (service still up — no downtime yet) ---
 log "Rebuilding Docker image..."
 if ! docker compose build --no-cache 2>&1 | tail -5; then
     err "Docker build failed. Rolling back."
@@ -151,13 +123,35 @@ if ! docker compose build --no-cache 2>&1 | tail -5; then
 fi
 ok "Docker image rebuilt"
 
-# --- Step 5: Restart container ---
-log "Restarting container..."
+# --- Step 4: Stop the container (releases the DuckDB single-writer lock) ---
+log "Stopping container..."
 docker compose down
-docker compose up -d
-ok "Container restarted"
 
-# --- Step 6: Health check ---
+# --- Step 5: Backup DB + models (writer is DOWN — a plain copy is now both
+# safe and consistent; backing up a LIVE file with the service holding the
+# single-writer lock is impossible for any CLI process and tear-prone with
+# raw cp, which is exactly the failure mode this order eliminates) ---
+TIMESTAMP=$(date '+%Y%m%d_%H%M%S')
+mkdir -p "$BACKUP_DIR"
+if [ -f "$REPO_DIR/data/lakewind.duckdb" ]; then
+    log "Backing up database (container down — direct copy)..."
+    cp "$REPO_DIR/data/lakewind.duckdb" "$BACKUP_DIR/lakewind_${TIMESTAMP}.duckdb"
+fi
+# Keep only last 5 backups
+ls -t "$BACKUP_DIR"/lakewind_*.duckdb 2>/dev/null | tail -n +6 | xargs -r rm
+if [ -d "$REPO_DIR/data/models" ]; then
+    log "Backing up models..."
+    tar -czf "$BACKUP_DIR/models_${TIMESTAMP}.tar.gz" -C "$REPO_DIR/data" models/ 2>/dev/null || true
+    ls -t "$BACKUP_DIR"/models_*.tar.gz | tail -n +6 | xargs -r rm
+    ok "Models backed up"
+fi
+
+# --- Step 6: Start the new container ---
+log "Starting container..."
+docker compose up -d
+ok "Container started"
+
+# --- Step 7: Health check ---
 log "Health check (waiting up to ${HEALTH_TIMEOUT}s)..."
 HEALTH_OK=false
 for i in $(seq 1 $HEALTH_TIMEOUT); do

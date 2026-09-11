@@ -335,6 +335,12 @@ db:
   image_cache_retention_days: 7
   model_bundle_keep: 8
 
+  # System-check hardening — DuckDB resource governance (t420-safe defaults).
+  # DuckDB otherwise assumes 80% of HOST RAM; inside a capped container that
+  # is an OOM hazard. Keep memory_limit well under the container budget.
+  duckdb_memory_limit: "1536MB"
+  duckdb_threads: 2
+
 # Logging
 logging:
   level: "INFO"

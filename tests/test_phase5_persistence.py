@@ -568,16 +568,31 @@ class TestDeployConsistency:
             assert "8501" not in code, f":8501 referenced in {path}"
 
     def test_entrypoint_starts_next_ui(self):
+        # System-check revision: the no-token branch runs `serve-all` (pipeline
+        # loop + API in ONE process — DuckDB's single-writer lock makes two
+        # processes mutually exclusive, the old pipeline-loop+serve-api pair
+        # crash-looped the loser). serve-bot keeps running all three in-process.
         code = "\n".join(self._code_lines(self.ENTRYPOINT))
         assert "node server.js" in code
         assert "serve-bot" in code
-        assert "pipeline-loop" in code
-        assert "serve-api" in code
+        assert "serve-all" in code
 
     def test_update_health_checks_api(self):
         code = "\n".join(self._code_lines(self.UPDATE))
         assert "http://localhost:8000/api/health" in code
-        assert "lakewind backup" in code  # consistent backup path (F4)
+
+    def test_update_backs_up_after_container_down(self):
+        # System-check revision (F4 re-fixed): the previous flow ran
+        # `docker exec ... lakewind backup` while the container held the
+        # single-writer lock — that CLI can NEVER open the DB, so every
+        # update silently fell back to a tear-prone raw cp of the live file.
+        # New order: build → down → plain-cp backup (safe + consistent) → up.
+        code = "\n".join(self._code_lines(self.UPDATE))
+        down_at = code.find("docker compose down")
+        backup_at = code.find('cp "$REPO_DIR/data/lakewind.duckdb"')
+        up_at = code.find("docker compose up -d", down_at)
+        assert down_at != -1 and backup_at != -1 and up_at != -1
+        assert down_at < backup_at < up_at
 
     def test_pipeline_timer_deleted(self):
         assert not (REPO_ROOT / "deploy" / "t420_pipeline_timer.sh").exists()

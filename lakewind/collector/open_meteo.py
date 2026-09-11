@@ -26,6 +26,50 @@ from lakewind.utils.timeutil import utcnow
 logger = logging.getLogger(__name__)
 
 
+def demultiplex_hourly(
+    hourly: dict[str, list], models: list[str]
+) -> tuple[dict[str, dict[str, list]], dict[str, list]]:
+    """Split a multi-model Open-Meteo hourly payload into per-model blocks.
+
+    Open-Meteo has used TWO key layouts for the comma-separated `models`
+    parameter:
+
+      - model-PREFIXED (historical, verified 2026-09-10):
+        ``icon_d2_wind_speed_10m``
+      - model-SUFFIXED (observed 2026-09-11 — the layout switched upstream
+        without notice): ``wind_speed_10m_icon_d2``
+
+    Both are handled here so an upstream format flip can never again
+    silently degrade every model block into the single-model fallback (the
+    2026-09-11 incident stored 1848 all-NaN icon_d2 rows and starved the
+    reference model, killing the entire prediction cycle). Matching is
+    longest-slug-first with an explicit ``_`` boundary on both ends.
+
+    Returns ``(per_model, unprefixed)``: per_model maps model -> variable
+    dict; unprefixed holds keys that matched no model (the single-model
+    response shape fallback handled by the caller).
+    """
+    per_model: dict[str, dict[str, list]] = {}
+    unprefixed: dict[str, list] = {}
+    match_order = sorted(models, key=len, reverse=True)
+    for key, values in hourly.items():
+        if key == "time":
+            continue  # shared axis, attached per emitted model by the caller
+        matched = False
+        for m in match_order:
+            if key.startswith(m + "_"):
+                per_model.setdefault(m, {})[key[len(m) + 1:]] = values
+                matched = True
+                break
+            if key.endswith("_" + m):
+                per_model.setdefault(m, {})[key[: -(len(m) + 1)]] = values
+                matched = True
+                break
+        if not matched:
+            unprefixed[key] = values
+    return per_model, unprefixed
+
+
 class OpenMeteoCollector(BaseCollector):
     source_name = "open_meteo"
 
@@ -53,9 +97,6 @@ class OpenMeteoCollector(BaseCollector):
         out: list[dict[str, Any]] = []
         session = requests.Session()
         models = list(self.cfg.models)
-        # Longest-first so "icon_eu" can't shadow-match a longer slug's prefix
-        # (or vice versa) during demultiplexing.
-        match_order = sorted(models, key=len, reverse=True)
         for pt in self.points:
             params = {
                 "latitude": pt.lat,
@@ -81,21 +122,7 @@ class OpenMeteoCollector(BaseCollector):
 
             hourly = data.get("hourly", {}) or {}
             shared_time = hourly.get("time")
-            per_model: dict[str, dict[str, list]] = {}
-            unprefixed: dict[str, list] = {}
-            for key, values in hourly.items():
-                if key == "time":
-                    continue  # shared axis, attached per emitted model below
-                matched = False
-                for m in match_order:
-                    if key.startswith(m + "_"):
-                        per_model.setdefault(m, {})[key[len(m) + 1:]] = values
-                        matched = True
-                        break
-                if not matched:
-                    # Fallback: API ignored the models list (single-model
-                    # response shape) — remember these keys.
-                    unprefixed[key] = values
+            per_model, unprefixed = demultiplex_hourly(hourly, models)
 
             if not per_model and unprefixed:
                 # Single-model shape: the payload belongs to the FIRST
@@ -189,9 +216,28 @@ class OpenMeteoCollector(BaseCollector):
         return rows
 
     def validate(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Physical limits + drop wind-less rows (payload-mismatch guard).
+
+        A forecast row with NEITHER wind speed NOR gust cannot serve any
+        downstream consumer; storing it poisons the training window and —
+        worse — silently starves predict_at (all-NaN blocks). Rows like this
+        only appeared after upstream payload-format changes; they are now
+        rejected at the door and logged.
+        """
+        kept: list[dict[str, Any]] = []
         for r in rows:
             apply_physical_limits(r)
-        return rows
+            if r.get("wind_speed_kn") is None and r.get("wind_gust_kn") is None:
+                continue
+            kept.append(r)
+        dropped = len(rows) - len(kept)
+        if dropped:
+            logger.warning(
+                "Open-Meteo: dropped %d/%d rows with no wind data — upstream "
+                "payload layout mismatch? (demultiplex keys changed?)",
+                dropped, len(rows),
+            )
+        return kept
 
     def store(self, rows: list[dict[str, Any]]) -> int:
         return access.bulk_insert_forecast_runs(rows)

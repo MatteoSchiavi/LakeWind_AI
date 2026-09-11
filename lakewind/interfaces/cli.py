@@ -659,6 +659,43 @@ def serve_api() -> None:
     uvicorn.run(create_app(), host=s.api.host, port=s.api.port, log_level="warning")
 
 
+@app.command("serve-all")
+def serve_all() -> None:
+    """Run the pipeline loop + internal API in ONE process (no Telegram).
+
+    System-check hardening: the no-token entrypoint branch used to start
+    `pipeline-loop` and `serve-api` as two SEPARATE processes — DuckDB's
+    single-writer file lock means the second process can never open the
+    database (4×0.6s retry then fail, supervisor crash-loop). One process,
+    both services, no conflict.
+    """
+    _setup_logging()
+    import asyncio
+
+    import uvicorn
+
+    from lakewind import pipeline_loop
+    from lakewind.api import create_app
+
+    async def _main() -> None:
+        s = load_settings()
+        config = uvicorn.Config(
+            create_app(), host=s.api.host, port=s.api.port, log_level="warning"
+        )
+        server = uvicorn.Server(config)
+        pipeline_loop.start_background()
+        console.print(
+            f"[bold]LakeWind serve-all: pipeline loop + API on "
+            f"{s.api.host}:{s.api.port}[/bold]"
+        )
+        await server.serve()
+
+    try:
+        asyncio.run(_main())
+    except KeyboardInterrupt:
+        console.print("[yellow]serve-all stopped.[/yellow]")
+
+
 @app.command("pipeline-loop")
 def pipeline_loop_cmd() -> None:
     """Run the scheduled pipeline (collect+predict+artifacts) without Telegram."""
@@ -833,7 +870,8 @@ def maintenance(
             f"[green]  secondary: source_health={stats['source_health_deleted']}, "
             f"pipeline_log={stats['pipeline_log_deleted']}, "
             f"image_cache={stats['image_cache_deleted']}, "
-            f"experiment_attempts={stats['experiment_attempts_deleted']}[/green]"
+            f"experiment_attempts={stats['experiment_attempts_deleted']}, "
+            f"garbage_forecasts={stats.get('garbage_forecasts_deleted', 0)}[/green]"
         )
     if not did_something:
         console.print("Nothing to do — pass --compact-raw-json and/or --retention (see --help).")
@@ -860,7 +898,9 @@ def backup_cmd(
 
 @app.command("restore")
 def restore_cmd(
-    backup: Path = typer.Argument(..., help="Path to a lakewind_backup_*.duckdb file"),  # noqa: B008 — typer idiom
+    # noqa B008 on its own line keeps the typer idiom lint-clean across the
+    # multiline call; ruff attributes B008 to the parameter line.
+    backup: Path | None = typer.Argument(None, help="Path to a lakewind_backup_*.duckdb file (optional with --list)"),  # noqa: B008 — typer idiom
     list_backups: bool = typer.Option(False, "--list", help="List available backups and exit"),
     yes: bool = typer.Option(False, "--yes", help="Actually perform the restore (refused otherwise)"),
 ) -> None:
@@ -879,9 +919,18 @@ def restore_cmd(
         if not backup_dir.exists():
             console.print("[yellow]No backup directory yet.[/yellow]")
             return
-        for p in sorted(backup_dir.glob("lakewind_backup_*.duckdb")):
+        files = sorted(backup_dir.glob("lakewind_backup_*.duckdb"))
+        if not files:
+            console.print("[yellow]No lakewind_backup_*.duckdb files in " + str(backup_dir) + "[/yellow]")
+            return
+        for p in files:
             console.print(f"  {p.name}  ({p.stat().st_size / 1e6:.1f} MB)")
         return
+    if backup is None:
+        console.print(
+            "[red]Provide a backup path (see --list) or pass --list.[/red]"
+        )
+        raise typer.Exit(code=2)
     result = access.restore_database(backup, yes=yes)
     console.print(
         f"[bold green]Restored from {result['restored_from']}[/bold green]\n"

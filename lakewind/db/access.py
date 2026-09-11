@@ -58,6 +58,56 @@ _WRITE_LOCK = threading.Lock()
 _WRITE_RETRIES = 4
 _WRITE_RETRY_BACKOFF_S = 0.6
 
+# --- System-check hardening (post-Phase-5) --------------------------------
+#
+# 1. RESOURCE GOVERNANCE: DuckDB defaults its buffer manager to 80% of HOST
+#    RAM and spawns one worker thread per host core. Inside a memory-capped
+#    container (e.g. a 4 GB cgroup on an 8 GB T420) that default is an OOM
+#    kill waiting for the first large scan, so the limit is set EXPLICITLY
+#    from settings (db.duckdb_memory_limit / db.duckdb_threads).
+#
+# 2. SELF-MIGRATION: runtime services must never require a manual
+#    `lakewind init-db` after an upgrade. The first DB touch per process
+#    applies the idempotent base DDL + pending schema_migrations entries
+#    (Phase 5's pipeline_runs/eval_runs included). Forked read-only workers
+#    skip this entirely.
+_SCHEMA_LOCK = threading.Lock()
+_SCHEMA_ENSURED = False
+
+_CONFIG_CACHE: dict[str, Any] | None = None
+
+
+def _duckdb_config() -> dict[str, Any]:
+    """Resolve the DuckDB connect config once per process."""
+    global _CONFIG_CACHE
+    if _CONFIG_CACHE is None:
+        s = load_settings()
+        _CONFIG_CACHE = {
+            "memory_limit": str(s.db.duckdb_memory_limit),
+            "threads": int(s.db.duckdb_threads),
+        }
+    return _CONFIG_CACHE
+
+
+def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
+    """Apply base DDL + pending migrations on first DB access per process."""
+    global _SCHEMA_ENSURED
+    if _SCHEMA_ENSURED or _READONLY_MODE:
+        return
+    with _SCHEMA_LOCK:
+        if _SCHEMA_ENSURED or _READONLY_MODE:
+            return
+        _SCHEMA_ENSURED = True  # set first: a failure must not retry-storm
+        try:
+            from lakewind.db.schema import SCHEMA_SQL, apply_migrations
+
+            conn.execute(SCHEMA_SQL)
+            apply_migrations(conn)
+            logger.info("Schema ensured on first DB access (DDL + migrations)")
+        except Exception:
+            _SCHEMA_ENSURED = False
+            raise
+
 _CONN_LOCAL = threading.local()
 _CONN_REGISTRY: dict[int, dict[str, Any]] = {}
 _CONN_REGISTRY_LOCK = threading.Lock()
@@ -99,7 +149,9 @@ def _thread_conn() -> duckdb.DuckDBPyConnection:
     conn: duckdb.DuckDBPyConnection | None = None
     for attempt in range(_WRITE_RETRIES + 1):
         try:
-            conn = duckdb.connect(path, read_only=_READONLY_MODE)
+            conn = duckdb.connect(
+                path, read_only=_READONLY_MODE, config=_duckdb_config()
+            )
             break
         except duckdb.IOException as exc:
             last_exc = exc
@@ -108,6 +160,7 @@ def _thread_conn() -> duckdb.DuckDBPyConnection:
     if conn is None:
         assert last_exc is not None
         raise last_exc
+    _ensure_schema(conn)
     _CONN_LOCAL.conn = conn
     _CONN_LOCAL.path = path
     with _CONN_REGISTRY_LOCK:
@@ -448,6 +501,7 @@ def apply_retention_policy(
         "pipeline_log_deleted": 0,
         "image_cache_deleted": 0,
         "experiment_attempts_deleted": 0,
+        "garbage_forecasts_deleted": 0,
         "dry_run": dry_run,
         "operational_forecast_days": fc_days,
         "predictions_days": pred_days,
@@ -482,6 +536,20 @@ def apply_retention_policy(
             [pred_cutoff],
         ).fetchone()
         stats["predictions_deleted"] = int(rows[0]) if rows else 0
+        # Garbage-row prune (system-check hardening): a forecast row with
+        # NEITHER wind speed NOR gust is unusable for a wind system and only
+        # arises from upstream payload mismatches (e.g. the 2026-09 Open-Meteo
+        # key-layout switch, which stored 1848 all-NaN icon_d2 rows). Applied
+        # to non-exempt rows only: exempted backfills stay untouchable.
+        rows = conn.execute(
+            f"""
+            SELECT count(*) FROM {s.db.forecast_table}
+            WHERE wind_speed_kn IS NULL AND wind_gust_kn IS NULL
+              AND {exempt_clause}
+            """,
+            [*exempt],
+        ).fetchone()
+        stats["garbage_forecasts_deleted"] = int(rows[0]) if rows else 0
         rows = conn.execute(
             "SELECT count(*) FROM source_health WHERE checked_at < ?", [sh_cutoff]
         ).fetchone()
@@ -511,6 +579,14 @@ def apply_retention_policy(
             conn.execute(
                 f"DELETE FROM {s.db.predictions_table} WHERE valid_time < ?",
                 [pred_cutoff],
+            )
+            conn.execute(
+                f"""
+                DELETE FROM {s.db.forecast_table}
+                WHERE wind_speed_kn IS NULL AND wind_gust_kn IS NULL
+                  AND {exempt_clause}
+                """,
+                [*exempt],
             )
             conn.execute("DELETE FROM source_health WHERE checked_at < ?", [sh_cutoff])
             if _table_exists(conn, "v4_pipeline_log"):
@@ -542,7 +618,7 @@ def verify_backup(path: Path) -> dict[str, Any]:
     torn — better to know now than at restore time. Returns a small report
     dict; raises on unreadable files.
     """
-    with duckdb.connect(str(path), read_only=True) as conn:
+    with duckdb.connect(str(path), read_only=True, config=_duckdb_config()) as conn:
         tables = [r[0] for r in conn.execute("SHOW TABLES").fetchall()]
         counts = {}
         for t in ("forecast_runs", "observations", "predictions", "model_registry"):

@@ -364,6 +364,13 @@ class DbConfig(BaseModel):
     # Model-bundle GC on disk: keep the newest N bundles plus whatever the
     # registry currently points at as production.
     model_bundle_keep: int = 8
+    # --- System-check hardening: DuckDB resource governance (t420) ---
+    # DuckDB defaults to 80% of HOST RAM for its buffer manager, which is an
+    # OOM hazard inside a memory-capped container (4 GB cgroup on an 8 GB
+    # host). The limits are set explicitly and conservatively; raise
+    # duckdb_memory_limit only if the container budget grows with it.
+    duckdb_memory_limit: str = "1536MB"
+    duckdb_threads: int = 2
 
 
 class LoggingConfig(BaseModel):

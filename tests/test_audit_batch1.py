@@ -333,6 +333,7 @@ class TestCompactBloatedRawJson:
         stats = access.compact_bloated_raw_json(dry_run=True)
         assert stats["compacted"] == 1
         assert stats["bytes_before"] > 2048
+        access.close_global_conn()  # release configured conn before a plain-config connect
         with duckdb.connect(str(temp_db)) as conn:
             sz = conn.execute(
                 "SELECT length(raw_json::VARCHAR) FROM forecast_runs WHERE id = 1"
@@ -354,6 +355,7 @@ class TestCompactBloatedRawJson:
         stats = access.compact_bloated_raw_json()
         assert stats["compacted"] == 1  # ensemble row skipped
         assert stats["bytes_after"] < stats["bytes_before"]
+        access.close_global_conn()  # release configured conn before a plain-config connect
         with duckdb.connect(str(temp_db)) as conn:
             rj = conn.execute(
                 "SELECT raw_json::VARCHAR FROM forecast_runs WHERE id = 1"

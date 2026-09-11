@@ -89,6 +89,7 @@ class TestRetention:
         stats = access.apply_retention_policy(dry_run=True)
         assert stats["forecasts_deleted"] == 1
         assert stats["predictions_deleted"] == 1
+        access.close_global_conn()  # release configured conn before a plain-config connect
         with duckdb.connect(str(temp_db)) as conn:
             n = conn.execute("SELECT count(*) FROM forecast_runs").fetchone()[0]
         assert n == 3  # untouched
@@ -98,6 +99,7 @@ class TestRetention:
         stats = access.apply_retention_policy()
         assert stats["forecasts_deleted"] == 1
         assert stats["predictions_deleted"] == 1
+        access.close_global_conn()  # release configured conn before a plain-config connect
         with duckdb.connect(str(temp_db)) as conn:
             rows = conn.execute(
                 "SELECT valid_time, json_extract_string(raw_json, '$.source') AS src "

@@ -126,6 +126,17 @@ def run_cycle(
             logger.exception("Bulk prediction insert failed: %s", exc)
             summary["prediction_store_error"] = str(exc)
 
+    # System-check hardening: an empty cycle used to be completely silent
+    # (the 2026-09-11 Open-Meteo key-layout flip produced zero predictions
+    # for two days with nothing but an exit 0). Make the failure visible.
+    if not forecasts:
+        logger.warning(
+            "No predictions produced for any of %d operational points — the "
+            "reference NWP (icon_eu) likely has no recent rows. Check "
+            "`lakewind status` (source freshness) and collector warnings.",
+            len(op_ids),
+        )
+
     summary["n_forecasts"] = len(forecasts)
     summary["forecasts"] = [fc.to_dict() for fc in forecasts]
     summary["runtime_seconds"] = round(time.perf_counter() - start, 2)
