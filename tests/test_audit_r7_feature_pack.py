@@ -90,12 +90,15 @@ class TestHarmonics:
 class TestObsLags:
     def test_obs_lags_and_trend_from_real_observations(self, temp_db):
         _seed_standard_db(temp_db)
-        # observed trajectory: 6 kn at t-3h, 8 kn at t-2h, 10 kn at t-1h
+        # PRE-PHASE-6 anchor semantics: obs lags are relative to the reference
+        # run's ISSUE time (anchor = VT-3h), NOT the valid time. Obs at
+        # anchor-1h/-2h/-3h are the freshest readings knowable at issue.
+        # observed trajectory: 6 kn at anchor-3h, 8 kn at anchor-2h, 10 kn at anchor-1h
         for off, speed in ((3, 6.0), (2, 8.0), (1, 10.0)):
             access.insert_observation(
                 {
                     "source": "arpa_77",
-                    "timestamp": VT - timedelta(hours=off, minutes=5),
+                    "timestamp": VT - timedelta(hours=3 + off, minutes=5),
                     "lat": 46.12,
                     "lon": 9.29,
                     "wind_speed_kn": speed,
@@ -109,6 +112,38 @@ class TestObsLags:
         assert fv["obs_lag3h_speed"] == pytest.approx(6.0)
         assert fv["obs_trend_3h"] == pytest.approx(4.0)  # building
 
+    def test_no_leakage_from_post_issue_observations(self, temp_db):
+        """THE regression that justifies the anchor fix.
+
+        Observations recorded AFTER the reference run's issue time must never
+        reach the feature vector: in live serving they do not exist yet, and
+        a model trained on them learns to echo the answer. Sentinel speed 99
+        must appear nowhere in the obs-derived features.
+        """
+        _seed_standard_db(temp_db)
+        for ts in (
+            VT - timedelta(minutes=5),   # inside the target hour
+            VT - timedelta(hours=1),     # the old leaky lag1h position
+            VT - timedelta(hours=2),
+        ):
+            access.insert_observation(
+                {
+                    "source": "arpa_79",
+                    "timestamp": ts,
+                    "lat": 46.12,
+                    "lon": 9.29,
+                    "wind_speed_kn": 99.0,
+                    "wind_dir_deg": 175.0,
+                    "confidence": 0.85,
+                }
+            )
+        fv = build_features_for("dongo_shore", VT).feature_vector
+        for key in (
+            "obs_nearest_speed", "obs_lag1h_speed", "obs_lag2h_speed",
+            "obs_lag3h_speed",
+        ):
+            assert fv[key] != 99.0, f"post-issue observation leaked into {key}"
+
     def test_lags_none_without_obs(self, temp_db):
         _seed_standard_db(temp_db)
         fv = build_features_for("dongo_shore", VT).feature_vector
@@ -119,14 +154,18 @@ class TestObsLags:
 class TestOnlineBias:
     def test_rolling_bias_matches_manual_computation(self, temp_db):
         _seed_standard_db(temp_db)
-        # forecast 10 kn at t-2h and t-1h (same run); obs 12 and 14 → bias +3
-        for off in (1, 2):
+        # PRE-PHASE-6 anchor semantics: the bias window ends at the reference
+        # run's ISSUE time (anchor = VT-3h). Forecast/obs pairs live at
+        # anchor-1h and anchor-2h; the fc rows were issued at VT-6h (before
+        # their valid times — realistic).
+        # fc 10 kn at both hours; obs 13 and 14 → diffs +3, +4 → bias 3.5
+        for off, obs_speed in ((1, 13.0), (2, 14.0)):
             access.insert_forecast_run(
                 {
                     "model_name": "icon_eu",
                     "point_id": "dongo_shore",
-                    "run_time": VT - timedelta(hours=3),
-                    "valid_time": VT - timedelta(hours=off),
+                    "run_time": VT - timedelta(hours=6),
+                    "valid_time": VT - timedelta(hours=3 + off),
                     "wind_speed_kn": 10.0,
                     "wind_dir_deg": 180.0,
                 }
@@ -134,18 +173,57 @@ class TestOnlineBias:
             access.insert_observation(
                 {
                     "source": "arpa_78",
-                    "timestamp": VT - timedelta(hours=off, minutes=5),
+                    "timestamp": VT - timedelta(hours=3 + off, minutes=5),
                     "lat": 46.12,
                     "lon": 9.29,
-                    "wind_speed_kn": 10.0 + 2.0 + off,  # 13 @ t-1h, 14 @ t-2h... wait
+                    "wind_speed_kn": obs_speed,
                     "wind_dir_deg": 175.0,
                     "confidence": 0.85,
                 }
             )
         fv = build_features_for("dongo_shore", VT).feature_vector
-        # obs at t-1h = 13 (fc 10 → +3); obs at t-2h = 14 (fc 10 → +4)
         assert fv["online_bias_6h"] == pytest.approx((13.0 - 10.0 + 14.0 - 10.0) / 2, abs=0.5)
         assert fv["online_bias_24h"] is not None
+
+    def test_online_bias_excludes_post_issue_observations(self, temp_db):
+        """An observation from the target hour must not enter the bias window."""
+        _seed_standard_db(temp_db)
+        access.insert_forecast_run(
+            {
+                "model_name": "icon_eu",
+                "point_id": "dongo_shore",
+                "run_time": VT - timedelta(hours=6),
+                "valid_time": VT - timedelta(hours=4),
+                "wind_speed_kn": 10.0,
+                "wind_dir_deg": 180.0,
+            }
+        )
+        access.insert_observation(
+            {
+                "source": "arpa_80",
+                "timestamp": VT - timedelta(hours=4, minutes=5),
+                "lat": 46.12,
+                "lon": 9.29,
+                "wind_speed_kn": 13.0,
+                "wind_dir_deg": 175.0,
+                "confidence": 0.85,
+            }
+        )
+        # post-issue sentinel obs (would drag the mean if the window were
+        # anchored at the valid time)
+        access.insert_observation(
+            {
+                "source": "arpa_80",
+                "timestamp": VT - timedelta(minutes=5),
+                "lat": 46.12,
+                "lon": 9.29,
+                "wind_speed_kn": 99.0,
+                "wind_dir_deg": 175.0,
+                "confidence": 0.85,
+            }
+        )
+        fv = build_features_for("dongo_shore", VT).feature_vector
+        assert fv["online_bias_6h"] == pytest.approx(3.0, abs=0.5)
 
     def test_bias_none_without_history(self, temp_db):
         _seed_standard_db(temp_db)

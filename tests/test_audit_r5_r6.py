@@ -202,10 +202,14 @@ class TestLakeBreezeActivation:
                 "pressure_msl": 1016.0,
             }
         )
+        # PRE-PHASE-6 anchor semantics: FEATURE-side obs must predate the
+        # reference run's issue time (vt-3h); water temperature moves so
+        # slowly that a 3h10m-old reading is exactly what a real forecast
+        # would have had available.
         access.insert_observation(
             {
                 "source": "lake_water_temp",
-                "timestamp": vt - timedelta(minutes=10),
+                "timestamp": vt - timedelta(hours=3, minutes=10),
                 "lat": 46.123,
                 "lon": 9.285,
                 "temperature": 23.0,

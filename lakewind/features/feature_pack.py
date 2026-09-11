@@ -107,17 +107,25 @@ def compute_feature_pack(
         fv["hour_sin"] = fv["hour_cos"] = fv["doy_sin"] = fv["doy_cos"] = None
 
     # --- 3. observed-wind lags + trend --------------------------------------
+    # PRE-PHASE-6 LEAKAGE FIX: lags are anchored at the REFERENCE RUN'S ISSUE
+    # TIME (what was knowable when the forecast was issued), not at the valid
+    # time. The old T-relative window reached hours that are still in the
+    # future at issue time for any lead > 1h — training/backtest happily read
+    # observations that did not exist yet. At serve time run_time ≈ now, so
+    # live semantics are unchanged.
+    anchor = ref.get("run_time")
+    anchor = anchor if isinstance(anchor, datetime) else valid_time
     vp = next((p for p in s.virtual_points if p.id == point_id), None)
     obs_by_offset: dict[int, dict[str, Any]] = {}
     if vp is not None:
         try:
-            t0 = valid_time - timedelta(hours=max(_OBS_LAG_OFFSETS_H), minutes=20)
-            t1 = valid_time - timedelta(minutes=40)
+            t0 = anchor - timedelta(hours=max(_OBS_LAG_OFFSETS_H), minutes=20)
+            t1 = anchor
             obs_rows = access.fetch_observations_near_range(
                 vp.lat, vp.lon, t0, t1, max_distance_km=25.0
             )
             for off in _OBS_LAG_OFFSETS_H:
-                target_t = valid_time - timedelta(hours=off)
+                target_t = anchor - timedelta(hours=off)
                 best = None
                 for o in obs_rows:
                     ts = o.get("timestamp")
@@ -139,11 +147,15 @@ def compute_feature_pack(
     fv["obs_trend_3h"] = (s1 - s3) if (s1 is not None and s3 is not None) else None
 
     # --- 4. online rolling bias (obs − reference forecast) ------------------
+    # Same issue-time anchor as the lags above: both the observation window
+    # and the reference-forecast window must end at the issue time. The old
+    # T-relative window included observations from the target hour itself
+    # (age 0 allowed — a direct leak of the answer into the features).
     ref_model = str(ref.get("model_name") or "icon_eu")
     if vp is not None:
         try:
-            t_start = valid_time - timedelta(hours=max(_BIAS_WINDOWS_H))
-            fc_rows = access.fetch_forecasts_bulk([point_id], t_start, valid_time)
+            t_start = anchor - timedelta(hours=max(_BIAS_WINDOWS_H))
+            fc_rows = access.fetch_forecasts_bulk([point_id], t_start, anchor)
             fc_by_time: dict[datetime, tuple[float, Any]] = {}
             for r in fc_rows:
                 if r.get("model_name") != ref_model:
@@ -160,7 +172,7 @@ def compute_feature_pack(
                     fc_by_time[vt] = (sp, r.get("run_time"))
             fc_speeds = {vt: v[0] for vt, v in fc_by_time.items()}
             obs_rows = access.fetch_observations_near_range(
-                vp.lat, vp.lon, t_start, valid_time, max_distance_km=25.0
+                vp.lat, vp.lon, t_start, anchor, max_distance_km=25.0
             )
             obs_by_hour: dict[int, list[float]] = {}
             for o in obs_rows:
@@ -168,7 +180,7 @@ def compute_feature_pack(
                 sp = _sf(o.get("wind_speed_kn"))
                 if ts is None or sp is None:
                     continue
-                age_h = (valid_time - ts).total_seconds() / 3600.0
+                age_h = (anchor - ts).total_seconds() / 3600.0
                 if age_h < 0 or age_h > max(_BIAS_WINDOWS_H) + 0.5:
                     continue
                 hour_key = int(round(age_h))
@@ -180,9 +192,9 @@ def compute_feature_pack(
                         continue
                     # reference forecast for the hour nearest the obs
                     fc_candidates = [
-                        (abs((vt - (valid_time - timedelta(hours=hour_key))).total_seconds()), v)
+                        (abs((vt - (anchor - timedelta(hours=hour_key))).total_seconds()), v)
                         for vt, v in fc_speeds.items()
-                        if abs((vt - (valid_time - timedelta(hours=hour_key))).total_seconds()) <= 1800
+                        if abs((vt - (anchor - timedelta(hours=hour_key))).total_seconds()) <= 1800
                     ]
                     if not fc_candidates:
                         continue

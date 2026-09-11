@@ -226,11 +226,15 @@ class TestBandMath:
         assert q10 == pytest.approx(3.0)
         assert q90 == pytest.approx(7.0)
 
-    def test_perpendicular_bias_grows_both_edges(self):
-        """Documents the honest geometry: the band is the reconstruction of
-        the quantile VECTORS (same path as the median), so a bias
-        perpendicular to the wind lifts BOTH edges by hypot(bias, 5) —
-        the band is NOT 'median ± width'."""
+    def test_perpendicular_bias_keeps_band_centered(self):
+        """PRE-PHASE-6 COVERAGE FIX: the band must always CONTAIN the median.
+
+        The old reconstruction returned [hypot(bias,5), hypot(bias,5)] for a
+        perpendicular bias — a band sitting entirely ABOVE the 5 kn median
+        (it excluded the centre). The honest backtest measured the served
+        band covering 43.2% against the 80% contract. The band is now
+        re-centred on the median with the wider deviation.
+        """
         import math
 
         from lakewind.ml.infer import BiasPrediction, band_speeds_kn
@@ -239,9 +243,31 @@ class TestBandMath:
         ref_u, ref_v = WindVector(5.0, 0.0).to_uv()  # (0, -5)
         bp = BiasPrediction(-2.0, 0.0, 2.0, 0.0, 0.0, 0.0)
         q10, q90 = band_speeds_kn(ref_u, ref_v, bp)
-        expected = math.hypot(2.0, 5.0)  # 5.385
-        assert q10 == pytest.approx(expected)
-        assert q90 == pytest.approx(expected)
+        edge = math.hypot(2.0, 5.0)  # 5.385 — the reconstructed quantile speed
+        # wider deviation = |5.385 - 5.0| = 0.385, band centred on 5.0
+        assert q10 == pytest.approx(5.0 - (edge - 5.0))
+        assert q90 == pytest.approx(edge)
+        assert q10 <= 5.0 <= q90, "band must contain the median speed"
+
+    def test_band_always_contains_median(self):
+        """Property test across bias geometries: q10 <= median <= q90."""
+        import itertools
+
+        from lakewind.ml.infer import BiasPrediction, band_speeds_kn
+        from lakewind.utils.wind import WindVector
+
+        for du10, du50, du90, dv10, dv50, dv90 in itertools.product(
+            (-2.0, 0.0, 1.5), (0.0, 0.5), (1.0, 3.0),
+            (-1.0, 0.0), (0.0, -0.5), (0.5, 2.0),
+        ):
+            bp = BiasPrediction(du10, du50, du90, dv10, dv50, dv90)
+            ref_u, ref_v = WindVector(5.0, 30.0).to_uv()
+            q10, q90 = band_speeds_kn(ref_u, ref_v, bp)
+            median = WindVector.from_uv(ref_u + bp.bias_u_q50, ref_v + bp.bias_v_q50).speed_kn
+            assert q10 <= median + 1e-9 <= q90, (
+                f"band [{q10:.2f},{q90:.2f}] excludes median {median:.2f} "
+                f"for bias {bp}"
+            )
 
     def test_crossing_is_swapped(self):
         from lakewind.ml.infer import BiasPrediction, band_speeds_kn

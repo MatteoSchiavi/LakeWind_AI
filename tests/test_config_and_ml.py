@@ -100,7 +100,8 @@ def test_feature_builder_returns_obs_source(temp_db):
             }
         ]
     )
-    # Store an ERA5 ground-truth observation exactly at the point
+    # Store an ERA5 ground-truth observation exactly at the point (TARGET
+    # side — anchored at the valid time)
     access.bulk_insert_observations(
         [
             {
@@ -111,6 +112,22 @@ def test_feature_builder_returns_obs_source(temp_db):
                 "wind_speed_kn": 8.0,
                 "wind_dir_deg": 200.0,
                 "confidence": 0.75,
+            }
+        ]
+    )
+    # PRE-PHASE-6 anchor semantics: the FEATURE-side obs must predate the
+    # reference run's issue time (now-6h) — a fresh station reading the
+    # forecast would actually have had available.
+    access.bulk_insert_observations(
+        [
+            {
+                "source": "arpa_77",
+                "timestamp": now - timedelta(hours=6, minutes=10),
+                "lat": 46.10,
+                "lon": 9.304,
+                "wind_speed_kn": 7.0,
+                "wind_dir_deg": 190.0,
+                "confidence": 0.9,
             }
         ]
     )

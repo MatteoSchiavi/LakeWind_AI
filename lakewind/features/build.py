@@ -154,16 +154,20 @@ def build_features_for(
     # Obs are fetched ONCE per sample and shared by the ground-station
     # features (§6), the target construction and the lake-breeze potential
     # (§3b) — was 2-3 separate queries per sample.
+    #
+    # PRE-PHASE-6 LEAKAGE FIX: the obs lookup is anchored at the REFERENCE
+    # FORECAST'S ISSUE TIME (run_time), not at valid_time. The old code
+    # searched observations up to and INCLUDING the target hour — in live
+    # serving those obs do not exist yet (feature NaN for most horizons) but
+    # in training/backtesting the historical record happily supplied the
+    # target-hour observation as a model input (age_min = 0.0 was measured
+    # in the verification probe). Every obs-derived feature (obs_nearest_,
+    # obs_lag* , online_bias_*, lake breeze, water temp) must answer
+    # "what was knowable when the forecast was issued". At serve time
+    # run_time ≈ now, so live behaviour is unchanged or better (obs
+    # features populate instead of NaN); in backtest the anchor makes the
+    # evaluation honest.
     vp_early = next((p for p in s.virtual_points if p.id == point_id), None)
-    nearest_obs: list[dict[str, Any]] = []
-    if vp_early is not None:
-        try:
-            nearest_obs = access.fetch_latest_observation_near(
-                vp_early.lat, vp_early.lon, valid_time,
-                max_age_minutes=observation_lookback_minutes,
-            )
-        except Exception as exc:
-            logger.debug("Obs lookup skipped: %s", exc)
 
     def _fetch(pid: str, t: datetime, window: int) -> list[dict[str, Any]]:
         key = (pid, t, window)
@@ -171,7 +175,8 @@ def build_features_for(
             memo[key] = access.fetch_forecasts_at(pid, t, lead_minutes_window=window)
         return memo[key]
 
-    # 1) FORECAST FEATURES — per model, no averaging
+    # 1) FORECAST FEATURES — per model, no averaging (resolved BEFORE the obs
+    #    fetch so the obs anchor can use the reference run's issue time).
     forecasts = _fetch(point_id, valid_time, 30)
     if not forecasts:
         return None
@@ -187,6 +192,33 @@ def build_features_for(
         return None
 
     ref = by_model[reference_forecast_model]
+    _ref_run_time = ref.get("run_time")
+    obs_anchor: datetime = (
+        _ref_run_time if isinstance(_ref_run_time, datetime) else valid_time
+    )
+
+    nearest_obs: list[dict[str, Any]] = []
+    target_obs_candidates: list[dict[str, Any]] = []
+    if vp_early is not None:
+        try:
+            # FEATURE side: only what was knowable at ISSUE time.
+            nearest_obs = access.fetch_latest_observation_near(
+                vp_early.lat, vp_early.lon, obs_anchor,
+                max_age_minutes=observation_lookback_minutes,
+            )
+        except Exception as exc:
+            logger.debug("Obs lookup skipped: %s", exc)
+        try:
+            # TARGET side: the ground truth AT the valid time — this is what
+            # the model must predict, so it is (correctly) anchored at
+            # valid_time and must NEVER be fed into the feature vector.
+            target_obs_candidates = access.fetch_latest_observation_near(
+                vp_early.lat, vp_early.lon, valid_time,
+                max_age_minutes=observation_lookback_minutes,
+            )
+        except Exception as exc:
+            logger.debug("Target obs lookup skipped: %s", exc)
+
     ref_u, ref_v = WindVector(
         speed_kn=ref.get("wind_speed_kn") or 0.0,
         direction_deg=ref.get("wind_dir_deg") or 0.0,
@@ -243,7 +275,14 @@ def build_features_for(
             fv[f"{prefix}_v"] = None
 
     # 2) MODEL AGREEMENT FEATURES (Spec §6 priority 2)
-    model_names = list(by_model.keys())
+    # Pre-Phase-6 fix: canonical pair naming. The pairs were named after the
+    # SQL row order (list(by_model.keys())) — DuckDB's parallel scan returns
+    # models in an arbitrary order, so agree_speed_<a>_<b> could flip to
+    # agree_speed_<b>_<a> between processes/runs, silently changing the
+    # feature schema and breaking every bundle trained under the other order
+    # (P0: the 10:48 production bundle could not even be calibrated 90
+    # minutes later). sorted() makes the schema a pure function of the data.
+    model_names = sorted(by_model.keys())
     for i, m1 in enumerate(model_names):
         for m2 in model_names[i + 1 :]:
             f1, f2 = by_model[m1], by_model[m2]
@@ -359,8 +398,16 @@ def build_features_for(
     # These capture seasonality + anomalies that the model can't learn from
     # a few months of data. Only used as FEATURE INPUTS (normals, anomalies),
     # NEVER as training targets.
+    # Pre-Phase-6 fix: the 10 keys are seeded as None FIRST so the feature
+    # schema never depends on whether the climatology subsystem loaded —
+    # a readonly process used to lose the whole block to one swallowed
+    # exception and shrink the schema by 10 columns.
     try:
-        from lakewind.features.climatology import compute_climatology_features
+        from lakewind.features.climatology import (
+            _empty_climatology,
+            compute_climatology_features,
+        )
+        fv.update(_empty_climatology())
         clim = compute_climatology_features(valid_time, point_id, fv)
         fv.update(clim)
     except Exception as exc:
@@ -462,14 +509,16 @@ def build_features_for(
     # lake wind at hourly resolution — pure noise column.
 
     # 6) GROUND STATION FEATURES (Spec §6 priority 6) — obs fetched once at
-    # the top of this function (shared with §3b and the target).
+    # the top of this function, ANCHORED AT THE ISSUE TIME (shared with §3b).
     if nearest_obs:
         best = min(
             nearest_obs,
             key=lambda o: _haversine(vp.lat, vp.lon, o.get("lat") or 0.0, o.get("lon") or 0.0),
         )
         dist_km = _haversine(vp.lat, vp.lon, best.get("lat") or 0.0, best.get("lon") or 0.0)
-        age_min = (valid_time - best["timestamp"]).total_seconds() / 60.0 if best.get("timestamp") else 999.0
+        # age is measured from the ISSUE anchor: "how stale was this
+        # observation when the forecast was issued"
+        age_min = (obs_anchor - best["timestamp"]).total_seconds() / 60.0 if best.get("timestamp") else 999.0
         fv["obs_nearest_speed"] = best.get("wind_speed_kn")
         fv["obs_nearest_dir"] = best.get("wind_dir_deg")
         fv["obs_nearest_gust"] = best.get("wind_gust_kn")
@@ -512,15 +561,18 @@ def build_features_for(
     target_tier: int | None = None
     target_weight: float | None = None
     target_obs_speed: float | None = None
-    if nearest_obs:
+    if target_obs_candidates:
         from lakewind.features.targets import select_target_obs, source_tier, target_quality_weight
 
-        for o in nearest_obs:
+        for o in target_obs_candidates:
             ts = o.get("timestamp")
             o["age_min"] = (
                 (valid_time - ts).total_seconds() / 60.0 if ts else 999.0
             )
-        best = select_target_obs(nearest_obs, vp.lat, vp.lon)
+        # The target is the ground truth AT the valid time (tier-first:
+        # stations beat reanalysis). It is computed from the valid-time obs
+        # fetch — NEVER from the issue-anchored feature obs.
+        best = select_target_obs(target_obs_candidates, vp.lat, vp.lon)
     else:
         best = None
     if best is not None and (
@@ -552,6 +604,10 @@ def build_features_for(
             "n_models": len(by_model),
             "ref_speed_kn": ref.get("wind_speed_kn"),
             "ref_dir_deg": ref.get("wind_dir_deg"),
+            # Pre-Phase-6: the issue time of the reference run — the anchor
+            # every obs-derived feature was rebuilt around, and the anchor
+            # the backtest's persistence baseline must respect.
+            "ref_run_time": _ref_run_time if isinstance(_ref_run_time, datetime) else None,
             # V6.6 FIX: backtest.py reads meta["obs_source"] to split metrics
             # into vs-ERA5 and vs-real-station — this key was never set, so
             # every sample was silently counted as "real". Now the source of

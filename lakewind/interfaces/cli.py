@@ -448,6 +448,22 @@ def retrain(
     console.print("  Metrics:")
     for k, v in result.metrics.items():
         console.print(f"    {k}: {v:.4f}")
+    # F12 closure: the manual retrain path MUST fit the conformal calibrator
+    # set exactly like the daily review does — an uncalibrated bundle silently
+    # serves the raw quantile band and breaks the 80% coverage contract.
+    from lakewind.ml.review import fit_bundle_calibrators
+
+    cal = fit_bundle_calibrators(result.model_version, end=end)
+    if cal["ok"]:
+        console.print(
+            f"  Calibrators: {cal['calibrators_trained']}/6 fitted "
+            f"(alpha={cal['alpha']}, 30d window)"
+        )
+    else:
+        console.print(
+            "[yellow]  Calibrators: NOT fitted (insufficient calibration samples — "
+            "run `lakewind review --force` once enough history exists)[/yellow]"
+        )
 
 
 @app.command("tune")

@@ -41,7 +41,7 @@ from __future__ import annotations
 
 import logging
 import time
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 from lakewind.config import load_settings
@@ -183,6 +183,42 @@ def _lead_bucket(lead_hours: float | None) -> str:
 # --- Steps 3/4: coverage closure + drift sentinel ------------------------------
 
 
+def fit_bundle_calibrators(
+    model_version: str,
+    *,
+    window_days: int = 30,
+    end: datetime | None = None,
+) -> dict[str, Any]:
+    """Fit the full conformal calibrator set for a model bundle.
+
+    F12 closure: ONE code path for calibration — shared by the daily
+    review's post-retrain step AND the manual `lakewind retrain` CLI, so a
+    candidate can never reach production without its calibrator set (the
+    serving path silently falls back to the raw uncalibrated band when the
+    artifacts are missing, breaking the 80% coverage contract).
+    """
+    from lakewind.ml.conformal import train_conformal_calibrator
+
+    s = load_settings()
+    alpha = float(s.model.conformal_alpha)
+    end = end or utcnow()
+    start = end - timedelta(days=window_days)
+    trained = 0
+    for target in ("u", "v"):
+        for q in (0.1, 0.5, 0.9):
+            cal = train_conformal_calibrator(
+                model_version, target, q, start=start, end=end, alpha=alpha,
+            )
+            if cal is not None:
+                trained += 1
+    return {
+        "ok": trained > 0,
+        "model_version": model_version,
+        "alpha": alpha,
+        "calibrators_trained": trained,
+    }
+
+
 def recalibrate_production_bundle() -> dict[str, Any]:
     """Re-train conformal calibrators for the CURRENT production version.
 
@@ -191,23 +227,10 @@ def recalibrate_production_bundle() -> dict[str, Any]:
     gap where a drifted band silently kept serving (F12: one code path,
     settings-driven alpha, shared with the post-retrain calibration).
     """
-    from lakewind.ml.conformal import train_conformal_calibrator
-
-    s = load_settings()
     prod = access.current_production_model()
     if not prod:
         return {"ok": False, "reason": "no production model registered"}
-    mv = str(prod["model_version"])
-    alpha = float(s.model.conformal_alpha)
-    end = utcnow()
-    start = end - timedelta(days=30)
-    trained = 0
-    for target in ("u", "v"):
-        for q in (0.1, 0.5, 0.9):
-            cal = train_conformal_calibrator(mv, target, q, start=start, end=end, alpha=alpha)
-            if cal is not None:
-                trained += 1
-    return {"ok": trained > 0, "model_version": mv, "alpha": alpha, "calibrators_trained": trained}
+    return fit_bundle_calibrators(str(prod["model_version"]))
 
 
 def drift_sentinel(snapshot: dict[str, Any]) -> dict[str, Any] | None:
@@ -386,30 +409,19 @@ def run_daily_review(*, check_only: bool = False, force: bool = False) -> dict[s
         retrain_step["decision"] = {"should_retrain": should, "reason": reason}
         candidate_version: str | None = None
         if should and not check_only:
-            from lakewind.ml.conformal import train_conformal_calibrator
             from lakewind.ml.train import train
 
             start_w, end_w = _production_window()
             result = train(start=start_w, end=end_w)
             if result is not None:
                 candidate_version = result.model_version
-                alpha = float(s.model.conformal_alpha)
-                cal_start = end_w - timedelta(days=30)
-                cal_trained = 0
-                for target in ("u", "v"):
-                    for q in (0.1, 0.5, 0.9):
-                        cal = train_conformal_calibrator(
-                            candidate_version, target, q,
-                            start=cal_start, end=end_w, alpha=alpha,
-                        )
-                        if cal is not None:
-                            cal_trained += 1
+                cal = fit_bundle_calibrators(candidate_version, end=end_w)
                 retrain_step["train"] = {
                     "model_version": candidate_version,
                     "n_samples": result.n_samples,
                     "n_features": result.n_features,
-                    "calibrators_trained": cal_trained,
-                    "conformal_alpha": alpha,
+                    "calibrators_trained": cal["calibrators_trained"],
+                    "conformal_alpha": cal["alpha"],
                 }
             else:
                 retrain_step["train"] = {"skipped": "not enough data"}
@@ -489,5 +501,6 @@ __all__ = [
     "run_daily_review",
     "evaluate_recent",
     "recalibrate_production_bundle",
+    "fit_bundle_calibrators",
     "drift_sentinel",
 ]

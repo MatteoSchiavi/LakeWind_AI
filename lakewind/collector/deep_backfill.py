@@ -69,9 +69,19 @@ def ensure_climatology_table() -> None:
     a write transaction inside a read-only hot path. Idempotent, so guarded
     by a process-level flag; concurrent first-calls are still safe (the
     statement itself is IF NOT EXISTS).
+
+    Pre-Phase-6 fix: in READ-ONLY processes (backtest/verification workers,
+    any analysis reader) the CREATE used to raise `InvalidInputException`
+    which the feature builder swallowed as a whole-block skip — silently
+    removing the 10 climatology features from the schema. Readers now skip
+    the DDL (the table already exists in any deployed database) and the
+    lookups proceed against it as plain reads.
     """
     global _CLIMATOLOGY_TABLE_READY
     if _CLIMATOLOGY_TABLE_READY:
+        return
+    if access.is_readonly_mode():
+        _CLIMATOLOGY_TABLE_READY = True
         return
     with access.cursor() as conn:
         conn.execute("""

@@ -144,14 +144,27 @@ def train_conformal_calibrator(
         elif X[c].dtype == object:
             X[c] = pd.to_numeric(X[c], errors="coerce")
 
+    # Pre-Phase-6 fix: align X to the bundle's exact feature list — the same
+    # contract the serving path enforces via _row_to_matrix. Without this, a
+    # schema drift between training time and calibration time (e.g. the
+    # agree_* ordering P0) crashed the whole calibration with a strict
+    # feature-names mismatch instead of degrading missing columns to NaN.
+    try:
+        bundle = load_model_bundle(model_version)
+    except Exception as exc:
+        logger.error("Failed to load model %s: %s", model_version, exc)
+        return None
+    expected_cols = bundle.get("features")
+    if isinstance(expected_cols, list) and expected_cols:
+        X = X.reindex(columns=expected_cols)  # absent -> NaN (missing-data policy)
+
     y = df[f"target_{target}"].values
 
     # Load the model and predict
     try:
-        bundle = load_model_bundle(model_version)
         preds = predict_with_bundle(bundle, X, target, quantile)
     except Exception as exc:
-        logger.error("Failed to load/predict with model %s: %s", model_version, exc)
+        logger.error("Failed to predict with model %s: %s", model_version, exc)
         return None
 
     # Nonconformity scores: |y_true - y_pred|

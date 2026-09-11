@@ -127,6 +127,17 @@ def set_readonly_mode(on: bool = True) -> None:
     close_global_conn()
 
 
+def is_readonly_mode() -> bool:
+    """True when this process may not write to the database at all.
+
+    DDL helpers (e.g. ensure_climatology_table) consult this to become
+    no-ops instead of crashing with `CREATE on read-only database` — the
+    pre-Phase-6 verification caught the feature schema silently changing
+    between read-write services and read-only analysis workers.
+    """
+    return _READONLY_MODE
+
+
 def _thread_conn() -> duckdb.DuckDBPyConnection:
     """Return this thread's persistent connection (path-keyed, RW config).
 
@@ -1487,6 +1498,11 @@ def fetch_forecasts_at(
     """Return the most recent NWP forecast(s) covering `valid_time` for this point.
 
     For each (model_name), pick the latest run_time whose valid_time matches.
+    Deterministic ORDER: without it, DuckDB's parallel scan returns models in
+    an arbitrary order — and the feature builder names pairwise agreement
+    columns after the iteration order (agree_speed_<m1>_<m2>), so a flipped
+    order silently changes the FEATURE SCHEMA between processes/runs and
+    breaks trained bundles (P0 found in the pre-Phase-6 verification).
     """
     s = load_settings()
     sql = f"""
@@ -1498,6 +1514,7 @@ def fetch_forecasts_at(
             AND ABS(DATEDIFF('minute', valid_time, ?)) <= ?
         )
         SELECT * FROM ranked WHERE rn = 1
+        ORDER BY model_name
     """
     with cursor(read_only=True) as conn:
         cur = conn.execute(sql, [point_id, valid_time, lead_minutes_window])

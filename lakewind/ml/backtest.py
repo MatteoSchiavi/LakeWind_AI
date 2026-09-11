@@ -148,6 +148,7 @@ def _materialize_test_samples(
                     "valid_time": cur,
                     "ref_speed": ref_speed,
                     "ref_dir": ref_dir,
+                    "ref_run_time": fr.meta.get("ref_run_time"),
                     "obs_speed": obs.speed_kn,
                     "obs_dir": obs.direction_deg,
                     "obs_source": obs_source,
@@ -233,20 +234,31 @@ def _row_lead_hours(s_row: dict[str, Any]) -> float | None:
         return None
 
 
-def _persistence_prediction(point_id: str, at_time: datetime) -> tuple[float, float] | None:
-    """Persistence baseline: last observed wind STRICTLY BEFORE at_time.
+def _persistence_prediction(
+    point_id: str, at_time: datetime, anchor: datetime | None = None
+) -> tuple[float, float] | None:
+    """Persistence baseline: last observed wind known at the ISSUE time.
 
-    Spec §1.2: "persistence (last observation)". The original implementation
-    used `timestamp <= at_time` which for hourly ERA5 data returns the target
-    itself (leakage). Fixed: only use observations from at least 30 minutes
-    before at_time.
+    Spec §1.2: "persistence (last observation)". Two leakage guards:
+
+    - the original implementation used `timestamp <= at_time` which for
+      hourly ERA5 data returns the target itself — fixed with a 30-minute
+      exclusion window;
+    - the pre-Phase-6 verification found the subtler leak: for a forecast
+      issued at `anchor` and valid at `at_time`, observations between anchor
+      and at_time do not exist at decision time. The baseline must use the
+      same information set as the candidate — observations up to the issue
+      anchor. With anchor=None (legacy callers) falls back to the
+      at_time-relative window.
     """
     vp = next((p for p in load_settings().virtual_points if p.id == point_id), None)
     if vp is None:
         return None
-    # Look back 2h, but exclude the most recent 30 min (avoid leakage with target)
-    cutoff_start = at_time - timedelta(minutes=120)
-    cutoff_end = at_time - timedelta(minutes=30)
+    ref_time = anchor if anchor is not None else at_time
+    # Look back 2h from the issue anchor; exclude the most recent 30 min
+    # only in the legacy (anchor-less) mode where the anchor IS the target.
+    cutoff_start = ref_time - timedelta(minutes=120)
+    cutoff_end = ref_time if anchor is not None else ref_time - timedelta(minutes=30)
     s = load_settings()
     sql = f"""
         SELECT * FROM {s.db.observations_table}
@@ -407,8 +419,11 @@ def run_backtest(
                 hi = cand.wind_speed_kn + cand.expected_error_kn
                 interval_covered.append(lo <= s_row["obs_speed"] <= hi)
 
-                # Persistence
-                pers = _persistence_prediction(pid, s_row["valid_time"])
+                # Persistence (same information set as the candidate: obs
+                # known at the reference run's issue time)
+                pers = _persistence_prediction(
+                    pid, s_row["valid_time"], anchor=s_row.get("ref_run_time")
+                )
                 if pers is not None:
                     pers_err = abs(pers[0] - s_row["obs_speed"])
                     pers_dir_err = circular_direction_error_deg(pers[1], s_row["obs_dir"])
