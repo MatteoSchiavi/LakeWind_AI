@@ -29,6 +29,7 @@ import argparse
 import json
 import logging
 import os
+import sys
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -40,6 +41,8 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 log = logging.getLogger("verify")
 
 ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 # LAKEWIND_VERIFY_TAG isolates the whole state (parquets, markers, results)
 # per reference-model candidate so the honest harness can A/B
 # ecmwf_ifs025 vs icon_eu without cache contamination.
@@ -111,7 +114,38 @@ def stage_train() -> str:
     log.info("Concatenated training dataset: %d samples", len(df))
 
     t0 = time.time()
-    res = train(dataset=df, start=TRAIN_START, end=TRAIN_END)
+    # LAKEWIND_VERIFY_ENSEMBLE=0 trains single-backend (fits the sandbox
+    # 10-min foreground window on 82k samples). Applied identically to every
+    # A/B tag, so the reference-model comparison stays fair; production
+    # training keeps settings.model.ensemble.
+    ensemble = os.environ.get("LAKEWIND_VERIFY_ENSEMBLE", "1") != "0"
+    # LAKEWIND_VERIFY_TARGETS=u / v: split one candidate across two
+    # invocations when even the single-backend fit exceeds the window.
+    # LAKEWIND_VERIFY_MV pins the model_version for both halves; the second
+    # half (v) writes the candidate marker and skips re-registration.
+    targets_env = os.environ.get("LAKEWIND_VERIFY_TARGETS", "").strip()
+    fixed_mv = os.environ.get("LAKEWIND_VERIFY_MV", "").strip()
+    if targets_env in ("u", "v") and not fixed_mv:
+        log.error("LAKEWIND_VERIFY_TARGETS requires LAKEWIND_VERIFY_MV")
+        raise SystemExit(1)
+    if targets_env in ("u", "v"):
+        res = train(
+            dataset=df, start=TRAIN_START, end=TRAIN_END, ensemble=ensemble,
+            model_version=fixed_mv,
+            targets=(targets_env,),
+            register=(targets_env == "u"),
+        )
+        if res is None:
+            log.error("Training failed")
+            raise SystemExit(1)
+        candidate = res.model_version
+        if targets_env == "v":
+            CAND_MARKER.write_text(candidate)
+            log.info("Candidate %s complete (u+v)", candidate)
+        else:
+            log.info("Half 1 (u) done for %s — run half 2 with LAKEWIND_VERIFY_TARGETS=v", candidate)
+        return candidate
+    res = train(dataset=df, start=TRAIN_START, end=TRAIN_END, ensemble=ensemble)
     if res is None:
         log.error("Training failed")
         raise SystemExit(1)
@@ -133,7 +167,7 @@ def stage_calibrate(candidate: str) -> None:
         log.info("Calibration already done")
         return
     t0 = time.time()
-    cal = fit_bundle_calibrators(candidate, window_days=14, end=CAL_END)
+    cal = fit_bundle_calibrators(candidate, window_days=14, end=CAL_END, skip_existing=True)
     log.info("Calibration: %s in %.0fs", cal, time.time() - t0)
     if not cal["ok"]:
         log.error("Conformal calibration failed — coverage contract unverifiable")

@@ -114,23 +114,36 @@ def _nearest_pair_error(
     b: list[tuple[datetime, float]],
     window_minutes: int = PAIR_WINDOW_MINUTES,
 ) -> tuple[list[float], list[float]]:
-    """Greedy nearest-in-time pairing; returns (errors, biases)."""
+    """Nearest-in-time pairing via bisect; returns (errors, biases).
+
+    BUGFIX (pre-Phase-6): the previous bounded greedy scan advanced its
+    cursor `j` only on a successful pair, so when series A started LATER
+    than series B (e.g. ERA5 live-collection begins days after METAR), the
+    scan window stayed anchored at the head of B and NEVER reached A's
+    matching range — measured 0 pairs from 60×323 overlapping rows. A
+    bisect search is cursor-free: every a-timestamp finds its true nearest
+    b-timestamp regardless of where the series start.
+    """
+    import bisect
+
     errors: list[float] = []
     biases: list[float] = []
-    j = 0
     b_sorted = sorted(b, key=lambda x: x[0])
+    b_times = [t for t, _ in b_sorted]
     for ts_a, v_a in sorted(a, key=lambda x: x[0]):
-        best_j, best_dt = None, None
-        for k in range(max(0, j - 5), min(len(b_sorted), j + 40)):
+        pos = bisect.bisect_left(b_times, ts_a)
+        candidates = (pos - 1, pos) if pos > 0 else (pos,)
+        best_dt, best_v = None, None
+        for k in candidates:
+            if k >= len(b_sorted):
+                continue
             dt = abs((b_sorted[k][0] - ts_a).total_seconds())
             if best_dt is None or dt < best_dt:
-                best_j, best_dt = k, dt
-        if best_j is None or best_dt > window_minutes * 60:
+                best_dt, best_v = dt, b_sorted[k][1]
+        if best_dt is None or best_dt > window_minutes * 60:
             continue
-        j = best_j
-        v_b = b_sorted[best_j][1]
-        errors.append(abs(v_a - v_b))
-        biases.append(v_a - v_b)
+        errors.append(abs(v_a - best_v))
+        biases.append(v_a - best_v)
     return errors, biases
 
 

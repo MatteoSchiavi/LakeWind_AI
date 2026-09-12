@@ -185,3 +185,34 @@ class TestPreviousRunsParser:
         from lakewind.collector.historical_backfill import _parse_previous_runs
 
         assert _parse_previous_runs({"hourly": {}}, "p", "icon_eu") == []
+
+
+def test_truth_pairing_advances_when_first_series_starts_late():
+    """Pre-Phase-6 bugfix: the greedy pairing cursor only advanced on success,
+    so when series A began days after series B (ERA5 live vs METAR backlog),
+    the scan window stayed anchored at the head of B and returned 0 pairs
+    from hundreds of overlapping rows. Bisect pairing must find them."""
+    from datetime import datetime, timedelta
+
+    from lakewind.ml.truth_check import _nearest_pair_error
+
+    t0 = datetime(2026, 9, 1, 0, 0)
+    # series B: half-hourly from Sep 1 (backlog)
+    b = [(t0 + timedelta(minutes=30 * k), 5.0 + 0.001 * k) for k in range(400)]
+    # series A: hourly but starting 5 days LATER (live collection)
+    a = [(t0 + timedelta(days=5, hours=h), 4.0 + 0.05 * h) for h in range(24)]
+    errs, biases = _nearest_pair_error(a, b, window_minutes=45)
+    assert len(errs) == 24, f"expected 24 pairs, got {len(errs)}"
+    assert all(e < 3.0 for e in errs)
+
+
+def test_truth_pairing_respects_window():
+    from datetime import datetime, timedelta
+
+    from lakewind.ml.truth_check import _nearest_pair_error
+
+    t0 = datetime(2026, 9, 1, 0, 0)
+    a = [(t0, 5.0)]
+    b = [(t0 + timedelta(hours=3), 5.0)]  # 180 min away > 45 min window
+    errs, _ = _nearest_pair_error(a, b, window_minutes=45)
+    assert errs == []

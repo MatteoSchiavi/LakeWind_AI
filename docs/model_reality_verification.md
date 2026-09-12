@@ -177,3 +177,113 @@ issue-time-anchored like the candidate.
 
 Verification artefacts: `scripts/verify_vs_reality.py` (resumable stages),
 `data/cache/verify/verification_results.json`, `docs/assets/verify_*.png`.
+
+---
+
+# Addendum — 15-spot re-verification + honest reference-model A/B (2026-09-12)
+
+After the 15 verified Lake Como spots were configured (two-source coordinate
+verification: Nominatim + it.wikipedia, all pairs < 1.5 km apart; anchors
+projected onto open water against the real OSM shoreline polygon) and a full
+year of data was backfilled (2025-09-10 → 2026-09-11: ERA5 ground truth
+8,808 h × 15 spots; historical NWP forecasts 8,808 h × 7 models × 15 spots =
+924,840 rows), the ENTIRE verification protocol was re-run on the new spot
+set — twice, as a controlled A/B on the reference-model decision.
+
+## What was compared
+
+`model.reference_model` was adopted as `ecmwf_ifs025` in the previous
+session on a walk-forward A/B over pre-leakage-fix shards (−11 % relative).
+Because those shards predated the F-V1/F-V2/F-V3 fixes, the decision
+demanded re-validation with the honest harness on the new data. Both tags
+ran the IDENTICAL protocol: TRAIN 2025-09-15→2026-05-01 (82,080 samples,
+15 spots), CALIBRATE Jul 1–14 (n=2,520/quantile), TEST Jul 15→Aug 18
+(12,600 scored rows), single-backend XGBoost quantile MOS, same conformal
+alpha, same sanity clips (LAKEWIND_VERIFY_TAG isolates all state).
+
+## Result — ecmwf_ifs025 reference confirmed, margin smaller than estimated
+
+| Metric (12,600 test rows) | ecmwf-ref MOS | icon-ref MOS | raw ecmwf | raw icon | persistence |
+|---|---|---|---|---|---|
+| Speed MAE | **0.61 kn** | 0.64 kn | 0.63 kn | 1.48 kn | 1.26 kn |
+| Bias | −0.18 kn | −0.18 kn | +0.01 | +1.10 | +0.01 |
+| Direction error | **30.0°** | 30.9° | 33.1° | 56.0° | — |
+| 80 % band coverage | 92.4 % | 92.5 % | — | — | — |
+| Band width | **2.85 kn** | 2.99 kn | — | — | — |
+| Skill vs persistence | **52.0 %** | 49.3 % | — | — | — |
+
+`ecmwf_ifs025` wins on MAE (−4.7 % vs icon-ref), direction, band width at
+equal coverage, and skill-vs-persistence. The honest margin is ~5 %, not
+the ~11 % the stale shards suggested. **Decision: keep `ecmwf_ifs025`.**
+Notable: raw ECMWF is already strong against ERA5 at this lake (0.63 kn),
+so the MOS's speed gain over its own reference is +4.5 % — its value is the
+direction improvement (33.1° → 30.0°), the bias shaping, the calibrated
+band, and the regime/decision layer on top.
+
+Per point (MAE, ecmwf-ref): varenna 0.46 · menaggio 0.47 · bellagio 0.54 ·
+dervio/dongo 0.55–0.56 · domaso/gera_lario/gravedona/piona/sorico/colico/
+cremia 0.56–0.58 · mandello 0.76 · lecco 0.84 · como_city 0.93. The upper
+lake (alto_lario) — where the sailing happens — is the most accurate; the
+narrow south-east branch (Lecco/Como city) is hardest, consistent with
+ERA5's coarse terrain representation there.
+
+Per regime (ecmwf-ref vs its raw reference): calm 0.54 vs 0.57 · tivano
+0.47 vs 0.55 · breva 0.76 vs 0.75 · foehn 0.70 (n=15, unresolved). The MOS
+adds most in calm/tivano; in breva it matches raw ECMWF. Windy hours
+(obs ≥ 8 kn) number **7** in the whole test window — high-wind skill
+remains unverified against ERA5 (see §4 of the main report; the METAR
+ledger below is the mitigation path).
+
+## Two defects found and fixed during the re-verification
+
+1. **P1 — reference-model integration gap (fixed).** `infer.predict_at`
+   hardcoded `reference_forecast_model="icon_eu"` as its default, so every
+   serving path (engine, bot, CPCV, this harness) built icon-referenced
+   features for ecmwf-referenced bundles after the settings switch —
+   silently (the F-V2 reindex-to-bundle contract turns a schema mismatch
+   into NaNs, not an error). Fix: `train()` persists `reference_model` in
+   the bundle sidecar; `predict_at` resolves it bundle-first (explicit arg
+   → bundle metadata → settings); `run_backtest` threads its resolved
+   reference through. Regression-tested
+   (`TestReferenceModelResolution`).
+
+2. **P2 — METAR truth-check pairing cursor never advanced (fixed).**
+   `_nearest_pair_error` moved its greedy scan window only on a successful
+   pair; when the ERA5 series began days after the METAR backlog (live
+   collection vs archive), the window stayed anchored at the head and
+   returned 0 pairs from 60×323 overlapping rows — the truth ledger
+   silently reported nothing. Fix: bisect nearest-neighbour pairing;
+   regression-tested (`test_truth_pairing_*`).
+
+## Ground-truth ledger — ERA5 vs real anemometers (now measurable)
+
+With the pairing fixed, `lakewind verify-truth` reports, over the last 7
+days of real METAR observations:
+
+| Site | ERA5 vs real anemometer | best NWP vs real anemometer |
+|---|---|---|
+| LIML (Milano Linate, 50 m from aux point) | MAE 1.82 kn, bias **−0.76** (n=59) | ecmwf 1.38 kn, bias −1.06 (n=30) |
+| LSZA (Lugano, 3.2 km) | MAE 1.68 kn, bias **−1.40** (n=60) | ecmwf 1.16 kn, bias −1.05 (n=22) |
+
+Both ERA5 and the NWP models **under-read real wind** at these plain/valley
+sites. This quantifies the main caveat of the honest verification: our
+0.61 kn MAE is measured against ERA5; against a real shore anemometer the
+same forecasts would differ by roughly 1.5–2 kn, mostly because ERA5 (and
+to a lesser degree the NWP mean) cannot see local acceleration. The R2
+station-tier hierarchy, the `/report` crowdsourcing, and the per-spot
+station data acquisitions are exactly the Phase-6 workstreams this number
+justifies.
+
+## Verification artefacts (updated)
+
+- `scripts/verify_vs_reality.py` — resumable harness + `LAKEWIND_VERIFY_TAG`
+  state isolation + single-backend/uv-split knobs for the sandbox window
+- `scripts/verify_stage_driver.py` — per-point driver (sandbox process model)
+- `data/cache/verify_ecmwf/` and `data/cache/verify_icon/` — full A/B state
+  (per-point parquets, results JSON)
+- `docs/assets/verify_diurnal.png`, `verify_leadtime.png`,
+  `verify_reliability.png` — regenerated for the adopted ecmwf-ref candidate
+- Production: `verify_ecmwf_ab` promoted (human-review path, audited), one
+  full pipeline cycle completed on all 15 spots (live collect → predict →
+  6 precomputed maps + 15 trends), web-ui `next build` + `tsc` clean
+- Suite: 350 tests, 0 failures, 1 designed skip; ruff clean

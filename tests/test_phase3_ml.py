@@ -349,10 +349,10 @@ class TestReferenceModelResolution:
         assert bundle["reference_model"] == "ecmwf_ifs025"
 
     def test_bundle_reference_none_for_legacy_metadata(self, temp_db, tmp_path):
+        import json as _json
+
         from lakewind.ml import train as train_mod
         from lakewind.ml.train import bundle_reference_model
-
-        import json as _json
 
         df = _synthetic_dataset(700)
         res = train(dataset=df, backend="lightgbm", model_version="refmeta_legacy")

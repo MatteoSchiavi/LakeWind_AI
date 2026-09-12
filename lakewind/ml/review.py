@@ -188,6 +188,7 @@ def fit_bundle_calibrators(
     *,
     window_days: int = 30,
     end: datetime | None = None,
+    skip_existing: bool = False,
 ) -> dict[str, Any]:
     """Fit the full conformal calibrator set for a model bundle.
 
@@ -196,26 +197,40 @@ def fit_bundle_calibrators(
     candidate can never reach production without its calibrator set (the
     serving path silently falls back to the raw uncalibrated band when the
     artifacts are missing, breaking the 80% coverage contract).
+
+    `skip_existing` (verification harness resumability): keep already-fitted
+    calibrators for the SAME model_version. Production recalibration
+    intentionally refits (a drifted band must be re-measured), so the
+    default is False everywhere except the resumable harness.
     """
+    from pathlib import Path
+
     from lakewind.ml.conformal import train_conformal_calibrator
+    from lakewind.ml.train import MODELS_DIR
 
     s = load_settings()
     alpha = float(s.model.conformal_alpha)
     end = end or utcnow()
     start = end - timedelta(days=window_days)
     trained = 0
+    skipped = 0
     for target in ("u", "v"):
         for q in (0.1, 0.5, 0.9):
+            cal_path = MODELS_DIR / f"{model_version}_conformal_{target}_q{int(q*100):02d}.pkl"
+            if skip_existing and Path(cal_path).exists():
+                skipped += 1
+                continue
             cal = train_conformal_calibrator(
                 model_version, target, q, start=start, end=end, alpha=alpha,
             )
             if cal is not None:
                 trained += 1
     return {
-        "ok": trained > 0,
+        "ok": trained + skipped > 0,
         "model_version": model_version,
         "alpha": alpha,
         "calibrators_trained": trained,
+        "calibrators_skipped": skipped,
     }
 
 

@@ -559,6 +559,9 @@ def train(
     backend: str | None = None,
     dataset: pd.DataFrame | None = None,
     disable_models: list[str] | None = None,
+    ensemble: bool | None = None,
+    targets: tuple[str, ...] = ("u", "v"),
+    register: bool = True,
 ) -> TrainingResult | None:
     """Train the quantile MOS model on stored history.
 
@@ -568,6 +571,17 @@ def train(
     early stopping + optional feature selection + optional heterogeneous
     ensemble, all driven by settings.yaml.
 
+    `ensemble` overrides settings.model.ensemble when not None (verification
+    harness A/B runs train single-backend to fit the sandbox time window;
+    the override is applied identically to every candidate so comparisons
+    stay fair).
+
+    `targets`/`register`: the verification harness may split one candidate
+    across two invocations (u first, then v) when the full fit exceeds the
+    sandbox foreground window. Call 1 keeps register=True; call 2 passes
+    register=False and the SAME model_version so registry/artifacts land
+    under one version. Production callers never set these.
+
     Deep Audit R14 (3.8): `disable_models` drops every fc_<model>_* column
     before fitting — the mechanism for the walk-forward ablation that decides
     with data whether a member (e.g. gfs_seamless, the audit's weakest-link
@@ -575,6 +589,8 @@ def train(
     against the full run via experiment_attempts/upgrade gate.
     """
     s = load_settings()
+    if ensemble is not None:
+        s.model.ensemble = ensemble
     if reference_forecast_model is None:
         reference_forecast_model = s.model.reference_model
     backend = backend or _get_backend()
@@ -716,6 +732,8 @@ def train(
         ("u", y_tr_u, y_val_u, sw_tr_u, sw_val_u),
         ("v", y_tr_v, y_val_v, sw_tr_v, sw_val_v),
     ):
+        if target_name not in targets:
+            continue
         for q in s.model.quantiles:
             q_key = f"{target_name}_q{int(q*100):02d}"
             for member in members:
@@ -827,24 +845,25 @@ def train(
             logger.debug("Speed-space registry metrics skipped: %s", exc)
 
     metrics.get("u_q50_val_mae")
-    access.register_model(
-        model_version=mv,
-        trained_at=utcnow(),
-        feature_set_version=s.model.feature_set_version,
-        training_start=start.date(),
-        training_end=end.date(),
-        backtest_mae_kn=round(speed_mae, 4) if speed_mae is not None else 0.0,
-        backtest_dir_error_deg=round(dir_err, 3) if dir_err is not None else None,
-        promoted=False,
-        git_commit=_git_commit(),
-        notes=(
-            f"backend={backend}; ensemble={members}; "
-            f"features={n_features}; samples={n_samples}; "
-            f"val_split={val_fraction}; "
-            + (f"speed_space_val_mae_kn={speed_mae:.4f}; " if speed_mae is not None else "")
-            + f"bias_space_val_metrics: { {k: round(v, 4) for k, v in metrics.items() if 'val_' in k} }"
-        ),
-    )
+    if register:
+        access.register_model(
+            model_version=mv,
+            trained_at=utcnow(),
+            feature_set_version=s.model.feature_set_version,
+            training_start=start.date(),
+            training_end=end.date(),
+            backtest_mae_kn=round(speed_mae, 4) if speed_mae is not None else 0.0,
+            backtest_dir_error_deg=round(dir_err, 3) if dir_err is not None else None,
+            promoted=False,
+            git_commit=_git_commit(),
+            notes=(
+                f"backend={backend}; ensemble={members}; "
+                f"features={n_features}; samples={n_samples}; "
+                f"val_split={val_fraction}; "
+                + (f"speed_space_val_mae_kn={speed_mae:.4f}; " if speed_mae is not None else "")
+                + f"bias_space_val_metrics: { {k: round(v, 4) for k, v in metrics.items() if 'val_' in k} }"
+            ),
+        )
 
     return TrainingResult(
         model_version=mv,
