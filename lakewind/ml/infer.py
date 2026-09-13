@@ -410,42 +410,56 @@ def predict_at(
 
 
 def _shap_top_contribs(model_version: str, feature_vector: dict[str, Any]) -> list[tuple[str, float]]:
-    """Compute SHAP values for the q=0.5 U model and return top 5 contributors."""
+    """Compute SHAP values for the q=0.5 U model and return top 5 contributors.
+
+    Ensemble bundles (settings model.ensemble: true — the production
+    configuration) store a LIST of member models under each key; the former
+    code passed that list straight to TreeExplainer / DMatrix, which raised
+    and silently emptied every /why and top_contributors response. Member
+    contributions are now averaged (same equal-weight policy as the ensemble
+    prediction itself).
+    """
     bundle = load_model_bundle(model_version)
-    backend = bundle.get("backend", "lightgbm")
     X = _row_to_matrix(feature_vector, bundle["features"])
 
-    # SHAP only supported for LightGBM (TreeExplainer on Booster).
-    # For XGBoost we'd use xgboost's own DMatrix + pred_contributions.
-    if backend == "xgboost_gpu":
-        return _xgboost_top_contribs(bundle["u_q50"], X, bundle["features"])
-    return _lightgbm_top_contribs(bundle["u_q50"], X, bundle["features"])
+    members = bundle.get("ensemble_members") or [bundle.get("backend", "lightgbm")]
+    model_or_list = bundle["u_q50"]
+    if not isinstance(model_or_list, list):
+        model_or_list = [model_or_list]
+
+    arrs: list[np.ndarray] = []
+    for member, model in zip(members, model_or_list, strict=False):
+        if member == "xgboost_gpu":
+            arrs.append(_xgboost_contribs(model, X))
+        else:
+            arrs.append(_lightgbm_contribs(model, X))
+    if not arrs:
+        return []
+    arr = np.mean(arrs, axis=0)
+    feat_names = bundle["features"]
+    pairs = list(zip(feat_names, arr.tolist(), strict=False))
+    pairs.sort(key=lambda p: abs(p[1]), reverse=True)
+    return [(n, round(v, 3)) for n, v in pairs[:5] if abs(v) > 1e-6]
 
 
-def _lightgbm_top_contribs(model: Any, X: pd.DataFrame, feat_names: list[str]) -> list[tuple[str, float]]:
+def _lightgbm_contribs(model: Any, X: pd.DataFrame) -> np.ndarray:
     import shap
 
     explainer = shap.TreeExplainer(model)
     shap_vals = explainer.shap_values(X)
     if isinstance(shap_vals, list):
         shap_vals = shap_vals[0]
-    arr = np.atleast_2d(shap_vals)[0]
-    pairs = list(zip(feat_names, arr.tolist(), strict=False))
-    pairs.sort(key=lambda p: abs(p[1]), reverse=True)
-    return [(n, round(v, 3)) for n, v in pairs[:5] if abs(v) > 1e-6]
+    return np.atleast_2d(shap_vals)[0]
 
 
-def _xgboost_top_contribs(model: Any, X: pd.DataFrame, feat_names: list[str]) -> list[tuple[str, float]]:
+def _xgboost_contribs(model: Any, X: pd.DataFrame) -> np.ndarray:
     """Use XGBoost's pred_contributions (SHAP-like) for tree models."""
     import xgboost as xgb
 
     # Convert DataFrame to DMatrix for contribution prediction
     contributions = model.predict(xgb.DMatrix(X), pred_contribs=True)
     # Returns shape (n_samples, n_features + 1) — last column is bias
-    arr = np.atleast_2d(contributions)[0, :-1]
-    pairs = list(zip(feat_names, arr.tolist(), strict=False))
-    pairs.sort(key=lambda p: abs(p[1]), reverse=True)
-    return [(n, round(v, 3)) for n, v in pairs[:5] if abs(v) > 1e-6]
+    return np.atleast_2d(contributions)[0, :-1]
 
 
 __all__ = ["predict_at", "predict_bias", "band_speeds_kn", "InferenceResult", "BiasPrediction"]

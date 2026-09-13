@@ -237,12 +237,16 @@ def recover(
     # --- Recover forecast_runs ---
     fc_gap = gaps["forecast_runs"]
     if fc_gap["needs_recovery"] or force_full:
-        min(fc_gap["gap_days"], max_days)
         if fc_gap["latest"]:
             start = fc_gap["latest"] - timedelta(hours=1)  # slight overlap for safety
         else:
             # No data at all — backfill from max_days ago
             start = utcnow() - timedelta(days=max_days)
+        # max_days is the DOCUMENTED safety cap: a 3-year outage must not
+        # trigger a single 3-year backfill (API quotas, startup latency).
+        # The former `min(gap_days, max_days)` result was computed and
+        # discarded — the cap never applied.
+        start = max(start, utcnow() - timedelta(days=max_days))
         end = utcnow()
 
         gap_days_actual = (end - start).total_seconds() / 86400.0
@@ -284,11 +288,12 @@ def recover(
     # --- Recover observations (ERA5) ---
     obs_gap = gaps["observations"]
     if obs_gap["needs_recovery"] or force_full:
-        min(obs_gap["gap_days"], max_days)
         if obs_gap["latest"]:
             start = obs_gap["latest"] - timedelta(hours=1)
         else:
             start = utcnow() - timedelta(days=max_days)
+        # Same safety-cap enforcement as the forecast path above.
+        start = max(start, utcnow() - timedelta(days=max_days))
         end = utcnow()
 
         gap_days_actual = (end - start).total_seconds() / 86400.0

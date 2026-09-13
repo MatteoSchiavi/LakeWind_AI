@@ -47,7 +47,6 @@ def coverage_report(
     preds = access.latest_predictions(limit=200000, start_time=start)
     if not preds:
         return []
-
     # Bucket by ISO week (Monday-based)
     by_week: dict[str, list[dict[str, Any]]] = {}
     for p in preds:
@@ -57,7 +56,10 @@ def coverage_report(
         key = (vt - timedelta(days=vt.weekday())).date().isoformat()
         by_week.setdefault(key, []).append(p)
 
-    nominal = 0.80
+    # Nominal coverage follows the configured conformal alpha (single source
+    # of truth — the former hardcoded 0.80 silently disagreed with any
+    # non-default model.conformal_alpha).
+    nominal = round(1.0 - float(getattr(s.model, "conformal_alpha", 0.2)), 4)
     out: list[dict[str, Any]] = []
     for week_start in sorted(by_week):
         matched = covered = 0

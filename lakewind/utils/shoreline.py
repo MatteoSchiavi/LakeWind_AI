@@ -1,10 +1,15 @@
 """V6 lake shoreline loader — single source of truth for the lake polygon.
 
 Replaces the hardcoded _LAKE_POLYGON arrays in heatmap_v3.py and
-validate_points.py. Loads from data/lake_como_shoreline.geojson.
+validate_points.py. Loads from lakewind/data/lake_como_shoreline.geojson
+(committed to the repo, ships inside the Docker image via `COPY lakewind/`).
 
-The GeoJSON was digitized from satellite imagery and includes the Piona
-peninsula (missing from V5's approximation).
+The GeoJSON is the FULL Lake Como water polygon from OpenStreetMap (relation
+541757, ODbL; 290 vertices, ~144 km² — the whole lake including the Lecco
+arm, retrieved 2026-09-12). Every operational point in settings.yaml is
+verified ON WATER against this polygon by scripts/validate_points.py; the
+heatmap clips its interpolation field to it. To regenerate or refine (e.g.
+higher fidelity for Phase 6 lakes), see scripts/fetch_shoreline.py.
 """
 from __future__ import annotations
 
@@ -20,8 +25,8 @@ _CACHE: list[tuple[float, float]] | None = None
 def get_shoreline() -> list[tuple[float, float]]:
     """Return the lake shoreline as a list of (lon, lat) tuples.
 
-    Loads from data/lake_como_shoreline.geojson on first call, then caches.
-    Falls back to a minimal hardcoded polygon if the file is missing.
+    Loads from lakewind/data/lake_como_shoreline.geojson on first call, then
+    caches. Falls back to a minimal hardcoded polygon if the file is missing.
     """
     global _CACHE
     if _CACHE is not None:

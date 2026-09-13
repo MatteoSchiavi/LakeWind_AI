@@ -28,7 +28,10 @@ if [ ! -f /app/settings.yaml ]; then
 fi
 
 if [ -f /app/.env ]; then
-    export $(grep -v '^#' /app/.env | xargs)
+    # Source (not `xargs`) so values may contain spaces / special characters.
+    set -a
+    . /app/.env
+    set +a
 fi
 
 if [ -z "$TELEGRAM_BOT_TOKEN" ]; then

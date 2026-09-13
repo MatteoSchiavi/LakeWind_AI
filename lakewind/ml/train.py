@@ -260,6 +260,16 @@ def _time_ordered_split(
     # Guardrails: at least 50 val samples and at least 100 train samples
     if cut < 100 or (len(df_sorted) - cut) < 50:
         return df, None
+    # Snap the cut FORWARD to the first row whose valid_time differs from the
+    # previous row: samples sharing an hour must stay on the SAME side of the
+    # split (the docstring always claimed this — multi-point rows of one hour
+    # are spatially autocorrelated, so splitting mid-hour leaks across the
+    # boundary).
+    times = df_sorted["valid_time"].to_numpy()
+    while cut < len(df_sorted) and times[cut] == times[cut - 1]:
+        cut += 1
+    if cut >= len(df_sorted) or (len(df_sorted) - cut) < 50:
+        return df, None
     return df_sorted.iloc[:cut], df_sorted.iloc[cut:]
 
 
@@ -844,7 +854,6 @@ def train(
         except Exception as exc:
             logger.debug("Speed-space registry metrics skipped: %s", exc)
 
-    metrics.get("u_q50_val_mae")
     if register:
         access.register_model(
             model_version=mv,
@@ -917,7 +926,6 @@ def load_model_bundle(model_version: str) -> dict[str, Any]:
     members = feat_meta.get("ensemble") or [actual_backend]
     if isinstance(members, str):
         members = [members]
-    members[0]
     for target in ("u", "v"):
         for q in load_settings().model.quantiles:
             key = f"{target}_q{int(q*100):02d}"

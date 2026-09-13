@@ -19,4 +19,8 @@ services:
       - .env
     environment:
       - TZ=Europe/Rome
+    # Cautious resource envelope for the T420 (8 GB RAM): DuckDB is capped
+    # separately in settings.yaml (db.memory_limit). Raise both together if
+    # the host has more memory.
+    mem_limit: 3g
     stop_grace_period: 30s

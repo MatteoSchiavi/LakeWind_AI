@@ -329,6 +329,9 @@ api:
   enabled: true
   host: "0.0.0.0"
   port: 8000
+  # Optional bearer token: when set, every NON-GET request must present
+  # 'Authorization: Bearer <token>'. GET stays open (read-only LAN dashboard).
+  # auth_token: "change-me"
 
 # Phase 2 — in-process cache TTLs
 cache:

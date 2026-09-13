@@ -146,9 +146,17 @@ def _interpolate_grid_v3(
 
 
 def _add_scale_bar_v3(ax, lat: float, lon: float, length_km: float = 2.0) -> None:
-    """Draw a scale bar."""
+    """Draw a scale bar (lon-direction bar, geodesic-corrected).
+
+    At 46°N one degree of longitude spans only ~77 km (vs 111 km for
+    latitude). The former bar converted km to DEGREES with the latitude
+    factor, so under the (now corrected) geographic aspect the bar under-
+    represented real east-west distance by ~30%. The cosine factor makes
+    the drawn bar a true length_km on the ground.
+    """
     km_per_deg_lat = 111.32
-    deg = length_km / km_per_deg_lat
+    km_per_deg_lon = km_per_deg_lat * math.cos(math.radians(lat))
+    deg = length_km / km_per_deg_lon
     y = lat
     x0 = lon
     x1 = lon + deg
@@ -411,7 +419,7 @@ def _draw_panel_v3(
                 ax.scatter([p["lon"]], [p["lat"]], s=400, c="none",
                           edgecolor="#00ff00", linewidth=2.5, alpha=0.6, zorder=5)
 
-    # Heatmap interpolation (use all 15 points for finer grid)
+    # Heatmap interpolation over the operational points
     if len(valid) >= 3:
         try:
             grid_lons, grid_lats, grid_speeds = _interpolate_grid_v3(
@@ -525,7 +533,13 @@ def _draw_panel_v3(
 
     ax.set_xlim(*xlim)
     ax.set_ylim(*ylim)
-    ax.set_aspect("equal", adjustable="box")
+    # Geographic (equirectangular) aspect: 1° of latitude must display
+    # 1/cos(lat) times longer than 1° of longitude. The former "equal"
+    # aspect stretched the lake EAST-WEST by ~44% at 46°N — positions stayed
+    # correct relative to each other, but the lake shape and every E-W
+    # distance (and the scale bar) were visually wrong.
+    center_lat = 0.5 * (lat_min + lat_max)
+    ax.set_aspect(1.0 / math.cos(math.radians(center_lat)), adjustable="box")
     ax.tick_params(labelsize=6, colors="#555", length=2)
     ax.grid(True, alpha=0.20, linestyle="--", linewidth=0.3)
     for spine in ax.spines.values():
@@ -636,11 +650,24 @@ def generate_trend_chart(
     if not sorted_preds:
         return None
 
-    times = [x[0] for x in sorted_preds]
-    speeds = [x[1].get("wind_speed_kn") or 0 for x in sorted_preds]
-    gusts = [x[1].get("wind_gust_kn") or 0 for x in sorted_preds]
-    dirs = [x[1].get("wind_dir_deg") or 0 for x in sorted_preds]
-    confs = [x[1].get("confidence_pct") or 0 for x in sorted_preds]
+    # Deduplicate generations: latest_predictions returns rows across the
+    # newest AND the previous predict cycle (limit-based); overlapping
+    # valid_times from two generations render as zigzag artifacts.
+    best: dict[datetime, dict[str, Any]] = {}
+    for p in sorted_preds:
+        gen = p.get("generated_at")
+        cur = best.get(p[0])
+        if cur is None or (gen or utcnow()) >= (cur.get("generated_at") or utcnow()):
+            best[p[0]] = p
+    rows = [best[t] for t in sorted(best)]
+    if not rows:
+        return None
+
+    times = list(best.keys())
+    speeds = [r[1].get("wind_speed_kn") or 0 for r in rows]
+    gusts = [r[1].get("wind_gust_kn") or 0 for r in rows]
+    dirs = [r[1].get("wind_dir_deg") or 0 for r in rows]
+    confs = [r[1].get("confidence_pct") or 0 for r in rows]
 
     fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(10, 8), sharex=True,
                                          constrained_layout=True)

@@ -32,6 +32,7 @@ data/*.duckdb
 data/*.duckdb.wal
 data/models/
 data/cache/
+data/backups/
 
 # Secrets
 .env
