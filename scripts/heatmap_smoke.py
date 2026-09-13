@@ -32,17 +32,19 @@ def main() -> None:
         print(f"DB unavailable ({exc}) — using synthetic rows")
 
     if len(preds) < 3:
-        # Synthetic but realistic: breva-like gradient, stronger at Domaso.
-        speeds = {"dongo_shore": 7.2, "gravedona_shore": 8.1, "domaso_offshore": 10.4,
-                  "mid_channel": 9.0, "piona_entrance": 8.6, "dervio_shore": 7.8,
-                  "bellano_offshore": 6.9}
-        dirs = {"dongo_shore": 190, "gravedona_shore": 185, "domaso_offshore": 175,
-                "mid_channel": 180, "piona_entrance": 188, "dervio_shore": 195,
-                "bellano_offshore": 200}
-        for pid, sp in speeds.items():
-            preds.append({"point_id": pid, "wind_speed_kn": sp, "wind_dir_deg": dirs[pid],
-                          "wind_gust_kn": sp * 1.5, "confidence_pct": 78})
-        print("using synthetic predictions")
+        # Synthetic but realistic: breva-like gradient along the basin.
+        s = load_settings()
+        speeds = {"colico": 8.8, "sorico": 9.2, "gera_lario": 9.0, "domaso": 10.4,
+                  "gravedona": 9.6, "dongo": 8.9, "piona": 9.3, "cremia": 8.4,
+                  "dervio": 8.1, "varenna": 7.6, "menaggio": 7.9, "bellagio": 8.2,
+                  "mandello": 6.8, "lecco": 6.4, "como_city": 5.9}
+        for vp in s.virtual_points:
+            if vp.id in s.operational_point_ids:
+                sp = speeds.get(vp.id, 8.0)
+                preds.append({"point_id": vp.id, "wind_speed_kn": sp,
+                              "wind_dir_deg": 190, "wind_gust_kn": sp * 1.5,
+                              "confidence_pct": 78})
+        print(f"using {len(preds)} synthetic predictions from settings spots")
 
     png = generate_heatmap_v3(preds, utcnow() + timedelta(hours=2))
     assert png is not None and len(png) > 50000, "heatmap render failed"
