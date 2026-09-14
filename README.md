@@ -66,6 +66,17 @@ token is configured) under a supervisor loop that restarts dead children.
 > to `--max-days` (365) of history. On the free Open-Meteo tier this takes a
 > few minutes and a meaningful slice of the daily quota — it happens once.
 
+### Step-by-step deployment guides
+
+- **[docs/INSTALL_WINDOWS.md](docs/INSTALL_WINDOWS.md)** — Windows 10/11
+  workstation from zero: environment, configuration, first data, production
+  training on the RTX GPU (XGBoost CUDA, automatic CPU fallback), and the
+  full 13-point verification pass.
+- **[docs/MIGRATE_LINUX.md](docs/MIGRATE_LINUX.md)** — move the database,
+  trained model weights (`data/models/`), config and secrets to the always-on
+  Linux server over SSH; Docker (or native) bring-up, restore, verification
+  and ops hardening (systemd, auto-update, offsite backups).
+
 ---
 
 ## Configuration
@@ -367,6 +378,19 @@ Project layout: `lakewind/` (package) · `tests/` (suite) · `web-ui/`
 per-phase plans & reports, verification reports). `data/` is runtime state
 (DB, models, backups, caches) and is git-ignored except nothing — the
 shoreline geojson lives in `lakewind/data/` so it ships with the code.
+
+## Roadmap
+
+- **Done:** Phase 5.5 multi-spot expansion — 15 verified Lake Como spots
+  (whole basin), V5 shore-side heatmap cards, ECMWF reference switch, METAR
+  truth-check, full verification pass.
+- **Next (Phase 6):** new basins — **Lago di Garda** (Ora/Peler, the largest
+  Italian sailing community, well-instrumented), **Lago di Bracciano** and
+  **Porto Palma** (coastal Sardinia — first non-lake spot; marine station
+  truth needs checking). Protocol per phase: detailed plan first
+  (per-basin `settings.yaml`, verified coordinates two-source rule, shoreline
+  polygons, per-basin model bundles vs shared-model decision), then one spot
+  at a time with validation at each step.
 
 ## License
 

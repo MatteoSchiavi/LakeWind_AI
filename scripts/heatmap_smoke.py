@@ -2,16 +2,19 @@
 """Visual smoke: render a V3 heatmap from the real DuckDB predictions.
 
 Uses the newest stored prediction generation; falls back to synthetic rows if
-the DB is unreachable. Writes /home/z/my-project/download/heatmap_check.png.
+the DB is unreachable. Writes <repo>/data/cache/heatmap_check.png.
 """
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 
-sys.path.insert(0, "/home/z/my-project/LakeWind_AI")
+REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_ROOT))
 
 from datetime import timedelta  # noqa: E402
 
+from lakewind.config import load_settings  # noqa: E402
 from lakewind.utils.heatmap_v3 import generate_heatmap_v3  # noqa: E402
 from lakewind.utils.timeutil import utcnow  # noqa: E402
 
@@ -19,7 +22,6 @@ from lakewind.utils.timeutil import utcnow  # noqa: E402
 def main() -> None:
     preds: list[dict] = []
     try:
-        from lakewind.config import load_settings
         from lakewind.db import access
 
         s = load_settings()
@@ -48,7 +50,8 @@ def main() -> None:
 
     png = generate_heatmap_v3(preds, utcnow() + timedelta(hours=2))
     assert png is not None and len(png) > 50000, "heatmap render failed"
-    out = "/home/z/my-project/download/heatmap_check.png"
+    out = REPO_ROOT / "data" / "cache" / "heatmap_check.png"
+    out.parent.mkdir(parents=True, exist_ok=True)
     with open(out, "wb") as fh:
         fh.write(png)
     print(f"rendered {len(png)/1024:.0f} KB -> {out}")

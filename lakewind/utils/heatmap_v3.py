@@ -12,8 +12,14 @@ V4 improvements over V3 (Phase 5.5):
 4. Live counts in title/footer (no more rotting "8-point" strings).
 5. Shared speed palette (SPEED_COLORS) unchanged — mirror contract with the
    web-ui palette.ts is snapshot-tested.
-6. Data overlays kept: pressure-gradient badge, regime badge, station models,
-   sailable rings, compass, scale bar.
+6. Data overlays kept: pressure-gradient badge, regime badge, sailable rings,
+   compass, scale bar. The old per-spot station models (four tiny boxes
+   around every dot) are REPLACED by V5 shore-side cards — one compact card
+   per spot (name / wind speed / direction arrow) placed on the OPEN-WATER
+   side of its dot: east-shore spots draw the card to the LEFT, west-shore
+   spots to the RIGHT. Cards grow into the lake instead of into each other,
+   are renderer-measured and collision-shifted, and are tied to their dot
+   with a thin leader line.
 
 The old generate_multipanel_v3 (never called anywhere) was removed.
 """
@@ -52,31 +58,187 @@ def _valley_axis_deg() -> float:
         return 10.0
 
 
-def _spot_labels() -> list[tuple[float, float, str, str]]:
-    """Town labels for the map, derived from settings.yaml — never hardcoded.
+# ---- V5 shore-side cards -------------------------------------------------
+# Card anchor geometry, in map degrees. Cards hang off the spot DOT (the
+# point the forecast is for), not the town anchor: the value on the card is
+# the value at the dot.
+_CARD_OFFSET_DEG = 0.011   # card near-edge distance from the dot (E-W)
+_NAME_LINE_DY = 0.0038     # name line centre above the card centre (N-S)
+_SPEED_LINE_DY = -0.0038   # speed line centre below the card centre
+_ARROW_LEN_KM = 0.85       # direction-arrow length on the ground
+_ARROW_GAP_DEG = 0.0032    # gap between the speed text and the arrow
 
-    Returns (lon, lat, name, horizontal-alignment) using each spot's VERIFIED
-    town anchor. Alignment is geometric: west-shore towns (water to their
-    east) draw the label to the WEST of the anchor (ha='right'), east-shore
-    towns to the EAST (ha='left') — labels always sit over land, never over
-    the wind field.
+
+def _map_display_name(label: str) -> str:
+    """Short cartographic form of a settings label, for the map card only.
+
+    settings.yaml carries formal labels ("Gravedona ed Uniti", "Lecco /
+    Valmadrera", "Piona (Olgiasca)"); on a 0.4°-wide basin such strings
+    stretch across half the map. Trim to the short form actually painted
+    on road signs: cut at the first parenthetical, slash or "ed"
+    conjunction, then at the first word if the remainder is still long.
+    The full label is untouched everywhere else (bot, API, web UI).
     """
-    from lakewind.config import load_settings
+    for sep in (" (", " /", " ed "):
+        if sep in label:
+            label = label.split(sep, 1)[0]
+    if len(label) > 10:
+        label = label.split()[0]
+    return label
+
+
+def _open_water_side(lon: float, lat: float) -> str:
+    """Return 'right' or 'left': the side of (lon, lat) where the lake opens.
+
+    This encodes the readability rule for the whole map: a spot on the
+    EAST shore gets its card on the LEFT of the dot (text flows out over
+    the water), a spot on the WEST shore gets it on the RIGHT — every
+    card grows into the lake instead of into the town behind it, and
+    opposite shores grow away from each other. Detected geometrically
+    from the committed OSM shoreline: walk horizontally outward until
+    exactly one side is still water; that side is the open lake.
+    """
     from lakewind.utils.shoreline import point_on_water
 
-    try:
-        s = load_settings()
-    except Exception:
-        return []
-    out: list[tuple[float, float, str, str]] = []
-    for vp in s.virtual_points:
-        if vp.label is None or vp.anchor_lat is None or vp.anchor_lon is None:
-            continue  # aux gradient points carry no label
-        east_water = point_on_water(vp.anchor_lon + 0.012, vp.anchor_lat)
-        west_water = point_on_water(vp.anchor_lon - 0.012, vp.anchor_lat)
-        ha = "left" if east_water and not west_water else "right"
-        out.append((vp.anchor_lon, vp.anchor_lat, vp.label, ha))
-    return out
+    for d in (0.005, 0.008, 0.012, 0.017, 0.023, 0.030):
+        east = point_on_water(lon + d, lat)
+        west = point_on_water(lon - d, lat)
+        if east and not west:
+            return "right"  # water to the east -> west shore -> card right
+        if west and not east:
+            return "left"   # water to the west -> east shore -> card left
+    return "right"          # open water on both sides — default right
+
+
+def _draw_spot_cards(ax, spots: list[dict[str, Any]], xlim: tuple[float, float]) -> None:
+    """Draw one compact two-line card per spot, on its open-water side.
+
+        Dongo
+        8.9 kn  ➜       (west shore: card right of the dot)
+
+    Line 1 is the spot name (bold), line 2 the wind speed plus a small
+    arrow pointing where the wind blows TO. The arrow is drawn in
+    ground-kilometres and the map is equirectangular, so a NE wind reads
+    as NE on the page. Placement is renderer-measured, not estimated:
+    each card's real text extent is measured, kept inside the axes, and
+    shifted vertically until it hits nothing (greedy north-to-south with
+    fallback offsets; the other dots are no-go obstacles). A thin leader
+    line ties every card to its dot, so a shifted card stays unambiguous.
+    """
+    if not spots:
+        return
+
+    from matplotlib.patches import FancyBboxPatch
+
+    fig = ax.figure
+    fig.canvas.draw()  # settle constrained layout before measuring extents
+    renderer = fig.canvas.get_renderer()
+    inv = ax.transData.inverted()
+
+    def _to_data(bb):
+        (x0, y0), (x1, y1) = inv.transform([(bb.x0, bb.y0), (bb.x1, bb.y1)])
+        return min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1)
+
+    dy_candidates = (0.0, -0.011, 0.011, -0.022, 0.022, -0.033, 0.033,
+                     -0.044, 0.044)
+    arrow_room = _ARROW_GAP_DEG + 2.0 * 0.5 * _ARROW_LEN_KM / 77.0 + 0.001
+
+    obstacles = [(p["lon"] - 0.0085, p["lon"] + 0.0085,
+                  p["lat"] - 0.0065, p["lat"] + 0.0065) for p in spots]
+    placed: list[tuple[float, float, float, float]] = []
+    recs: list[dict[str, Any]] = []
+
+    for sp in sorted(spots, key=lambda p: -p["lat"]):
+        sign = 1.0 if sp["side"] == "right" else -1.0
+        ha = "left" if sign > 0 else "right"
+        speed = sp.get("wind_speed_kn")
+        speed_txt = f"{speed:.1f} kn" if speed is not None else "no data"
+
+        t_name = ax.text(0, 0, sp["name"], fontsize=6.5, fontweight="bold",
+                         ha=ha, va="center", color="#111111", zorder=9)
+        t_speed = ax.text(0, 0, speed_txt, fontsize=6, ha=ha, va="center",
+                          color="#9a9a9a" if speed is None else "#0a3d5c",
+                          fontstyle="italic" if speed is None else "normal",
+                          zorder=9)
+        tx = sp["lon"] + sign * _CARD_OFFSET_DEG
+        t_name.set_position((tx, sp["lat"] + _NAME_LINE_DY))
+        t_speed.set_position((tx, sp["lat"] + _SPEED_LINE_DY))
+
+        x0, y0, x1, y1 = _to_data(t_name.get_window_extent(renderer))
+        sx0, sy0, sx1, sy1 = _to_data(t_speed.get_window_extent(renderer))
+        x0, x1 = min(x0, sx0), max(x1, sx1)
+        y0, y1 = min(y0, sy0), max(y1, sy1)
+
+        # Keep the card inside the axes — near the east/west map edge the
+        # text would otherwise spill over the frame or under the colorbar.
+        far, lim = (x1, xlim[1] - 0.004) if sign > 0 else (x0, xlim[0] + 0.004)
+        dx = (lim - far) if ((far > lim) if sign > 0 else (far < lim)) else 0.0
+        if dx:
+            tx += dx
+            t_name.set_position((tx, sp["lat"] + _NAME_LINE_DY))
+            t_speed.set_position((tx, sp["lat"] + _SPEED_LINE_DY))
+            x0 += dx
+            x1 += dx
+            sx0 += dx
+            sx1 += dx
+
+        box = (0.0, 0.0, 0.0, 0.0)
+        chosen = 0.0
+        for dy in dy_candidates:
+            bx0 = x0 if sign > 0 else x0 - arrow_room
+            bx1 = x1 + arrow_room if sign > 0 else x1
+            by0, by1 = y0 + dy, y1 + dy
+            box = (bx0, bx1, by0, by1)
+            if not any(bx0 < ox1 and bx1 > ox0 and by0 < oy1 and by1 > oy0
+                       for ox0, ox1, oy0, oy1 in placed + obstacles):
+                chosen = dy
+                break
+        placed.append(box)
+        # Re-apply the chosen fallback shift to the text artists themselves —
+        # the patch/leader/arrow below are drawn from the shifted geometry.
+        t_name.set_position((tx, sp["lat"] + chosen + _NAME_LINE_DY))
+        t_speed.set_position((tx, sp["lat"] + chosen + _SPEED_LINE_DY))
+        recs.append({"sp": sp, "tx": tx, "dy": chosen, "x0": x0, "x1": x1,
+                     "sx0": sx0, "sx1": sx1, "y0": y0, "y1": y1,
+                     "speed": speed, "speed_y": sp["lat"] + chosen + _SPEED_LINE_DY})
+
+    km_lat = 110.574
+    for r in recs:
+        sp = r["sp"]
+        sign = 1.0 if sp["side"] == "right" else -1.0
+
+        # Leader line: dot edge -> card edge, so shifted cards stay attached.
+        ax.plot([sp["lon"] + sign * 0.0062, r["tx"] - sign * 0.0016],
+                [sp["lat"], sp["lat"] + r["dy"]],
+                color="#4a4a4a", lw=0.6, alpha=0.6, zorder=7,
+                solid_capstyle="round")
+
+        # Direction arrow first: the card patch wraps around it.
+        arrow = None
+        if r["speed"] is not None and sp.get("wind_dir_deg") is not None:
+            go = math.radians((float(sp["wind_dir_deg"]) + 180.0) % 360.0)
+            km_lon = 111.32 * math.cos(math.radians(sp["lat"]))
+            hlx = 0.5 * _ARROW_LEN_KM * math.sin(go) / km_lon
+            hly = 0.5 * _ARROW_LEN_KM * math.cos(go) / km_lat
+            cx = (r["sx1"] if sign > 0 else r["sx0"]) + sign * (_ARROW_GAP_DEG + abs(hlx))
+            cy = r["speed_y"]
+            x0, x1 = min(r["x0"], cx - abs(hlx)), max(r["x1"], cx + abs(hlx))
+            arrow = (cx, cy, hlx, hly)
+
+        card = FancyBboxPatch(
+            (x0 - 0.0016, r["y0"] + r["dy"] - 0.0011),
+            (x1 - x0) + 0.0032, (r["y1"] - r["y0"]) + 0.0022,
+            boxstyle="round,pad=0,rounding_size=0.0022",
+            facecolor="#fbf9ef", edgecolor="#9b9b8b", linewidth=0.5,
+            alpha=0.92, zorder=8)
+        ax.add_patch(card)
+
+        if arrow is not None:
+            cx, cy, hlx, hly = arrow
+            ax.annotate("", xy=(cx + hlx, cy + hly), xytext=(cx - hlx, cy - hly),
+                        arrowprops=dict(arrowstyle="-|>", mutation_scale=6.5,
+                                        lw=1.2, color="#0a3d5c",
+                                        shrinkA=0, shrinkB=0), zorder=9)
 
 
 def _interpolate_grid_v3(
@@ -181,129 +343,6 @@ def _add_compass_v3(ax, lat: float, lon: float, size: float = 0.006) -> None:
             ha="center", zorder=10)
 
 
-def _draw_wind_barb(ax, lon: float, lat: float, speed_kn: float, direction_from_deg: float) -> None:
-    """Draw a meteorological wind barb at (lon, lat)."""
-    if speed_kn < 1.0:
-        ax.plot(lon, lat, "o", color="#1a1a1a", markersize=4, zorder=6)
-        return
-
-    go_to_deg = (direction_from_deg + 180.0) % 360.0
-    rad = math.radians(go_to_deg)
-    stem_len = 0.010
-    dx = math.sin(rad) * stem_len
-    dy = math.cos(rad) * stem_len
-
-    ax.plot([lon, lon + dx], [lat, lat + dy], color="#1a1a1a", linewidth=1.5, zorder=6)
-
-    speed_int = int(round(speed_kn / 5.0)) * 5
-    n_pennants = speed_int // 50
-    n_long = (speed_int % 50) // 10
-    n_short = (speed_int % 10) // 5
-
-    barb_perp_dx = -dy / stem_len * 0.003
-    barb_perp_dy = dx / stem_len * 0.003
-
-    barb_positions = [0.75, 0.55, 0.35, 0.15]
-    barb_idx = 0
-
-    for _ in range(n_pennants):
-        if barb_idx >= len(barb_positions):
-            break
-        t = barb_positions[barb_idx]
-        bx = lon + dx * t
-        by = lat + dy * t
-        ax.fill(
-            [bx, bx + barb_perp_dx * 2, bx + dx * 0.12],
-            [by, by + barb_perp_dy * 2, by + dy * 0.12],
-            color="#1a1a1a", zorder=7,
-        )
-        barb_idx += 1
-
-    for _ in range(n_long):
-        if barb_idx >= len(barb_positions):
-            break
-        t = barb_positions[barb_idx]
-        bx = lon + dx * t
-        by = lat + dy * t
-        ax.plot(
-            [bx, bx + barb_perp_dx * 2],
-            [by, by + barb_perp_dy * 2],
-            color="#1a1a1a", linewidth=1.5, zorder=7,
-        )
-        barb_idx += 1
-
-    for _ in range(n_short):
-        if barb_idx >= len(barb_positions):
-            break
-        t = barb_positions[barb_idx]
-        bx = lon + dx * t
-        by = lat + dy * t
-        ax.plot(
-            [bx, bx + barb_perp_dx],
-            [by, by + barb_perp_dy],
-            color="#1a1a1a", linewidth=1.0, zorder=7,
-        )
-        barb_idx += 1
-
-
-def _draw_station_model(ax, lon: float, lat: float, pred: dict[str, Any]) -> None:
-    """Draw a simplified meteorological station model at each prediction point.
-
-    Layout:
-        [temp]  [gust]
-           |    |
-           [O]    wind barb + speed
-           |    |
-        [dir]  [conf%]
-    """
-    speed = pred.get("wind_speed_kn") or 0.0
-    direction = pred.get("wind_dir_deg") or 0.0
-    gust = pred.get("wind_gust_kn")
-    conf = pred.get("confidence_pct") or 0
-    temp = pred.get("temperature")  # may be None
-
-    # Wind barb
-    _draw_wind_barb(ax, lon, lat, speed, direction)
-
-    # Speed label (right of point)
-    ax.text(
-        lon + 0.004, lat + 0.002,
-        f"{speed:.0f}",
-        fontsize=6, fontweight="bold", ha="left", va="center",
-        bbox=dict(boxstyle="round,pad=0.15", facecolor="white", alpha=0.9,
-                  edgecolor="#666"),
-        zorder=8,
-    )
-
-    # Gust label (above-right, in red)
-    if gust and gust > speed + 1:
-        ax.text(
-            lon + 0.004, lat + 0.005,
-            f"G{gust:.0f}",
-            fontsize=5, ha="left", va="center", color="#cc0000",
-            bbox=dict(boxstyle="round,pad=0.1", facecolor="white", alpha=0.8),
-            zorder=8,
-        )
-
-    # Confidence (below-right, colored by value)
-    conf_color = "#00aa00" if conf >= 75 else "#ccaa00" if conf >= 50 else "#cc0000"
-    ax.text(
-        lon + 0.004, lat - 0.003,
-        f"{conf:.0f}%",
-        fontsize=5, ha="left", va="center", color=conf_color,
-        zorder=8,
-    )
-
-    # Temperature (left, if available)
-    if temp is not None:
-        ax.text(
-            lon - 0.004, lat + 0.002,
-            f"{temp:.0f}°",
-            fontsize=5, ha="right", va="center", color="#0066cc",
-            zorder=8,
-        )
-
-
 def _draw_data_overlay(ax, predictions: list[dict[str, Any]], valid_time: datetime) -> None:
     """Draw data overlay: pressure gradient badge + regime label in corner."""
     from lakewind.config import load_settings
@@ -363,12 +402,10 @@ def _draw_panel_v3(
     target_time: datetime,
     *,
     show_title: bool = True,
-    use_barbs: bool = True,
-    show_station_models: bool = True,
     show_good_sailing: bool = True,
     show_data_overlay: bool = True,
 ) -> None:
-    """Draw one V3 heatmap panel."""
+    """Draw one V5 heatmap panel (field + shore-side spot cards)."""
     from matplotlib.colors import LinearSegmentedColormap
 
     from lakewind.config import load_settings
@@ -416,8 +453,13 @@ def _draw_panel_v3(
     if show_good_sailing:
         for p in valid:
             if p["wind_speed_kn"] >= 8.0:
-                ax.scatter([p["lon"]], [p["lat"]], s=400, c="none",
-                          edgecolor="#00ff00", linewidth=2.5, alpha=0.6, zorder=5)
+                ax.scatter([p["lon"]], [p["lat"]], s=280, c="none",
+                          edgecolor="#00ff00", linewidth=2.0, alpha=0.6, zorder=5)
+
+    # Spot dots (white-rimmed) — the anchor every card hangs off
+    for p in valid:
+        ax.plot(p["lon"], p["lat"], "o", markersize=3.6, color="#0a3d5c",
+                markeredgecolor="white", markeredgewidth=0.5, zorder=6)
 
     # Heatmap interpolation over the operational points
     if len(valid) >= 3:
@@ -482,46 +524,16 @@ def _draw_panel_v3(
         except Exception:
             pass
 
-    # Station models (V3: full meteorological station model at each point)
-    if show_station_models:
-        for p in valid:
-            _draw_station_model(ax, p["lon"], p["lat"], p)
-    elif use_barbs:
-        for p in valid:
-            _draw_wind_barb(ax, p["lon"], p["lat"],
-                            p["wind_speed_kn"], p["wind_dir_deg"])
-
-    # Town labels (V4: all 15 verified spot labels from settings.yaml)
-    # Labels sit on the land side of each verified anchor, never on the water.
-    # North-basin towns sit 0.5-2 km apart, so label placement is
-    # text-extent-aware: estimated boxes, greedy north->south placement with
-    # vertical fallback offsets. Every spot still has its station model, and
-    # the interactive web map shows all 15 names.
-    spot_labels = [t for t in _spot_labels()
-                   if xlim[0] <= t[0] <= xlim[1] and ylim[0] <= t[1] <= ylim[1]]
-
-    def _box(lon: float, lat: float, name: str, ha: str):
-        # ~0.0036 deg of longitude per character at fontsize 6 on this figure
-        w = 0.0038 * len(name)
-        x0, x1 = (lon - w, lon) if ha == "right" else (lon, lon + w)
-        return (x0, x1, lat - 0.0035, lat + 0.0035)
-
-    drawn_boxes: list[tuple[float, float, float, float]] = []
-    for lon, lat, name, ha in sorted(spot_labels, key=lambda t: -t[1]):
-        placed = False
-        for dy in (0.0, -0.009, 0.009, -0.018, 0.018):
-            b = _box(lon, lat + dy, name, ha)
-            if any(bx0 < b[1] and bx1 > b[0] and by0 < b[3] and by1 > b[2]
-                   for bx0, bx1, by0, by1 in drawn_boxes):
-                continue
-            ax.text(lon, lat + dy, name, fontsize=6, fontweight="bold", ha=ha,
-                    bbox=dict(boxstyle="round,pad=0.1", facecolor="#f5f0e0",
-                              alpha=0.85, edgecolor="#aaa"), zorder=8)
-            drawn_boxes.append(b)
-            placed = True
-            break
-        if not placed:
-            logger.debug("heatmap: no room for label %s — station model only", name)
+    # V5 shore-side cards: name / speed / direction arrow per spot, on the
+    # open-water side of each dot (east shore -> left, west shore -> right).
+    spots = []
+    for p in valid:
+        vp = vp_by_id.get(p["point_id"])
+        if vp is None or vp.label is None:
+            continue  # aux gradient points carry no card
+        spots.append({**p, "name": _map_display_name(vp.label),
+                      "side": _open_water_side(p["lon"], p["lat"])})
+    _draw_spot_cards(ax, spots, xlim)
 
     # Compass + scale bar (whole-lake map: 5 km reference)
     _add_compass_v3(ax, lat=lat_min + 0.014, lon=lon_min + 0.015, size=0.007)
@@ -592,7 +604,6 @@ def generate_heatmap_v3(
     _draw_panel_v3(
         ax, predictions, target_time,
         show_title=True,
-        show_station_models=not compact,
         show_good_sailing=not compact,
         show_data_overlay=not compact,
     )
@@ -600,9 +611,9 @@ def generate_heatmap_v3(
     # Footer with data sources (live counts — no rotting constants)
     fig.text(
         0.5, 0.005,
-        f"LakeWind V4  •  MOS bias-corrected  •  {len(predictions)} spots  •  "
+        f"LakeWind V5  •  MOS bias-corrected  •  {len(predictions)} spots  •  "
         f"anisotropic RBF along the {_valley_axis_deg():.0f}\u00b0 valley axis  •  "
-        f"verified OSM shoreline  •  station models + regime",
+        f"verified OSM shoreline  •  shore-side cards, ring = sailable (≥8 kn)",
         ha="center", fontsize=5.5, color="#888", fontstyle="italic",
     )
 

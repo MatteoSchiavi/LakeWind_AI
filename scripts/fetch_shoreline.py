@@ -12,6 +12,7 @@ import json
 import math
 import sys
 import urllib.request
+from pathlib import Path
 
 import yaml
 from shapely.geometry import LineString, box
@@ -101,7 +102,8 @@ def main() -> None:
     print(f"bbox intersect + simplify: {len(ring)} points", file=sys.stderr)
 
     # --- verification (metres: use local scaling per point) ---
-    with open("/home/z/my-project/LakeWind_AI/settings.yaml") as fh:
+    settings_path = Path(__file__).resolve().parents[1] / "settings.yaml"
+    with open(settings_path) as fh:
         s = yaml.safe_load(fh)
     ops = set(s.get("operational_point_ids", []))
     print("\n=== VERIFICATION against real OSM polygon ===")
@@ -130,7 +132,8 @@ def main() -> None:
         "geometry": {"type": "Polygon", "coordinates": [[list(pt) for pt in ring]]},
     }
     geojson = {"type": "FeatureCollection", "features": [feature]}
-    dst = "/home/z/my-project/LakeWind_AI/lakewind/data/lake_como_shoreline.geojson"
+    dst = (Path(__file__).resolve().parents[1]
+           / "lakewind" / "data" / "lake_como_shoreline.geojson")
     with open(dst, "w") as fh:
         json.dump(geojson, fh, indent=1)
     print(f"\nwrote {dst}; verification_ok={ok}")
