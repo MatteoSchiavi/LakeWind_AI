@@ -251,6 +251,7 @@ telegram:
   enabled: true
   token_env: "TELEGRAM_BOT_TOKEN"
   allowed_user_ids: []   # empty = open; populate to restrict
+  admin_user_id: 1762615402  # Admin gets full access + system notifications
 
 streamlit:
   port: 8501

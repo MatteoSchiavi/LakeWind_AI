@@ -24,13 +24,31 @@ from lakewind.utils.timeutil import utcnow
 
 logger = logging.getLogger(__name__)
 
-# Admin Telegram user ID
-ADMIN_ID = 1762615402
+from lakewind.config import load_settings
+
+
+def get_admin_id() -> int | None:
+    """Get admin user ID from settings."""
+    s = load_settings()
+    return s.telegram.admin_user_id
 
 
 def is_admin(user_id: int) -> bool:
     """Check if a user is the admin."""
-    return user_id == ADMIN_ID
+    admin_id = get_admin_id()
+    return admin_id is not None and user_id == admin_id
+
+
+def is_allowed_user(user_id: int) -> bool:
+    """Check if user is allowed (admin or in allowed list)."""
+    admin_id = get_admin_id()
+    if admin_id is not None and user_id == admin_id:
+        return True
+    s = load_settings()
+    allowed = s.telegram.allowed_user_ids
+    if not allowed:  # empty = open access
+        return True
+    return user_id in allowed
 
 
 def get_admin_status() -> str:

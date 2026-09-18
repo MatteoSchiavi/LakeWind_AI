@@ -220,6 +220,7 @@ class TelegramConfig(BaseModel):
     enabled: bool = True
     token_env: str = "TELEGRAM_BOT_TOKEN"
     allowed_user_ids: list[int] = Field(default_factory=list)
+    admin_user_id: int | None = None  # If set, only this user gets admin features
 
 
 class StreamlitConfig(BaseModel):

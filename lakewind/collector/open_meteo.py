@@ -83,9 +83,14 @@ class OpenMeteoCollector(BaseCollector):
                 if key == "time":
                     continue  # shared axis, attached per emitted model below
                 matched = False
+                # Open-Meteo's multi-model endpoint suffixes each variable with
+                # the model slug (`wind_speed_10m_icon_d2`, `temperature_2m_icon_eu`,
+                # ...) — NOT the `icon_d2_wind_speed_10m` prefix the old code
+                # assumed. Match on the suffix so every model is demultiplexed.
                 for m in match_order:
-                    if key.startswith(m + "_"):
-                        per_model.setdefault(m, {})[key[len(m) + 1:]] = values
+                    suffix = "_" + m
+                    if key.endswith(suffix):
+                        per_model.setdefault(m, {})[key[: -len(suffix)]] = values
                         matched = True
                         break
                 if not matched:
@@ -159,7 +164,7 @@ class OpenMeteoCollector(BaseCollector):
                     "precipitation": _safe_get(hourly, "precipitation", i),
                     "weather_code": _safe_get(hourly, "weather_code", i),
                     "visibility": _safe_get(hourly, "visibility", i),
-                    "raw_json": {"hourly": hourly, "model": model_name, "point": point_id},
+                    "raw_json": {"model": model_name, "point": point_id},
                 }
                 rows.append(row)
         return rows

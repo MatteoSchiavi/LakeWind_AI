@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Trap for graceful shutdown
-trap 'echo "Shutting down..."; kill $DASHBOARD_PID $BOT_PID $PIPELINE_PID $API_PID 2>/dev/null; sleep 2; kill -9 $DASHBOARD_PID $BOT_PID $PIPELINE_PID $API_PID 2>/dev/null; pkill -f "lakewind" 2>/dev/null; pkill -f "streamlit" 2>/dev/null; wait; exit 0' SIGTERM SIGINT
+trap 'echo "Shutting down..."; kill $DASHBOARD_PID $BOT_PID $PIPELINE_PID $API_PID $SETUP_PID 2>/dev/null; sleep 2; kill -9 $DASHBOARD_PID $BOT_PID $PIPELINE_PID $API_PID $SETUP_PID 2>/dev/null; pkill -f "lakewind" 2>/dev/null; pkill -f "streamlit" 2>/dev/null; wait; exit 0' SIGTERM SIGINT
 
 echo "========================================"
 echo "  LakeWind AI — Docker entrypoint (V2)"
@@ -23,18 +23,18 @@ fi
 echo "Initializing database..."
 lakewind doctor 2>&1 | head -5
 
-# V5: Auto-recover any data gaps (e.g. if T420 was down for a week)
+# V5: Auto-recover any data gaps (quick check only)
 echo ""
 echo "Checking for data gaps (auto-recovery)..."
-lakewind recover 2>&1 | tail -10
+if lakewind recover --check; then
+    echo "No significant gaps detected."
+else
+    echo "Gaps detected, running recovery (limited to 7 days for startup)..."
+    lakewind recover --force --max-days 7 2>&1 | tail -20
+fi
 
-# V5: Run initial collection (in background — non-blocking)
 echo ""
-echo "Running initial data collection (background)..."
-lakewind collect > /tmp/collect.log 2>&1 &
-
-echo ""
-echo "Starting services..."
+echo "Starting services immediately..."
 
 # Start Streamlit dashboard in background
 echo "  → Streamlit dashboard on port 8501"
@@ -47,8 +47,7 @@ streamlit run lakewind/interfaces/dashboard.py \
 DASHBOARD_PID=$!
 
 # Start V2 Telegram bot. Phase 2: the bot's post_init starts the pipeline
-# loop (collect + predict + artifact precompute — previously MISSING, data
-# freshness relied on manual runs) and the internal API on port 8000.
+# loop (collect + predict + artifact precompute) and the internal API on port 8000.
 BOT_PID=""
 if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ "$TELEGRAM_BOT_TOKEN" != "your_token_here" ]; then
     echo "  → V2 Telegram bot (alerts + pipeline + API)"
@@ -67,8 +66,65 @@ fi
 
 echo ""
 echo "========================================"
+echo "Services started. Running initial setup in background..."
 
-# Supervisor loop: check bg processes, no collect/predict (bot does it)
+# Run initial setup in BACKGROUND - non-blocking
+(
+    echo "[$(date)] Starting background setup..."
+    
+    # V5: Run initial collection and training if no model exists.
+    # A trained model bundle is identified by its *_features.json marker (one
+    # per training run). The previous check looked for production_model.txt /
+    # latest_model.txt, which are never written, so a fresh boot re-ran the
+    # heavy backfill+train every time (OOM → restart → crash loop).
+    echo "[$(date)] Checking for trained model..."
+    MODEL_BUNDLE=$(ls /app/data/models/*_features.json 2>/dev/null | head -1)
+    if [ -z "$MODEL_BUNDLE" ]; then
+        echo "[$(date)] No trained model found. Running initial collection..."
+        lakewind collect 2>&1 | tail -30
+        
+        echo "[$(date)] Backfilling historical data (30 days) for training..."
+        lakewind backfill --days 30 2>&1 | tail -30
+        
+        echo "[$(date)] Training initial model..."
+        lakewind retrain --days 60 2>&1 | tail -30
+        
+        # Promote the model (skip backtest for initial setup to avoid long wait).
+        # Extract the bundle version from the features marker — NOT from the
+        # quantile .pkl artifacts, which would yield a non-existent version.
+        MODEL_VERSION=$(ls -t /app/data/models/*_features.json 2>/dev/null | head -1 | xargs basename 2>/dev/null | sed 's/_features\.json$//')
+        if [ -n "$MODEL_VERSION" ]; then
+            echo "[$(date)] Promoting model $MODEL_VERSION..."
+            lakewind promote "$MODEL_VERSION" 2>&1 | tail -10
+        fi
+        
+        echo "[$(date)] Background setup complete. Model trained and promoted."
+        
+        # Send startup notification to admin via Telegram
+        if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ]; then
+            curl -s -X POST "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendMessage" \
+                -d chat_id="$TELEGRAM_CHAT_ID" \
+                -d text="🚀 LakeWind AI started successfully! Model trained and ready for predictions." \
+                > /dev/null 2>&1
+        fi
+    else
+        echo "[$(date)] Model already exists, skipping initial training."
+        
+        # Send startup notification to admin
+        if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ]; then
+            curl -s -X POST "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendMessage" \
+                -d chat_id="$TELEGRAM_CHAT_ID" \
+                -d text="🚀 LakeWind AI started! Using existing trained model." \
+                > /dev/null 2>&1
+        fi
+    fi
+) &
+SETUP_PID=$!
+
+echo "Setup running in background (PID: $SETUP_PID). Services are ready!"
+echo "========================================"
+
+# Supervisor loop: check bg processes
 while true; do
     sleep 60
 
