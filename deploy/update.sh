@@ -24,7 +24,7 @@
 set -euo pipefail
 
 # Configuration
-REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 BACKUP_DIR="$REPO_DIR/data/backups"
 HEALTH_URL="http://localhost:8501/_stcore/health"
 HEALTH_TIMEOUT=30  # seconds to wait for health check
