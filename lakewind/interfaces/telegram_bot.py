@@ -27,6 +27,7 @@ import os
 from datetime import datetime, timedelta
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.constants import ParseMode
 from telegram.ext import (
     ApplicationBuilder,
     CallbackQueryHandler,
@@ -241,28 +242,56 @@ async def _authorize(update: Update) -> tuple[bool, dict | None]:
     return True, user_dict
 
 
+def is_user_admin(user_id: int) -> bool:
+    """Check if user is admin (from settings)."""
+    from lakewind.admin import is_admin
+    return is_admin(user_id)
+
+
 # --- Inline keyboards ---
 
-def _main_menu_kb() -> InlineKeyboardMarkup:
-    """Main menu with 8 buttons in a 2×4 grid."""
-    return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("🌬 Wind", callback_data="m:wind"),
-            InlineKeyboardButton("📅 Today", callback_data="m:today"),
-        ],
-        [
-            InlineKeyboardButton("🗺 Map", callback_data="m:map"),
-            InlineKeyboardButton("⛵ Sailing", callback_data="m:sail"),
-        ],
-        [
-            InlineKeyboardButton("📈 Trend", callback_data="m:trend"),
-            InlineKeyboardButton("⚠️ Alerts", callback_data="m:alert"),
-        ],
-        [
-            InlineKeyboardButton("⚙️ Settings", callback_data="m:settings"),
-            InlineKeyboardButton("📊 Status", callback_data="m:status"),
-        ],
-    ])
+def _main_menu_kb(user_id: int | None = None) -> InlineKeyboardMarkup:
+    """Main menu - shows admin features for admin, limited for regular users."""
+    is_admin = user_id is not None and is_user_admin(user_id)
+
+    if is_admin:
+        # Admin gets full access
+        return InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("🌬 Wind", callback_data="m:wind"),
+                InlineKeyboardButton("📅 Today", callback_data="m:today"),
+            ],
+            [
+                InlineKeyboardButton("🗺 Map", callback_data="m:map"),
+                InlineKeyboardButton("⛵ Sailing", callback_data="m:sail"),
+            ],
+            [
+                InlineKeyboardButton("📈 Trend", callback_data="m:trend"),
+                InlineKeyboardButton("⚠️ Alerts", callback_data="m:alert"),
+            ],
+            [
+                InlineKeyboardButton("⚙️ Settings", callback_data="m:settings"),
+                InlineKeyboardButton("📊 Status", callback_data="m:status"),
+            ],
+            [
+                InlineKeyboardButton("🔧 Admin", callback_data="m:admin"),
+            ],
+        ])
+    else:
+        # Regular users only get wind features
+        return InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("🌬 Wind", callback_data="m:wind"),
+                InlineKeyboardButton("📅 Today", callback_data="m:today"),
+            ],
+            [
+                InlineKeyboardButton("🗺 Map", callback_data="m:map"),
+                InlineKeyboardButton("⛵ Sailing", callback_data="m:sail"),
+            ],
+            [
+                InlineKeyboardButton("📈 Trend", callback_data="m:trend"),
+            ],
+        ])
 
 
 def _point_kb(action: str, lang: str = "en") -> InlineKeyboardMarkup:
@@ -522,11 +551,11 @@ async def _start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "Hyperlocal wind forecasts for Dongo-Dervio, Lake Como.\n"
         "Tap a button below to get started 👇"
     )
-    await update.message.reply_text(welcome, reply_markup=_main_menu_kb())
+    await update.message.reply_text(welcome, reply_markup=_main_menu_kb(user.get("telegram_user_id")))
 
 
 async def _help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    allowed, _ = await _authorize(update)
+    allowed, user = await _authorize(update)
     if not allowed:
         return
     # Phase 4 (W4): /why, /accuracy and /report existed but were absent from
@@ -547,7 +576,7 @@ async def _help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "  /log <bft> [dir] [note] — log a sailing session\n"
         "  /webapp — open the web dashboard\n"
         "  /language en|it · /units kn|ms|kmh — preferences",
-        reply_markup=_main_menu_kb(),
+        reply_markup=_main_menu_kb(user.get("telegram_user_id")),
     )
 
 
@@ -588,7 +617,7 @@ async def _menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         if data.startswith("ob:fav:"):
             picked = data.split(":", 2)[2]
             user_db.set_user_preference(uid, "favorite_point_id", picked)
-            await query.edit_message_text(_ob_text(lang, "done"), reply_markup=_main_menu_kb())
+            await query.edit_message_text(_ob_text(lang, "done"), reply_markup=_main_menu_kb(uid))
             return
         if data == "ob:skip":
             # Skip = adopt current defaults as-is; mark the favorite with the
@@ -596,14 +625,14 @@ async def _menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             s = load_settings()
             first = (s.operational_point_ids or ["mid_channel"])[0]
             user_db.set_user_preference(uid, "favorite_point_id", first)
-            await query.edit_message_text(_ob_text(lang, "done"), reply_markup=_main_menu_kb())
+            await query.edit_message_text(_ob_text(lang, "done"), reply_markup=_main_menu_kb(uid))
             return
 
     # --- Main menu actions ---
     if data == "m:back":
         await query.edit_message_text(
             "🌊 LakeWind AI\nTap a button 👇",
-            reply_markup=_main_menu_kb(),
+            reply_markup=_main_menu_kb(user.get("telegram_user_id")),
         )
         return
 
@@ -629,7 +658,7 @@ async def _menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     if data == "m:sail":
-        await _sailing_recommendation(query, user, lang, units)
+        await _sailing_recommendation(query, user, lang, units, user.get("telegram_user_id"))
         return
 
     if data == "m:trend":
@@ -640,15 +669,28 @@ async def _menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     if data == "m:alert":
-        await _alert_menu(query, user, lang)
+        await _alert_menu(query, user, lang, user.get("telegram_user_id"))
         return
 
     if data == "m:settings":
-        await _settings_menu(query, user, lang)
+        await _settings_menu(query, user, lang, user.get("telegram_user_id"))
         return
 
     if data == "m:status":
-        await _status_display(query, lang)
+        await _status_display(query, lang, user.get("telegram_user_id"))
+        return
+
+    if data == "m:admin":
+        # Admin panel - only visible to admin
+        if is_user_admin(user.get("telegram_user_id", 0)):
+            from lakewind.admin import get_admin_status
+            await query.edit_message_text(
+                get_admin_status(),
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=_main_menu_kb(user.get("telegram_user_id")),
+            )
+        else:
+            await query.answer("⛔ Admin only", show_alert=True)
         return
 
     # --- Wind: point + time selected → show result (CHECK FIRST — 2 colons) ---
@@ -662,7 +704,7 @@ async def _menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         if pred is None:
             await query.edit_message_text(
                 "❌ No forecast available for this time.\nTry a different time or point.",
-                reply_markup=_main_menu_kb(),
+                reply_markup=_main_menu_kb(user.get("telegram_user_id")),
             )
             return
         forecast = await _asyncio.to_thread(_fetch_forecast_at, point_id, target)
@@ -712,13 +754,13 @@ async def _menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if data.startswith("map:"):
         hours = int(data[4:]) if data[4:].isdigit() else 0
         target = utcnow() + timedelta(hours=hours)
-        await _send_map(query, target, lang)
+        await _send_map(query, target, lang, user.get("telegram_user_id"))
         return
 
     # --- Trend: point selected → generate + send chart ---
     if data.startswith("tr:") and data != "tr:back":
         point_id = data[3:]
-        await _send_trend(query, point_id, lang)
+        await _send_trend(query, point_id, lang, user.get("telegram_user_id"))
         return
 
     if data == "tr:back":
@@ -726,7 +768,7 @@ async def _menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
 
-async def _sailing_recommendation(query, user, lang, units) -> None:
+async def _sailing_recommendation(query, user, lang, units, user_id=None) -> None:
     """GO/NO-GO sailing recommendation across all points.
 
     Phase 2: served from the forecast store projection — ONE bulk query per
@@ -802,11 +844,11 @@ async def _sailing_recommendation(query, user, lang, units) -> None:
     lines.append("━━━━━━━━━━━━━━━━━━━━━━")
     await query.edit_message_text(
         chr(10).join(lines),
-        reply_markup=_main_menu_kb(),
+        reply_markup=_main_menu_kb(user_id),
     )
 
 
-async def _send_map(query, target_time, lang) -> None:
+async def _send_map(query, target_time, lang, user_id=None) -> None:
     """Generate and send a heatmap image.
 
     Phase 2 serving chain (precompute-on-write, serve-on-read):
@@ -831,22 +873,22 @@ async def _send_map(query, target_time, lang) -> None:
             if p:
                 preds.append(p)
         if not preds:
-            await query.edit_message_text("❌ No data for map.", reply_markup=_main_menu_kb())
+            await query.edit_message_text("❌ No data for map.", reply_markup=_main_menu_kb(user_id))
             return
         async with _render_semaphore:
             png = await _asyncio.to_thread(generate_heatmap_v3, preds, target_time)
 
     if png is None:
-        await query.edit_message_text("❌ Map generation failed.", reply_markup=_main_menu_kb())
+        await query.edit_message_text("❌ Map generation failed.", reply_markup=_main_menu_kb(user_id))
         return
     await query.message.reply_photo(
         photo=io.BytesIO(png),
         caption=f"🗺 Wind Map — {target_time.strftime('%H:%M UTC')}",
     )
-    await query.edit_message_text("🗺 Map sent above 👆", reply_markup=_main_menu_kb())
+    await query.edit_message_text("🗺 Map sent above 👆", reply_markup=_main_menu_kb(user_id))
 
 
-async def _send_trend(query, point_id, lang) -> None:
+async def _send_trend(query, point_id, lang, user_id=None) -> None:
     """Generate and send a 24h trend chart (artifact-first, Phase 2)."""
     from lakewind import artifacts
     from lakewind.utils.heatmap_v3 import generate_trend_chart
@@ -856,16 +898,16 @@ async def _send_trend(query, point_id, lang) -> None:
         async with _render_semaphore:
             png = await _asyncio.to_thread(generate_trend_chart, point_id, 24)
     if png is None:
-        await query.edit_message_text("❌ No data for trend.", reply_markup=_main_menu_kb())
+        await query.edit_message_text("❌ No data for trend.", reply_markup=_main_menu_kb(user_id))
         return
     await query.message.reply_photo(
         photo=io.BytesIO(png),
         caption=f"📈 Trend — {point_id.replace('_', ' ').title()} (24h)",
     )
-    await query.edit_message_text("📈 Chart sent above 👆", reply_markup=_main_menu_kb())
+    await query.edit_message_text("📈 Chart sent above 👆", reply_markup=_main_menu_kb(user_id))
 
 
-async def _alert_menu(query, user, lang) -> None:
+async def _alert_menu(query, user, lang, user_id=None) -> None:
     """Show alert management menu."""
     alerts = user_db.list_alerts(user["telegram_user_id"])
     if not alerts:
@@ -874,10 +916,10 @@ async def _alert_menu(query, user, lang) -> None:
         text = "⚠️ Your Alerts\n\n"
         for a in alerts:
             text += f"  • #{a['id']} {a['point_id']} ≥ {a['threshold_kn']}kn {'✅' if a['enabled'] else '❌'}\n"
-    await query.edit_message_text(text, reply_markup=_main_menu_kb())
+    await query.edit_message_text(text, reply_markup=_main_menu_kb(user_id))
 
 
-async def _settings_menu(query, user, lang) -> None:
+async def _settings_menu(query, user, lang, user_id=None) -> None:
     """Show settings menu."""
     text = (
         f"⚙️ Settings\n\n"
@@ -890,10 +932,10 @@ async def _settings_menu(query, user, lang) -> None:
         f"  /units kn|ms|kmh\n"
         f"  /prefs set favorite_point_id dervio_shore"
     )
-    await query.edit_message_text(text, reply_markup=_main_menu_kb())
+    await query.edit_message_text(text, reply_markup=_main_menu_kb(user_id))
 
 
-async def _status_display(query, lang) -> None:
+async def _status_display(query, lang, user_id=None) -> None:
     """Show data source health."""
     from lakewind.db.freshness import check_freshness
     health = access.latest_source_health()
@@ -911,7 +953,7 @@ async def _status_display(query, lang) -> None:
         lines.append(f"  {mark} {f['source']:<25} {f['age_minutes']:.0f}min ago")
 
     lines.append("━━━━━━━━━━━━━━━━━━━━━━")
-    await query.edit_message_text(chr(10).join(lines), reply_markup=_main_menu_kb())
+    await query.edit_message_text(chr(10).join(lines), reply_markup=_main_menu_kb(user_id))
 
 
 # --- Direct commands (for users who prefer typing) ---
@@ -978,7 +1020,7 @@ async def _sailing_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         async def edit_message_text(self, text, reply_markup=None):
             await self.message.reply_text(text, reply_markup=reply_markup)
     fq = FakeQuery(update.message)
-    await _sailing_recommendation(fq, user, _get_user_lang(user), _get_user_units(user))
+    await _sailing_recommendation(fq, user, _get_user_lang(user), _get_user_units(user), user.get("telegram_user_id"))
 
 
 async def _trend_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1085,7 +1127,7 @@ async def _units_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 async def _unknown(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "❓ Unknown command. Tap /start for the menu.",
-        reply_markup=_main_menu_kb(),
+        reply_markup=_main_menu_kb(update.effective_user.id if update.effective_user else None),
     )
 
 
@@ -1705,6 +1747,7 @@ def run_bot() -> None:  # pragma: no cover
         # 2) Internal API — web dashboard proxy target (no Node↔DuckDB locks).
         # 3) Alert/subscription scheduler (Phase 1 fix, unchanged).
         from lakewind import pipeline_loop
+        from lakewind.admin import get_admin_id
         from lakewind.config import load_settings as _ls
 
         application.job_queue.run_repeating(
@@ -1723,11 +1766,38 @@ def run_bot() -> None:  # pragma: no cover
             except Exception:
                 logging.exception("Internal API failed to start (bot continues)")
 
+        # Send startup notification to admin
+        admin_id = get_admin_id()
+        if admin_id:
+            try:
+                await application.bot.send_message(
+                    chat_id=admin_id,
+                    text="🚀 LakeWind AI started successfully!\nBot is ready for queries.",
+                )
+            except Exception as exc:
+                logging.warning("Failed to send startup notification: %s", exc)
+
     token = load_secrets().telegram_bot_token.get_secret_value()
+
+    async def _post_shutdown(application: ContextTypes.DEFAULT_TYPE) -> None:
+        """Notify the admin when the bot process stops (graceful signal)."""
+        from lakewind.admin import get_admin_id
+
+        admin_id = get_admin_id()
+        if admin_id:
+            try:
+                await application.bot.send_message(
+                    chat_id=admin_id,
+                    text="🛑 LakeWind AI shutting down.",
+                )
+            except Exception:
+                logging.debug("Shutdown notification failed", exc_info=True)
+
     app = (
         ApplicationBuilder()
         .token(token)
         .post_init(post_init)
+        .post_shutdown(_post_shutdown)
         .build()
     )
 
@@ -1735,6 +1805,12 @@ def run_bot() -> None:  # pragma: no cover
     _register_handlers(app)
 
     logging.info("Telegram bot starting (query builder, 25 commands, alert scheduler)...")
+
+    # Shutdown notification via PTB's post_shutdown hook: run_polling handles
+    # SIGTERM/SIGINT itself (graceful stop), then awaits this coroutine while
+    # the event loop is still alive. (A raw signal.signal + asyncio.run +
+    # sys.exit handler cannot work here: the loop is already running, and
+    # run_polling overwrites those signal handlers after registration.)
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 

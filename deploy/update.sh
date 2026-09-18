@@ -25,7 +25,7 @@
 set -euo pipefail
 
 # Configuration
-REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 BACKUP_DIR="$REPO_DIR/data/backups"
 # Phase 5 (S1/F2): Streamlit :8501 was retired in Phase 4 — health-checking
 # it made EVERY update time out and roll back (auto-update permanently

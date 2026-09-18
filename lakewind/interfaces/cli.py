@@ -79,6 +79,7 @@ def recover_cmd(
     from_time: str | None = typer.Option(None, "--from", help="Explicit window start (ISO) — interior-hole backfill (Phase 5 S6)"),
     to_time: str | None = typer.Option(None, "--to", help="Explicit window end (ISO) — requires --from"),
     scan: bool = typer.Option(False, "--scan", help="Scan for interior holes in the last 30 days (Phase 5 S6)"),
+    max_days: int = typer.Option(365, help="Maximum days to backfill (safety cap)"),
 ) -> None:
     """V5: Detect and fill data gaps (auto-backfill after downtime).
 
@@ -132,7 +133,7 @@ def recover_cmd(
     from lakewind.recovery import recover
 
     console.print("[bold cyan]=== Auto-Recovery: Data Gap Detection ===[/bold cyan]")
-    result = recover(check_only=check, force_full=force)
+    result = recover(check_only=check, force_full=force, max_days=max_days)
 
     gaps = result.get("gaps", {})
     fc = gaps.get("forecast_runs", {})
@@ -168,6 +169,14 @@ def recover_cmd(
         console.print("\n[yellow]Dry-run: no data was modified.[/yellow]")
     else:
         console.print("\n[green]No gaps needed filling.[/green]")
+
+    # Machine-readable result for the docker entrypoint: exit non-zero when a
+    # dry-run detects gaps that would be filled. The entrypoint keys off the
+    # exit code (robust) instead of parsing the human-readable report.
+    if check:
+        needs = bool(fc.get("needs_recovery") or obs.get("needs_recovery"))
+        if needs:
+            raise typer.Exit(code=1)
 
 
 @app.command("doctor")

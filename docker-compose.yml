@@ -12,6 +12,11 @@ services:
       - ./lakewind:/app/lakewind:ro
       # Phase 5 note: the image bakes a built web-ui into /app/web-ui; this
       # read-only lakewind mount keeps python code hot-patchable like before.
+      # Live-mount the entrypoint too, so entrypoint changes take effect
+      # without a full image rebuild (the pip-install layer is invalidated on
+      # any lakewind/ change and re-downloads all deps). Same live-update
+      # rationale as the ./lakewind source mount above.
+      - ./docker-entrypoint.sh:/docker-entrypoint.sh:ro
       # V6.6: removed `./data/models:/app/models` — the code reads model
       # artifacts from /app/data/models (MODELS_DIR in ml/train.py); the
       # /app/models mount was never referenced.

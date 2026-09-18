@@ -1,22 +1,33 @@
 #!/bin/bash
 
-# LakeWind AI — Docker entrypoint (rewritten Phase 5 S1).
+# LakeWind AI — Docker entrypoint (Phase 5 S1 rewrite + operator startup fixes).
 #
-# Phase 4 regressions fixed here:
-#   - the old entrypoint launched `streamlit run lakewind/interfaces/dashboard.py`,
-#     a file AND dependency deleted in Phase 4 — it died instantly and the
-#     supervisor crash-looped it every 60s;
-#   - the actual web UI (Next.js, standalone output) was never started.
-# Now: bot(pipeline+API) or serve-all(pipeline+API in one process), plus the
-# Next.js web UI.
-# Single-writer discipline: only THIS process family touches the DB — do not
-# add external `docker exec lakewind lakewind ...` timers (see deploy/).
-# Boot order note: `lakewind recover` runs BEFORE the services start ON
-# PURPOSE — the running service holds DuckDB's single-writer lock, so a
-# parallel recover process could never open the DB. It is capped with
-# `timeout` so a network outage can never block the container boot forever.
+# Architecture (Phase 4/5): Next.js web UI on :3000 + Telegram bot which owns
+# the pipeline loop (collect + predict + artifact precompute) and the internal
+# API on :8000. Without a Telegram token, `serve-all` runs pipeline+API in ONE
+# process (DuckDB single-writer file lock — two writer processes would lock
+# each other out and the supervisor would crash-loop the loser).
+# The legacy Streamlit dashboard was retired in Phase 4 — health is checked by
+# deploy/update.sh against /api/health on :8000.
+#
+# Operator startup fixes (merged from main, 2026-09):
+#   - gap recovery is CHEAP by default: a `recover --check` dry-run (exit code
+#     1 = gaps found) gates a 7-day-capped backfill, so a long outage can
+#     never silently block boot for the full history;
+#   - first-boot setup (collect → 30d backfill → retrain → promote) runs in
+#     BACKGROUND, gated on the trained-model-bundle marker (`*_features.json`
+#     — production_model.txt / latest_model.txt were never written, so the
+#     old check re-ran the heavy backfill+train every boot → OOM crash loop);
+#     the bundle version comes from the features marker, NOT the quantile
+#     .pkl artifacts (which yield a non-existent version);
+#   - admin Telegram notifications on start and on first-boot training.
+#
+# Single-writer discipline: only THIS container's process family touches the
+# DB — do not add external `docker exec lakewind lakewind ...` timers (see
+# deploy/). The background setup interleaves safely because the app uses
+# per-query connections (no persistent lock holder).
 
-trap 'echo "Shutting down..."; kill $WEB_PID $BOT_PID $SERVE_ALL_PID 2>/dev/null; sleep 2; kill -9 $WEB_PID $BOT_PID $SERVE_ALL_PID 2>/dev/null; pkill -f "lakewind" 2>/dev/null; wait; exit 0' SIGTERM SIGINT
+trap 'echo "Shutting down..."; kill $WEB_PID $BOT_PID $SERVE_ALL_PID $SETUP_PID 2>/dev/null; sleep 2; kill -9 $WEB_PID $BOT_PID $SERVE_ALL_PID $SETUP_PID 2>/dev/null; pkill -f "lakewind" 2>/dev/null; wait; exit 0' SIGTERM SIGINT
 
 echo "========================================"
 echo "  LakeWind AI — Docker entrypoint (V7)"
@@ -41,21 +52,19 @@ fi
 echo "Initializing database..."
 lakewind doctor 2>&1 | head -5
 
-# V5: Auto-recover any data gaps (e.g. if T420 was down for a week)
-# Bounded: at most 10 minutes, and never fatal — then services start.
+# Auto-recover data gaps (e.g. server down for a week). Cheap check first;
+# only backfill when the dry-run reports gaps, capped at 7 days so a very
+# long outage cannot stall the boot (the pipeline loop keeps collecting the
+# live window either way — run `lakewind recover` manually for full history).
 echo ""
-echo "Checking for data gaps (auto-recovery, max 10 min)..."
-if timeout 600 lakewind recover 2>&1 | tail -10; then
-    :
+echo "Checking for data gaps (auto-recovery)..."
+if lakewind recover --check >/tmp/recover_check.log 2>&1; then
+    echo "No significant gaps detected."
 else
-    echo "WARNING: auto-recovery did not finish in time — the pipeline loop "
-    echo "will keep collecting; run 'lakewind recover' manually later if needed."
+    echo "Gaps detected — recovering (capped at 7 days for startup)..."
+    timeout 900 lakewind recover --force --max-days 7 2>&1 | tail -20 || \
+        echo "WARNING: recovery did not finish in 15 min — pipeline continues; run 'lakewind recover' manually later."
 fi
-
-# V5: Run initial collection (in background — non-blocking)
-echo ""
-echo "Running initial data collection (background)..."
-lakewind collect > /tmp/collect.log 2>&1 &
 
 echo ""
 echo "Starting services..."
@@ -85,6 +94,49 @@ fi
 
 echo ""
 echo "========================================"
+echo "Services started. Running initial setup in background..."
+
+# First-boot setup in BACKGROUND - non-blocking. Skipped entirely when a
+# trained model bundle already exists (see header note about the old
+# always-retrain crash loop). The pipeline loop already handles routine
+# collection; this block only bootstrap-trains a brand-new install.
+(
+    echo "[$(date)] Background setup: checking for trained model..."
+    MODEL_BUNDLE=$(ls /app/data/models/*_features.json 2>/dev/null | head -1)
+    if [ -z "$MODEL_BUNDLE" ]; then
+        echo "[$(date)] No trained model found. Running initial collection..."
+        lakewind collect 2>&1 | tail -30
+
+        echo "[$(date)] Backfilling historical data (30 days) for training..."
+        lakewind backfill --days 30 2>&1 | tail -30
+
+        echo "[$(date)] Training initial model..."
+        lakewind retrain --days 60 2>&1 | tail -30
+
+        # Promote the fresh bundle (skips the long backtest gate — an initial
+        # model is better than no model; the daily self-improvement review
+        # will gate/replace it from tomorrow on).
+        MODEL_VERSION=$(ls -t /app/data/models/*_features.json 2>/dev/null | head -1 | xargs basename 2>/dev/null | sed 's/_features\.json$//')
+        if [ -n "$MODEL_VERSION" ]; then
+            echo "[$(date)] Promoting model $MODEL_VERSION..."
+            lakewind promote "$MODEL_VERSION" 2>&1 | tail -10
+        fi
+
+        echo "[$(date)] Background setup complete. Model trained and promoted."
+        if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ]; then
+            curl -s -X POST "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendMessage" \
+                -d chat_id="$TELEGRAM_CHAT_ID" \
+                -d text="🚀 LakeWind AI: first-boot setup finished — model trained and promoted." \
+                > /dev/null 2>&1
+        fi
+    else
+        echo "[$(date)] Trained model already present — skipping first-boot setup."
+    fi
+) &
+SETUP_PID=$!
+
+echo "Setup running in background (PID: $SETUP_PID). Services are ready!"
+echo "========================================"
 
 # Supervisor loop: restart any dead child. Health is health-checked by
 # deploy/update.sh against the API (/api/health on :8000).
@@ -99,13 +151,13 @@ while true; do
 
     if [ -n "$BOT_PID" ] && ! kill -0 $BOT_PID 2>/dev/null; then
         echo "WARNING: Bot died. Restarting..."
-        lakewind serve-bot > /tmp/bot.log 2>&1 &
+        lakewind serve-bot >> /tmp/bot.log 2>&1 &
         BOT_PID=$!
     fi
 
     if [ -n "$SERVE_ALL_PID" ] && ! kill -0 $SERVE_ALL_PID 2>/dev/null; then
         echo "WARNING: serve-all (pipeline+API) died. Restarting..."
-        lakewind serve-all > /tmp/serve-all.log 2>&1 &
+        lakewind serve-all >> /tmp/serve-all.log 2>&1 &
         SERVE_ALL_PID=$!
     fi
 done

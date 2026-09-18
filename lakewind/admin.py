@@ -23,20 +23,46 @@ from lakewind.utils.timeutil import utcnow
 
 logger = logging.getLogger(__name__)
 
-# Legacy hardcoded admin (Phase 5/S3: config `telegram.admin_ids` takes
-# precedence; this fallback preserves behavior for existing deployments).
+# Legacy hardcoded admin (Phase 5/S3: config takes precedence; this fallback
+# preserves behavior for existing deployments).
 LEGACY_ADMIN_ID = 1762615402
 
 
+def get_admin_id() -> int | None:
+    """Primary admin ID: settings.telegram.admin_user_id, else legacy.
+
+    Convenience accessor for startup/shutdown notifications (a single chat),
+    while is_admin accepts the full configured admin set.
+    """
+    s = load_settings()
+    if s.telegram.admin_user_id is not None:
+        return s.telegram.admin_user_id
+    return LEGACY_ADMIN_ID
+
+
 def _configured_admin_ids() -> list[int]:
-    """Admin IDs from settings.telegram.admin_ids, falling back to legacy."""
-    ids = list(load_settings().telegram.admin_ids or [])
+    """Admin IDs from settings (admin_ids list + admin_user_id), legacy fallback."""
+    s = load_settings()
+    ids = list(s.telegram.admin_ids or [])
+    if s.telegram.admin_user_id is not None:
+        ids.append(s.telegram.admin_user_id)
     return ids or [LEGACY_ADMIN_ID]
 
 
 def is_admin(user_id: int) -> bool:
-    """Check if the user is an operator (config admin_ids or legacy ID)."""
+    """Check if the user is an operator (config admin_ids/user_id or legacy ID)."""
     return user_id in _configured_admin_ids()
+
+
+def is_allowed_user(user_id: int) -> bool:
+    """Check if a user may use the bot (admin, allow-list, or open access)."""
+    if is_admin(user_id):
+        return True
+    s = load_settings()
+    allowed = s.telegram.allowed_user_ids
+    if not allowed:  # empty = open access
+        return True
+    return user_id in allowed
 
 
 def get_admin_status() -> str:

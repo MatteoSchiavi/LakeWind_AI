@@ -346,6 +346,8 @@ telegram:
   enabled: true
   token_env: "TELEGRAM_BOT_TOKEN"
   allowed_user_ids: []   # empty = open; populate to restrict
+  admin_ids: [1762615402]         # operator push targets (digests, alerts)
+  admin_user_id: 1762615402  # primary admin: startup/shutdown notifications + admin panel
 
 
 # Section 11 — scheduler. The pipeline loop IS the scheduler (dead

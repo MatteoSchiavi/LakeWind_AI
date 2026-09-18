@@ -346,6 +346,9 @@ class TelegramConfig(BaseModel):
     # outcomes, operational alerts. Empty list falls back to the legacy
     # hardcoded admin ID in admin.py so behavior never silently changes.
     admin_ids: list[int] = Field(default_factory=list)
+    # Primary admin (single chat): gets the startup/shutdown notifications and
+    # the bot's admin panel. Combined with admin_ids by admin.is_admin().
+    admin_user_id: int | None = None
 
 
 class ScheduleConfig(BaseModel):
