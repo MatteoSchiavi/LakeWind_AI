@@ -10,6 +10,7 @@ interface PointInfo {
   is_operational: boolean;
   sector: string;
   label: string;
+  lake?: string;
 }
 
 /**
@@ -40,7 +41,15 @@ const FALLBACK_POINTS: PointInfo[] = [
   { id: 'bellagio', lat: 45.98757, lon: 9.25324, is_operational: true, sector: 'lario_centrale', label: 'Bellagio' },
   { id: 'mandello', lat: 45.91524, lon: 9.30640, is_operational: true, sector: 'branca_lecco', label: 'Mandello del Lario' },
   { id: 'lecco', lat: 45.85402, lon: 9.38194, is_operational: true, sector: 'branca_lecco', label: 'Lecco / Valmadrera' },
-  { id: 'como_city', lat: 45.81676, lon: 9.07533, is_operational: true, sector: 'branca_como', label: 'Como' },
+  { id: 'como_city', lat: 45.81676, lon: 9.07533, is_operational: true, sector: 'branca_como', label: 'Como', lake: 'lake_como' },
+  // Phase 6: Garda + Maggiore north basins (verified on-water, settings.yaml)
+  { id: 'riva_del_garda', lat: 45.8765, lon: 10.8495, is_operational: true, sector: 'garda_nord', label: 'Riva del Garda', lake: 'lake_garda' },
+  { id: 'torbole', lat: 45.8625, lon: 10.858, is_operational: true, sector: 'garda_nord', label: 'Torbole', lake: 'lake_garda' },
+  { id: 'malcesine', lat: 45.7672, lon: 10.8025, is_operational: true, sector: 'garda_sud', label: 'Malcesine', lake: 'lake_garda' },
+  { id: 'brenzone', lat: 45.7266, lon: 10.7725, is_operational: true, sector: 'garda_sud', label: 'Brenzone', lake: 'lake_garda' },
+  { id: 'luino', lat: 46.0015, lon: 8.729, is_operational: true, sector: 'maggiore_nord', label: 'Luino', lake: 'lake_maggiore' },
+  { id: 'cannero', lat: 46.018, lon: 8.7, is_operational: true, sector: 'maggiore_nord', label: 'Cannero Riviera', lake: 'lake_maggiore' },
+  { id: 'cannobio', lat: 46.063, lon: 8.71, is_operational: true, sector: 'maggiore_nord', label: 'Cannobio', lake: 'lake_maggiore' },
   // Auxiliary (4) — macro-area pressure-gradient inputs, not forecast points
   { id: 'zurich', lat: 47.376, lon: 8.541, is_operational: false, sector: 'auxiliary', label: 'Zurich' },
   { id: 'milano_linate', lat: 45.445, lon: 9.278, is_operational: false, sector: 'auxiliary', label: 'Milano Linate' },
@@ -53,6 +62,9 @@ const SECTOR_FALLBACKS: Record<string, string> = {
   lario_centrale: 'Lario Centrale',
   branca_lecco: 'Branca di Lecco',
   branca_como: 'Branca di Como',
+  garda_nord: 'Garda Nord',
+  garda_sud: 'Garda Sud',
+  maggiore_nord: 'Maggiore Nord',
   auxiliary: 'Auxiliary',
 };
 
@@ -74,7 +86,7 @@ async function loadPointsFromSettings(): Promise<PointInfo[] | null> {
       const doc = parseYaml(text) as {
         virtual_points?: Array<{
           id: string; lat: number; lon: number;
-          label?: string; sector?: string;
+          label?: string; sector?: string; lake?: string;
         }>;
         operational_point_ids?: string[];
       };
@@ -87,6 +99,7 @@ async function loadPointsFromSettings(): Promise<PointInfo[] | null> {
         is_operational: opIds.size === 0 ? true : opIds.has(vp.id),
         sector: sectorLabel(vp.sector),
         label: vp.label ?? vp.id,
+        lake: vp.lake,
       }));
     } catch {
       // try next candidate

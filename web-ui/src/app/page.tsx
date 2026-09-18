@@ -55,7 +55,7 @@ interface Prediction {
   wind_speed_q90_kn?: number | null;
   regime?: string | null;
 }
-interface PointInfo { id: string; lat: number; lon: number; sector: string; label?: string; is_operational: boolean; }
+interface PointInfo { id: string; lat: number; lon: number; sector: string; label?: string; is_operational: boolean; lake?: string; }
 interface HealthInfo { source: string; ok: boolean; latency_ms: number; }
 interface TrendPoint {
   time: number; valid_time: string;
@@ -504,12 +504,20 @@ export default function LakeWindDashboard() {
     return () => clearInterval(interval);
   }, [selectedHorizon, selectedPoint, fetchAll]);
 
+  // Phase 6: lake switcher — the map and the sector grid scope to one lake.
+  const [activeLake, setActiveLake] = useState<string>('lake_como');
+  const LAKE_TABS: Array<{ id: string; name: string }> = [
+    { id: 'lake_como', name: 'Como' },
+    { id: 'lake_garda', name: 'Garda' },
+    { id: 'lake_maggiore', name: 'Maggiore' },
+  ];
+
   // --- Precomputed heatmap fetch (blob, with provenance headers) ---
   useEffect(() => {
     if (mapTab !== 'heatmap') return;
     let objectUrl: string | null = null;
     setMapLoading(true);
-    fetch(`/api/map?offset=${selectedHorizon}`)
+    fetch(`/api/map?offset=${selectedHorizon}&lake=${activeLake}`)
       .then(res => {
         if (!res.ok) throw new Error(String(res.status));
         setMapSource(res.headers.get('X-Map-Source'));
@@ -522,7 +530,7 @@ export default function LakeWindDashboard() {
       .catch(() => setMapUrl(null))
       .finally(() => setMapLoading(false));
     return () => { if (objectUrl) URL.revokeObjectURL(objectUrl); };
-  }, [mapTab, selectedHorizon]);
+  }, [mapTab, selectedHorizon, activeLake]);
 
   const pointsBySector = points
     .filter(p => p.is_operational)
@@ -531,6 +539,7 @@ export default function LakeWindDashboard() {
       acc[p.sector].push(p);
       return acc;
     }, {} as Record<string, PointInfo[]>);
+
 
   const selectedPred = predictions.find(p => p.point_id === selectedPoint) || predictions[0];
   const bestPoint = predictions
@@ -565,6 +574,7 @@ export default function LakeWindDashboard() {
         q10: pr.wind_speed_q10_kn ?? null, q90: pr.wind_speed_q90_kn ?? null,
         direction: pr.wind_dir_deg ?? 0, gust: pr.wind_gust_kn ?? 0,
         confidence: pr.confidence_pct ?? 0, sector: info.sector,
+        lake: info.lake,
       };
     })
     .filter((x): x is NonNullable<typeof x> => x !== null), [predictions, points]);
@@ -704,8 +714,25 @@ export default function LakeWindDashboard() {
 
         {/* Map section (W3): interactive + precomputed heatmap tabs */}
         <section className="mb-6">
+          {/* Phase 6: lake switcher — Como / Garda / Maggiore panels */}
+          <div className="mb-3 flex items-center gap-2">
+            {LAKE_TABS.map(lk => (
+              <button key={lk.id} onClick={() => setActiveLake(lk.id)}
+                className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-all ${
+                  activeLake === lk.id
+                    ? 'bg-primary text-primary-foreground shadow-md'
+                    : 'bg-card border hover:bg-muted'
+                }`}>
+                {lk.name}
+              </button>
+            ))}
+          </div>
           <div className="mb-3 flex items-center justify-between">
-            <h2 className="text-lg font-semibold">{lang === 'it' ? 'Mappa del lago' : 'Lake map'}</h2>
+            <h2 className="text-lg font-semibold">
+              {lang === 'it'
+                ? `Mappa — ${LAKE_TABS.find(l => l.id === activeLake)?.name ?? ''}`
+                : `Lake map — ${LAKE_TABS.find(l => l.id === activeLake)?.name ?? ''}`}
+            </h2>
             <div className="flex rounded-lg border p-1">
               <button onClick={() => setMapTab('interactive')}
                 className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium ${
@@ -722,7 +749,7 @@ export default function LakeWindDashboard() {
             </div>
           </div>
           {mapTab === 'interactive' ? (
-            <WindMap points={mapPoints} onSelect={selectPoint} />
+            <WindMap points={mapPoints.filter(p => (p.lake ?? 'lake_como') === activeLake)} onSelect={selectPoint} lake={activeLake} />
           ) : (
             <div>
               {mapLoading ? (
@@ -768,11 +795,16 @@ export default function LakeWindDashboard() {
                 <SkeletonCard /><SkeletonCard /><SkeletonCard />
               </div>
             ) : (
-              Object.entries(pointsBySector).map(([sector, sectorPoints]) => (
+              Object.entries(pointsBySector)
+                .filter(([, sectorPoints]) =>
+                  sectorPoints.some(pt => (pt.lake ?? 'lake_como') === activeLake))
+                .map(([sector, sectorPoints]) => (
                 <div key={sector} className="mb-4">
                   <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{sector}</h3>
                   <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-                    {sectorPoints.map(pt => {
+                    {sectorPoints
+                      .filter(pt => (pt.lake ?? 'lake_como') === activeLake)
+                      .map(pt => {
                       const pred = predictions.find(p => p.point_id === pt.id);
                       if (!pred) return (
                         <div key={pt.id} className="rounded-xl border border-dashed p-4 text-center text-sm text-muted-foreground">

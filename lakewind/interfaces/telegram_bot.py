@@ -849,43 +849,61 @@ async def _sailing_recommendation(query, user, lang, units, user_id=None) -> Non
 
 
 async def _send_map(query, target_time, lang, user_id=None) -> None:
-    """Generate and send a heatmap image.
+    """Generate and send a heatmap image per lake.
 
     Phase 2 serving chain (precompute-on-write, serve-on-read):
-      1. pre-rendered artifact from the last pipeline cycle (ms)
+      1. pre-rendered artifact from the last pipeline cycle (ms) — Como panel
       2. on-demand render in a worker thread, bounded by _render_semaphore
          — the event loop is NEVER blocked by matplotlib anymore
+    Phase 6: predictions are grouped by lake; one map is sent per lake with
+    data (Como first, then Garda/Maggiore on-demand renders — they are
+    intentionally NOT precomputed: 2 small panels, rendered in ~1-2 s each,
+    keeps the T420's per-cycle render budget unchanged).
     """
     from lakewind import artifacts
     from lakewind.forecast_store import store
-    from lakewind.utils.heatmap_v3 import generate_heatmap_v3
+    from lakewind.utils.heatmap_v3 import generate_heatmap_v3, group_predictions_by_lake
 
     offset = round((target_time - utcnow()).total_seconds() / 3600)
     offset = max(0, min(24, offset))
 
-    png = await _asyncio.to_thread(artifacts.lookup_map_png, target_time, offset)
+    s = load_settings()
+    lake_names = {lid: cfg.name for lid, cfg in (s.lakes or {}).items()}
 
-    if png is None:
-        preds = []
-        s = load_settings()
-        for vp_id in s.operational_point_ids or []:
-            p = await store.get_pred(vp_id, target_time)
-            if p:
-                preds.append(p)
-        if not preds:
-            await query.edit_message_text("❌ No data for map.", reply_markup=_main_menu_kb(user_id))
-            return
-        async with _render_semaphore:
-            png = await _asyncio.to_thread(generate_heatmap_v3, preds, target_time)
-
-    if png is None:
-        await query.edit_message_text("❌ Map generation failed.", reply_markup=_main_menu_kb(user_id))
+    preds = []
+    for vp_id in s.operational_point_ids or []:
+        p = await store.get_pred(vp_id, target_time)
+        if p:
+            preds.append(p)
+    if not preds:
+        await query.edit_message_text("❌ No data for map.", reply_markup=_main_menu_kb(user_id))
         return
-    await query.message.reply_photo(
-        photo=io.BytesIO(png),
-        caption=f"🗺 Wind Map — {target_time.strftime('%H:%M UTC')}",
-    )
-    await query.edit_message_text("🗺 Map sent above 👆", reply_markup=_main_menu_kb(user_id))
+
+    groups = group_predictions_by_lake(preds)
+    sent_any = False
+    for lid, lake_preds in groups.items():
+        png = None
+        if lid == "lake_como":
+            # Artifact-first for the home lake (precompute-on-write).
+            png = await _asyncio.to_thread(artifacts.lookup_map_png, target_time, offset)
+        if png is None:
+            async with _render_semaphore:
+                png = await _asyncio.to_thread(
+                    generate_heatmap_v3, lake_preds, target_time, lake_id=lid
+                )
+        if png is None:
+            continue
+        lake_disp = lake_names.get(lid, lid.replace("_", " ").title())
+        await query.message.reply_photo(
+            photo=io.BytesIO(png),
+            caption=f"🗺 Wind Map — {lake_disp} — {target_time.strftime('%H:%M UTC')}",
+        )
+        sent_any = True
+
+    if sent_any:
+        await query.edit_message_text("🗺 Maps sent above 👆", reply_markup=_main_menu_kb(user_id))
+    else:
+        await query.edit_message_text("❌ Map generation failed.", reply_markup=_main_menu_kb(user_id))
 
 
 async def _send_trend(query, point_id, lang, user_id=None) -> None:

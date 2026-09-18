@@ -3,6 +3,8 @@
 
 V6: Uses the real shoreline from lakewind/data/lake_como_shoreline.geojson
 via lakewind.utils.shoreline (single source of truth).
+Phase 6: validates each point against ITS lake's polygon (settings
+virtual_points[].lake); the lake column exposes which polygon was checked.
 """
 import sys
 from pathlib import Path
@@ -19,15 +21,19 @@ def main():
     with open(settings_path) as f:
         settings = yaml.safe_load(f)
 
+    lakes = settings.get("lakes", {})
     operational = settings.get("operational_point_ids", [])
-    print(f"{'Point':25s} {'Lat':>9s} {'Lon':>9s}  {'Status':12s} {'Dist to shore':>15s}")
-    print("-" * 75)
+    lake_names = {lid: cfg.get("name", lid) for lid, cfg in lakes.items()}
+    print(f"{'Point':25s} {'Lat':>9s} {'Lon':>9s}  {'Lake':16s} {'Status':12s} {'Dist to shore':>15s}")
+    print("-" * 95)
 
     all_ok = True
     for p in settings.get("virtual_points", []):
         lat, lon = p["lat"], p["lon"]
-        on_water = point_on_water(lon, lat)
-        dist_m = distance_to_shore(lon, lat)
+        lake = p.get("lake")
+        lake_disp = lake_names.get(lake, "-") if lake else "(aux)"
+        on_water = point_on_water(lon, lat, lake)
+        dist_m = distance_to_shore(lon, lat, lake)
 
         is_op = p["id"] in operational
         if is_op:
@@ -41,11 +47,11 @@ def main():
         else:
             status = "  (auxiliary)"
 
-        print(f"{p['id']:25s} {lat:9.4f} {lon:9.4f}  {status:12s} {dist_m:>12.0f} m")
+        print(f"{p['id']:25s} {lat:9.4f} {lon:9.4f}  {lake_disp:16s} {status:12s} {dist_m:>12.0f} m")
 
     print()
     if all_ok:
-        print("✅ All operational points are on or near the water.")
+        print("✅ All operational points are on or near the water of their lake.")
     else:
         print("❌ Some operational points are on land! Fix their coordinates in settings.yaml.")
         return 1

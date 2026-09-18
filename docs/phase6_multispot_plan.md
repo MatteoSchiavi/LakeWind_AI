@@ -1,6 +1,12 @@
 # Phase 6 — Multi-Spot System: Implementation Plan
 
-**Status:** PLAN — awaiting operator approval before execution.
+**Status:** PARTIALLY EXECUTED (2026-09-18). The operator asked for the
+talked-about places to be added; the multi-lake registry, shorelines, map
+panels (bot + web) and the Garda/Maggiore north-basin spots shipped in this
+phase — see `docs/spots/`. Full per-spot model isolation (per-spot bundles,
+shadow mode) remains planned as written below; until then the pooled bundle
+serves the new points (weather-feature path until the nightly retrain folds
+them in).
 **Prerequisite:** pre-Phase-6 verification complete (`docs/model_reality_verification.md`).
 Three P0-class defects (feature leakage, non-deterministic schema, mis-centered
 band) were found and fixed there; the framework below is built on the fixed

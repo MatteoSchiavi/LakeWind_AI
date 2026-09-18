@@ -43,6 +43,29 @@ class VirtualPoint(BaseModel):
     sector: str | None = None
     anchor_lat: float | None = None
     anchor_lon: float | None = None
+    # Phase 6: the lake this point belongs to (key of settings.lakes).
+    # None = aux/gradient point — collected but never mapped/grouped.
+    lake: str | None = None
+
+
+class LakeConfig(BaseModel):
+    """Phase 6: a mapped lake basin (geometry + map panel metadata).
+
+    One entry per lake in settings.lakes. The shoreline polygon ships in
+    lakewind/data/<geojson> (verified OSM water relation); the bbox scopes
+    the heatmap panel and the web-ui viewport; the valley axis drives the
+    anisotropic wind-field interpolation and the terrain-channeling
+    features for every point on that lake (via model.valley_axis_overrides).
+    """
+
+    id: str
+    name: str
+    geojson: str  # filename under lakewind/data/
+    lat_min: float
+    lat_max: float
+    lon_min: float
+    lon_max: float
+    valley_axis_deg: float = 10.0
 
 
 class BackfillConfig(BaseModel):
@@ -411,6 +434,9 @@ class Settings(BaseModel):
     operating_area: OperatingArea
     virtual_points: list[VirtualPoint]
     operational_point_ids: list[str] = Field(default_factory=list)
+    # Phase 6: lake basins (geometry + per-lake map metadata). Keys are the
+    # VirtualPoint.lake values. Empty = legacy single-lake (Como) behavior.
+    lakes: dict[str, LakeConfig] = Field(default_factory=dict)
     open_meteo: OpenMeteoConfig
     pressure_gradient: PressureGradientConfig
     local_winds: LocalWindsConfig

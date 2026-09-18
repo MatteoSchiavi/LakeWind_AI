@@ -14,6 +14,46 @@ operating_area:
   lon_min: 9.02
   lon_max: 9.42
 
+# Section 2.1 — lake basins (Phase 6 multi-lake). Keys are VirtualPoint.lake.
+# Geometry ships in lakewind/data/<geojson> (verified OSM natural=water
+# relations: Como 541757, Garda 8569, Maggiore 11758 — Nominatim/Overpass,
+# ODbL). The bbox scopes each heatmap panel + web-ui viewport; the valley
+# axis drives the anisotropic interpolation for that lake's panel.
+# Garda axis: Peschiera->Riva axis atan(dlon~5.4km / dlat~47.5km) ~ 6 deg.
+# Maggiore: Sesto Calende->north basin ~10-11 deg (same family as Como).
+lakes:
+  lake_como:
+    id: lake_como
+    name: "Lake Como"
+    geojson: "lake_como_shoreline.geojson"
+    lat_min: 45.74
+    lat_max: 46.22
+    lon_min: 9.02
+    lon_max: 9.42
+    valley_axis_deg: 10.0
+  lake_garda:
+    id: lake_garda
+    name: "Lake Garda"
+    geojson: "lake_garda_shoreline.geojson"
+    # North basin only (the mapped spots): a whole-lake frame would spend
+    # 2/3 of the panel on empty land — keep the lake filling the view.
+    lat_min: 45.68
+    lat_max: 45.92
+    lon_min: 10.70
+    lon_max: 10.94
+    valley_axis_deg: 6.0
+  lake_maggiore:
+    id: lake_maggiore
+    name: "Lake Maggiore"
+    geojson: "lake_maggiore_shoreline.geojson"
+    # North basin (Verbano) — the lake bends E-W below 45.95; the mapped
+    # spots sit in the N-SSW stretch above it.
+    lat_min: 45.95
+    lat_max: 46.18
+    lon_min: 8.64
+    lon_max: 8.82
+    valley_axis_deg: 10.0
+
 # Section 2.2 — virtual observation points (15 operational spots + 4 auxiliary)
 # Phase 5.5 multi-spot expansion — ALL coordinates verified via TWO independent
 # sources (OpenStreetMap/Nominatim + it.wikipedia, cross-checked < 1.5 km) and
@@ -32,24 +72,39 @@ operating_area:
 virtual_points:
   # --- Operational spots (15) — sectors group the web-ui grid ---
   # Alto Lario (north basin, Breva corridor)
-  - {id: colico,     lat: 46.14191, lon: 9.36743, label: "Colico",             sector: alto_lario,     anchor_lat: 46.13631, anchor_lon: 9.37382}
-  - {id: sorico,     lat: 46.16686, lon: 9.37255, label: "Sorico",             sector: alto_lario,     anchor_lat: 46.17226, anchor_lon: 9.37995}
-  - {id: gera_lario, lat: 46.16389, lon: 9.37257, label: "Gera Lario",         sector: alto_lario,     anchor_lat: 46.17110, anchor_lon: 9.37190}
-  - {id: domaso,     lat: 46.14699, lon: 9.32155, label: "Domaso",             sector: alto_lario,     anchor_lat: 46.15099, anchor_lon: 9.32814}
-  - {id: gravedona,  lat: 46.14492, lon: 9.31233, label: "Gravedona ed Uniti", sector: alto_lario,     anchor_lat: 46.14719, anchor_lon: 9.30526}
-  - {id: dongo,      lat: 46.12030, lon: 9.28634, label: "Dongo",              sector: alto_lario,     anchor_lat: 46.12294, anchor_lon: 9.27908}
-  - {id: piona,      lat: 46.12774, lon: 9.33569, label: "Piona (Olgiasca)",   sector: alto_lario,     anchor_lat: 46.12359, anchor_lon: 9.33137}
-  - {id: cremia,     lat: 46.08681, lon: 9.28480, label: "Cremia",             sector: alto_lario,     anchor_lat: 46.08610, anchor_lon: 9.27260}
-  - {id: dervio,     lat: 46.07980, lon: 9.29490, label: "Dervio",             sector: alto_lario,     anchor_lat: 46.07657, anchor_lon: 9.30453}
+  - {id: colico,     lat: 46.14191, lon: 9.36743, label: "Colico",             sector: alto_lario,     anchor_lat: 46.13631, anchor_lon: 9.37382, lake: lake_como}
+  - {id: sorico,     lat: 46.16686, lon: 9.37255, label: "Sorico",             sector: alto_lario,     anchor_lat: 46.17226, anchor_lon: 9.37995, lake: lake_como}
+  - {id: gera_lario, lat: 46.1590,  lon: 9.3560,  label: "Gera Lario",         sector: alto_lario,     anchor_lat: 46.17110, anchor_lon: 9.37190, lake: lake_como}
+  - {id: domaso,     lat: 46.14699, lon: 9.32155, label: "Domaso",             sector: alto_lario,     anchor_lat: 46.15099, anchor_lon: 9.32814, lake: lake_como}
+  - {id: gravedona,  lat: 46.14492, lon: 9.31233, label: "Gravedona ed Uniti", sector: alto_lario,     anchor_lat: 46.14719, anchor_lon: 9.30526, lake: lake_como}
+  - {id: dongo,      lat: 46.12030, lon: 9.28634, label: "Dongo",              sector: alto_lario,     anchor_lat: 46.12294, anchor_lon: 9.27908, lake: lake_como}
+  - {id: piona,      lat: 46.12774, lon: 9.33569, label: "Piona (Olgiasca)",   sector: alto_lario,     anchor_lat: 46.12359, anchor_lon: 9.33137, lake: lake_como}
+  - {id: cremia,     lat: 46.08681, lon: 9.28480, label: "Cremia",             sector: alto_lario,     anchor_lat: 46.08610, anchor_lon: 9.27260, lake: lake_como}
+  - {id: dervio,     lat: 46.07980, lon: 9.29490, label: "Dervio",             sector: alto_lario,     anchor_lat: 46.07657, anchor_lon: 9.30453, lake: lake_como}
   # Lario Centrale (mid-lake)
-  - {id: varenna,    lat: 46.00439, lon: 9.28407, label: "Varenna",            sector: lario_centrale, anchor_lat: 46.00998, anchor_lon: 9.28316}
-  - {id: menaggio,   lat: 46.01614, lon: 9.24443, label: "Menaggio",           sector: lario_centrale, anchor_lat: 46.01978, anchor_lon: 9.23895}
-  - {id: bellagio,   lat: 45.98757, lon: 9.25324, label: "Bellagio",           sector: lario_centrale, anchor_lat: 45.98725, anchor_lon: 9.26130}
+  - {id: varenna,    lat: 46.00439, lon: 9.28407, label: "Varenna",            sector: lario_centrale, anchor_lat: 46.00998, anchor_lon: 9.28316, lake: lake_como}
+  - {id: menaggio,   lat: 46.01614, lon: 9.24443, label: "Menaggio",           sector: lario_centrale, anchor_lat: 46.01978, anchor_lon: 9.23895, lake: lake_como}
+  - {id: bellagio,   lat: 45.98757, lon: 9.25324, label: "Bellagio",           sector: lario_centrale, anchor_lat: 45.98725, anchor_lon: 9.26130, lake: lake_como}
   # Branca di Lecco (south-east branch)
-  - {id: mandello,   lat: 45.91524, lon: 9.30640, label: "Mandello del Lario", sector: branca_lecco,   anchor_lat: 45.91918, anchor_lon: 9.31934}
-  - {id: lecco,      lat: 45.85402, lon: 9.38194, label: "Lecco / Valmadrera", sector: branca_lecco,   anchor_lat: 45.85538, anchor_lon: 9.38960}
+  - {id: mandello,   lat: 45.91524, lon: 9.30640, label: "Mandello del Lario", sector: branca_lecco,   anchor_lat: 45.91918, anchor_lon: 9.31934, lake: lake_como}
+  - {id: lecco,      lat: 45.85402, lon: 9.38194, label: "Lecco / Valmadrera", sector: branca_lecco,   anchor_lat: 45.85538, anchor_lon: 9.38960, lake: lake_como}
   # Branca di Como (south-west branch)
-  - {id: como_city,  lat: 45.81676, lon: 9.07533, label: "Como",               sector: branca_como,    anchor_lat: 45.81156, anchor_lon: 9.08304}
+  - {id: como_city,  lat: 45.81676, lon: 9.07533, label: "Como",               sector: branca_como,    anchor_lat: 45.81156, anchor_lon: 9.08304, lake: lake_como}
+  # --- Phase 6 expansion: Garda + Maggiore north basins -----------------
+  # Coordinates verified ON WATER against the lakes' OSM shorelines
+  # (scripts/fetch_shoreline_multi.py). Garda regimes (S0 study in
+  # docs/spots/lake_garda.md): ORA — S/SE afternoon thermal up the lake
+  # (build ~11:00-13:00, 10-18 kn, N fetch); PELER — morning N katabatic
+  # down the Sarca corridor (Riva/Torbole, ~06:00-10:00, gusty).
+  # Maggiore north: Breva S thermal (weaker than Como's, builds ~11:30)
+  # and overnight N slope winds; axis NNE-SSW ~10 deg.
+  - {id: riva_del_garda, lat: 45.8765, lon: 10.8495, label: "Riva del Garda", sector: garda_nord, anchor_lat: 45.8846, anchor_lon: 10.8392, lake: lake_garda}
+  - {id: torbole,        lat: 45.8625, lon: 10.8580, label: "Torbole",         sector: garda_nord, anchor_lat: 45.8675, anchor_lon: 10.8650, lake: lake_garda}
+  - {id: malcesine,      lat: 45.7672, lon: 10.8025, label: "Malcesine",       sector: garda_sud,  anchor_lat: 45.7658, anchor_lon: 10.8087, lake: lake_garda}
+  - {id: brenzone,       lat: 45.7266, lon: 10.7725, label: "Brenzone",        sector: garda_sud,  anchor_lat: 45.7190, anchor_lon: 10.7875, lake: lake_garda}
+  - {id: luino,          lat: 46.0015, lon: 8.7290,  label: "Luino",           sector: maggiore_nord, anchor_lat: 46.0020, anchor_lon: 8.7420, lake: lake_maggiore}
+  - {id: cannero,        lat: 46.0180, lon: 8.7000,  label: "Cannero Riviera", sector: maggiore_nord, anchor_lat: 46.0219, anchor_lon: 8.6850, lake: lake_maggiore}
+  - {id: cannobio,       lat: 46.0630, lon: 8.7100,  label: "Cannobio",        sector: maggiore_nord, anchor_lat: 46.0645, anchor_lon: 8.7145, lake: lake_maggiore}
   # --- Auxiliary points (4) — macro-area pressure gradients ---
   - {id: zurich,          lat: 47.376, lon: 8.541}
   - {id: milano_linate,   lat: 45.445, lon: 9.278}
@@ -73,6 +128,14 @@ operational_point_ids:
   - mandello
   - lecco
   - como_city
+  # Phase 6: Garda + Maggiore north basins
+  - riva_del_garda
+  - torbole
+  - malcesine
+  - brenzone
+  - luino
+  - cannero
+  - cannobio
 
 # Section 4.3 — Open-Meteo multi-model NWP
 open_meteo:
@@ -255,7 +318,16 @@ model:
   # Terrain channeling: valley axis azimuth (deg FROM north) for the
   # along/cross-valley decomposition of the forecast wind.
   valley_axis_deg: 10.0
-  valley_axis_overrides: {}
+  # Phase 6: per-point axis overrides — Garda runs NNE-SSW (~6 deg),
+  # Maggiore north ~10 deg (same family as Como).
+  valley_axis_overrides:
+    riva_del_garda: 6.0
+    torbole: 6.0
+    malcesine: 6.0
+    brenzone: 6.0
+    luino: 10.0
+    cannero: 10.0
+    cannobio: 10.0
   # Deep Audit R10: deterministic model used for aux-point (Zurich/Milano/…)
   # gradients — replaces the former unordered rows[0] pick.
   aux_reference_model: "icon_eu"

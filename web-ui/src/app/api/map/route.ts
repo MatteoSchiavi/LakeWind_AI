@@ -18,9 +18,12 @@ const API_URL = process.env.LAKEWIND_API_URL || 'http://127.0.0.1:8000';
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
   const offset = Math.min(Math.max(parseInt(searchParams.get('offset') || '0', 10) || 0, 0), 24);
+  // Phase 6: lake panel selector (lake_como default keeps artifact serving)
+  const lakeParam = searchParams.get('lake') || 'lake_como';
+  const lake = ['lake_como', 'lake_garda', 'lake_maggiore'].includes(lakeParam) ? lakeParam : 'lake_como';
 
   try {
-    const upstream = `${API_URL}/api/map.png?offset=${offset}`;
+    const upstream = `${API_URL}/api/map.png?offset=${offset}&lake=${lake}`;
     const res = await fetch(upstream, { cache: 'no-store' });
     if (!res.ok) {
       return NextResponse.json(

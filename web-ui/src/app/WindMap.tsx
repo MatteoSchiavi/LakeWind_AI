@@ -35,7 +35,33 @@ interface WindPoint {
   gust: number;
   confidence: number;
   sector: string;
+  lake?: string;
 }
+
+// Phase 6: per-lake view registry — presentation constants mirroring
+// settings.yaml lakes (geometry lives in /lake-<name>.geojson, verified OSM
+// polygons). FIELD_BOUNDS is the interpolation overlay extent (padded bbox).
+export type LakeId = 'lake_como' | 'lake_garda' | 'lake_maggiore';
+const LAKE_VIEWS: Record<string, {
+  name: string; geojson: string; center: [number, number]; zoom: number;
+  axisDeg: number; fieldBounds: [[number, number], [number, number]];
+}> = {
+  lake_como: {
+    name: 'Lake Como', geojson: '/lake-como.geojson',
+    center: [46.06, 9.26], zoom: 10, axisDeg: 10.0,
+    fieldBounds: [[45.70, 8.98], [46.26, 9.46]],
+  },
+  lake_garda: {
+    name: 'Lake Garda', geojson: '/lake-garda.geojson',
+    center: [45.80, 10.82], zoom: 11, axisDeg: 6.0,
+    fieldBounds: [[45.67, 10.69], [45.93, 10.95]],
+  },
+  lake_maggiore: {
+    name: 'Lake Maggiore', geojson: '/lake-maggiore.geojson',
+    center: [46.06, 8.72], zoom: 11, axisDeg: 10.0,
+    fieldBounds: [[45.94, 8.63], [46.19, 8.83]],
+  },
+};
 
 interface LakeGeo {
   type: string;
@@ -93,8 +119,8 @@ function gradientColor(speedKn: number): [number, number, number] {
   return GRAD_ANCHORS[GRAD_ANCHORS.length - 1][1];
 }
 
-// Lake geometry cache (fetched once per page load)
-let lakeGeoPromise: Promise<number[][] | null> | null = null;
+// Lake geometry caches (one per lake, fetched once per page load)
+const lakeGeoPromises = new Map<string, Promise<number[][] | null>>();
 
 function outerRingOf(geo: LakeGeo): number[][] {
   const f = geo.features[0];
@@ -110,27 +136,31 @@ function outerRingOf(geo: LakeGeo): number[][] {
   return (c as number[][][])[0];
 }
 
-function fetchLakeRing(): Promise<number[][] | null> {
-  if (!lakeGeoPromise) {
-    lakeGeoPromise = fetch('/lake-como.geojson')
+function fetchLakeRing(lakeId: string): Promise<number[][] | null> {
+  let p = lakeGeoPromises.get(lakeId);
+  if (!p) {
+    const url = LAKE_VIEWS[lakeId]?.geojson ?? LAKE_VIEWS.lake_como.geojson;
+    p = fetch(url)
       .then((r) => (r.ok ? r.json() : null))
       .then((geo: LakeGeo | null) => (geo ? outerRingOf(geo) : null))
       .catch(() => null);
+    lakeGeoPromises.set(lakeId, p);
   }
-  return lakeGeoPromise;
+  return p;
 }
 
 // Same geometry transform as the Python heatmap: km-space, rotated onto the
-// 10° valley axis, cross-axis compressed by 3 -> the field elongates along
+// lake's valley axis, cross-axis compressed by 3 -> the field elongates along
 // the lake corridor instead of smearing across the ridges.
-const VALLEY_AXIS_DEG = 10.0;
 const ANISOTROPY = 3.0;
 const CANVAS_W = 320;
 const CANVAS_H = 560;
-const FIELD_BOUNDS: [[number, number], [number, number]] = [[45.70, 8.98], [46.26, 9.46]];
 
-function buildWindFieldCanvas(points: WindPoint[], ring: number[][]): string | null {
+function buildWindFieldCanvas(points: WindPoint[], ring: number[][], lakeId: string): string | null {
   if (points.length < 3) return null;
+  const view = LAKE_VIEWS[lakeId] ?? LAKE_VIEWS.lake_como;
+  const VALLEY_AXIS_DEG = view.axisDeg;
+  const FIELD_BOUNDS = view.fieldBounds;
   const [latMin, lonMin] = FIELD_BOUNDS[0];
   const [latMax, lonMax] = FIELD_BOUNDS[1];
   const lat0 = (latMin + latMax) / 2;
@@ -215,29 +245,30 @@ function FitBounds({ points }: { points: WindPoint[] }) {
   return null;
 }
 
-export default function WindMap({ points, onSelect }: {
+export default function WindMap({ points, onSelect, lake = 'lake_como' }: {
   points: WindPoint[];
   onSelect?: (pointId: string) => void;
+  lake?: string;
 }) {
-  // Lake Como center (whole-basin view)
-  const center: [number, number] = [46.06, 9.26];
+  const view = LAKE_VIEWS[lake] ?? LAKE_VIEWS.lake_como;
+  const center: [number, number] = view.center;
   const [ring, setRing] = useState<number[][] | null>(null);
   const ringRef = useRef<number[][] | null>(null);
 
   useEffect(() => {
     let alive = true;
-    fetchLakeRing().then((r) => {
+    fetchLakeRing(lake).then((r) => {
       if (!alive) return;
       ringRef.current = r;
       setRing(r);
     });
     return () => { alive = false; };
-  }, []);
+  }, [lake]);
 
   // Rebuild the field whenever the data or the shoreline arrive
   const fieldUrl = useMemo(
-    () => (ring ? buildWindFieldCanvas(points, ring) : null),
-    [points, ring],
+    () => (ring ? buildWindFieldCanvas(points, ring, lake) : null),
+    [points, ring, lake],
   );
 
   return (
@@ -259,7 +290,7 @@ export default function WindMap({ points, onSelect }: {
         {fieldUrl && (
           <ImageOverlay
             url={fieldUrl}
-            bounds={FIELD_BOUNDS}
+            bounds={view.fieldBounds}
             opacity={0.75}
             interactive={false}
             zIndex={350}

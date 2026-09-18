@@ -244,6 +244,7 @@ def create_app() -> FastAPI:
     @app.get("/api/map.png")
     async def map_png(
         offset: int = Query(default=0, ge=0, le=24, description="Hours ahead"),
+        lake: str = Query(default="lake_como", description="Lake panel (Phase 6)"),
     ) -> Response:
         from lakewind import artifacts
         from lakewind.forecast_store import store
@@ -251,7 +252,12 @@ def create_app() -> FastAPI:
         from lakewind.utils.timeutil import utcnow
 
         target = utcnow() + timedelta(hours=offset)
-        png = await asyncio.to_thread(artifacts.lookup_map_png, target, offset)
+        # Phase 6: only the home lake has precomputed artifacts — the other
+        # lakes render on demand (small panels, semaphore/loop-bounded below).
+        if lake == "lake_como":
+            png = await asyncio.to_thread(artifacts.lookup_map_png, target, offset)
+        else:
+            png = None
         if png is not None:
             # Phase 4: provenance headers — the web dashboard shows WHERE the
             # map came from and for WHICH valid time (freshness stamp).
@@ -274,7 +280,9 @@ def create_app() -> FastAPI:
                 preds.append(p)
         if not preds:
             raise HTTPException(status_code=503, detail="No predictions available for map")
-        png = await asyncio.to_thread(heatmap_v3.generate_heatmap_v3, preds, target)
+        png = await asyncio.to_thread(
+            heatmap_v3.generate_heatmap_v3, preds, target, lake_id=lake
+        )
         if png is None:
             raise HTTPException(status_code=503, detail="Map rendering failed")
         return Response(

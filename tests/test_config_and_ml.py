@@ -12,9 +12,13 @@ def test_settings_load():
     from lakewind.config import load_settings
 
     s = load_settings()
-    # Phase 5.5: 15 operational spots + 4 auxiliary gradient points
-    assert len(s.virtual_points) == 19
-    assert len(s.operational_point_ids) == 15
+    # Phase 6: 22 operational spots (15 Como + 4 Garda + 3 Maggiore) + 4 aux
+    assert len(s.virtual_points) == 26
+    assert len(s.operational_point_ids) == 22
+    # every operational point carries its lake membership
+    op = {p.id: p for p in s.virtual_points if p.id in s.operational_point_ids}
+    assert all(p.lake for p in op.values())
+    assert set(s.lakes) == {"lake_como", "lake_garda", "lake_maggiore"}
     # V6.6: collectors must request UTC — the systemic timezone fix
     assert s.open_meteo.timezone == "UTC"
     assert s.model.quantiles == [0.1, 0.5, 0.9]

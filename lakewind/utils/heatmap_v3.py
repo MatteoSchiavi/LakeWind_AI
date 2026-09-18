@@ -35,14 +35,17 @@ import numpy as np
 
 # V6: Load shoreline from geojson via shoreline module
 from lakewind.utils.palette import SPEED_COLORS
-from lakewind.utils.shoreline import get_shoreline as _get_shoreline
+from lakewind.utils.shoreline import (
+    get_shoreline as _get_shoreline,
+)
+from lakewind.utils.shoreline import point_on_water as _point_on_water
 from lakewind.utils.timeutil import utcnow
 
 logger = logging.getLogger(__name__)
 
-_LAKE_POLYGON = list(_get_shoreline())
-# (V6.6: removed _LAKE_POLYGON_FALLBACK — dead code; the shoreline module
-# ships its own identical fallback when the geojson is missing.)
+# V6.5 (Phase 6): polygons are fetched per lake at draw time — no module-level
+# single-lake global. Default lake remains Como for backward compatibility.
+_DEFAULT_LAKE = "lake_como"
 
 # Valley axis (deg FROM north) of the Como basin — the NNW-SSE lake axis the
 # Breva/Tivano flows follow. Single source of truth: settings.yaml
@@ -50,12 +53,40 @@ _LAKE_POLYGON = list(_get_shoreline())
 _ANISOTROPY = 3.0  # cross-axis distances compressed by this factor
 
 
-def _valley_axis_deg() -> float:
+def _valley_axis_deg(lake_id: str | None = None) -> float:
+    """Valley axis for a lake: settings.lakes[<id>].valley_axis_deg, falling
+    back to the global model.valley_axis_deg (Como's 10 deg), then 10.0."""
     try:
         from lakewind.config import load_settings
-        return float(load_settings().model.valley_axis_deg)
+        s = load_settings()
+        if lake_id and lake_id in (s.lakes or {}):
+            return float(s.lakes[lake_id].valley_axis_deg)
+        return float(s.model.valley_axis_deg)
     except Exception:
         return 10.0
+
+
+def _lake_bbox(lake_id: str | None) -> tuple[float, float, float, float, str]:
+    """(lon_min, lon_max, lat_min, lat_max, display_name) for a lake panel.
+
+    Reads settings.lakes; falls back to the legacy operating_area (Como) so
+    a settings.yaml without the lakes section still renders.
+    """
+    try:
+        from lakewind.config import load_settings
+        s = load_settings()
+        if lake_id and lake_id in (s.lakes or {}):
+            lk = s.lakes[lake_id]
+            return (lk.lon_min, lk.lon_max, lk.lat_min, lk.lat_max, lk.name)
+    except Exception:
+        pass
+    try:
+        from lakewind.config import load_settings
+        s = load_settings()
+        oa = s.operating_area
+        return (oa.lon_min, oa.lon_max, oa.lat_min, oa.lat_max, oa.name)
+    except Exception:
+        return (9.02, 9.42, 45.74, 46.22, "Lake Como")
 
 
 # ---- V5 shore-side cards -------------------------------------------------
@@ -87,7 +118,7 @@ def _map_display_name(label: str) -> str:
     return label
 
 
-def _open_water_side(lon: float, lat: float) -> str:
+def _open_water_side(lon: float, lat: float, lake_id: str | None = None) -> str:
     """Return 'right' or 'left': the side of (lon, lat) where the lake opens.
 
     This encodes the readability rule for the whole map: a spot on the
@@ -95,14 +126,12 @@ def _open_water_side(lon: float, lat: float) -> str:
     the water), a spot on the WEST shore gets it on the RIGHT — every
     card grows into the lake instead of into the town behind it, and
     opposite shores grow away from each other. Detected geometrically
-    from the committed OSM shoreline: walk horizontally outward until
+    from the lake's OSM shoreline: walk horizontally outward until
     exactly one side is still water; that side is the open lake.
     """
-    from lakewind.utils.shoreline import point_on_water
-
     for d in (0.005, 0.008, 0.012, 0.017, 0.023, 0.030):
-        east = point_on_water(lon + d, lat)
-        west = point_on_water(lon - d, lat)
+        east = _point_on_water(lon + d, lat, lake_id)
+        west = _point_on_water(lon - d, lat, lake_id)
         if east and not west:
             return "right"  # water to the east -> west shore -> card right
         if west and not east:
@@ -139,8 +168,13 @@ def _draw_spot_cards(ax, spots: list[dict[str, Any]], xlim: tuple[float, float])
         (x0, y0), (x1, y1) = inv.transform([(bb.x0, bb.y0), (bb.x1, bb.y1)])
         return min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1)
 
-    dy_candidates = (0.0, -0.011, 0.011, -0.022, 0.022, -0.033, 0.033,
-                     -0.044, 0.044)
+    dy_candidates = (0.0, -0.0055, 0.0055, -0.011, 0.011, -0.0165, 0.0165,
+                     -0.022, 0.022, -0.0275, 0.0275, -0.033, 0.033,
+                     -0.044, 0.044, -0.055, 0.055)
+    # Lateral fallback: near-co-located spots (e.g. Domaso/Gravedona 0.002 deg
+    # apart) can NEVER clear each other by vertical shifts alone — the second
+    # card slides further out over the lake instead. Applied on top of dy.
+    dx_candidates = (0.0, 0.008, -0.008, 0.016, -0.016, 0.024, -0.024)
     arrow_room = _ARROW_GAP_DEG + 2.0 * 0.5 * _ARROW_LEN_KM / 77.0 + 0.001
 
     obstacles = [(p["lon"] - 0.0085, p["lon"] + 0.0085,
@@ -184,15 +218,32 @@ def _draw_spot_cards(ax, spots: list[dict[str, Any]], xlim: tuple[float, float])
 
         box = (0.0, 0.0, 0.0, 0.0)
         chosen = 0.0
+        chosen_dx = 0.0
+        # Keep the sliding card inside the axes as well — a big lateral
+        # fallback must never push text past the frame or under the colorbar.
         for dy in dy_candidates:
-            bx0 = x0 if sign > 0 else x0 - arrow_room
-            bx1 = x1 + arrow_room if sign > 0 else x1
-            by0, by1 = y0 + dy, y1 + dy
-            box = (bx0, bx1, by0, by1)
-            if not any(bx0 < ox1 and bx1 > ox0 and by0 < oy1 and by1 > oy0
-                       for ox0, ox1, oy0, oy1 in placed + obstacles):
-                chosen = dy
+            done = False
+            for dx in dx_candidates:
+                bx0 = (x0 + dx) if sign > 0 else (x0 + dx) - arrow_room
+                bx1 = (x1 + dx) + arrow_room if sign > 0 else (x1 + dx)
+                by0, by1 = y0 + dy, y1 + dy
+                box = (bx0, bx1, by0, by1)
+                if not any(bx0 < ox1 and bx1 > ox0 and by0 < oy1 and by1 > oy0
+                           for ox0, ox1, oy0, oy1 in placed + obstacles):
+                    chosen = dy
+                    chosen_dx = dx
+                    done = True
+                    break
+            if done:
                 break
+        if chosen_dx:
+            tx += chosen_dx
+            t_name.set_position((tx, sp["lat"] + chosen + _NAME_LINE_DY))
+            t_speed.set_position((tx, sp["lat"] + chosen + _SPEED_LINE_DY))
+            x0 += chosen_dx
+            x1 += chosen_dx
+            sx0 += chosen_dx
+            sx1 += chosen_dx
         placed.append(box)
         # Re-apply the chosen fallback shift to the text artists themselves —
         # the patch/leader/arrow below are drawn from the shifted geometry.
@@ -404,15 +455,22 @@ def _draw_panel_v3(
     show_title: bool = True,
     show_good_sailing: bool = True,
     show_data_overlay: bool = True,
+    lake_id: str | None = None,
 ) -> None:
-    """Draw one V5 heatmap panel (field + shore-side spot cards)."""
+    """Draw one V5 heatmap panel (field + shore-side spot cards).
+
+    Phase 6: the panel is lake-scoped — polygon, bbox and valley axis come
+    from settings.lakes[lake_id]; predictions for OTHER lakes are ignored
+    (use group_predictions_by_lake to split before calling).
+    """
     from matplotlib.colors import LinearSegmentedColormap
 
     from lakewind.config import load_settings
 
+    lake_id = lake_id or _DEFAULT_LAKE
     s = load_settings()
-    lon_min, lon_max = s.operating_area.lon_min, s.operating_area.lon_max
-    lat_min, lat_max = s.operating_area.lat_min, s.operating_area.lat_max
+    lon_min, lon_max, lat_min, lat_max, lake_name = _lake_bbox(lake_id)
+    lake_polygon = _get_shoreline(lake_id)
 
     pad = 0.010
     xlim = (lon_min - pad, lon_max + pad)
@@ -422,17 +480,18 @@ def _draw_panel_v3(
 
     # Lake polygon — real OSM shoreline, drawn with a soft drop shadow and a
     # two-tone water base so the interpolated field sits on depth, not flats.
-    lake_xy = _LAKE_POLYGON
+    lake_xy = lake_polygon
     lake_lons = [p[0] for p in lake_xy]
     lake_lats = [p[1] for p in lake_xy]
-    ax.fill([x + 0.0012 for x in lake_lons], [y - 0.0015 for y in lake_lats],
-            facecolor="#3a3f44", edgecolor="none", alpha=0.30, zorder=0.5)
-    ax.fill(lake_lons, lake_lats, facecolor="#1a5f8a", edgecolor="#0a3d5c",
-            linewidth=1.6, zorder=1)
-    ax.fill(lake_lons, lake_lats, facecolor="#2a86bd", edgecolor="none",
-            alpha=0.30, zorder=2)
+    if lake_xy:
+        ax.fill([x + 0.0012 for x in lake_lons], [y - 0.0015 for y in lake_lats],
+                facecolor="#3a3f44", edgecolor="none", alpha=0.30, zorder=0.5)
+        ax.fill(lake_lons, lake_lats, facecolor="#1a5f8a", edgecolor="#0a3d5c",
+                linewidth=1.6, zorder=1)
+        ax.fill(lake_lons, lake_lats, facecolor="#2a86bd", edgecolor="none",
+                alpha=0.30, zorder=2)
 
-    # Enrich predictions with lat/lon
+    # Enrich predictions with lat/lon — ONLY points on THIS lake
     vp_by_id = {vp.id: vp for vp in s.virtual_points}
     valid = []
     for p in predictions:
@@ -440,6 +499,10 @@ def _draw_panel_v3(
         if p_id and p.get("wind_speed_kn") is not None:
             vp = vp_by_id.get(p_id)
             if vp:
+                if vp.lake and vp.lake != lake_id:
+                    continue  # other lake's panel handles this point
+                if not vp.lake and lake_id != _DEFAULT_LAKE:
+                    continue  # lake-less (legacy/aux) points stay on the Como panel
                 valid.append({**p, "lon": vp.lon, "lat": vp.lat})
 
     if not valid:
@@ -461,12 +524,17 @@ def _draw_panel_v3(
         ax.plot(p["lon"], p["lat"], "o", markersize=3.6, color="#0a3d5c",
                 markeredgecolor="white", markeredgewidth=0.5, zorder=6)
 
-    # Heatmap interpolation over the operational points
+    # Heatmap interpolation over the operational points — grid spans the
+    # PADDED axes extent (not the bare bbox): the panel shows lon_min-0.010
+    # .. lon_max+0.010, and a bbox-sized grid left a field-less strip of bare
+    # water inside the frame wherever the lake crosses the bbox edge.
     if len(valid) >= 3:
         try:
             grid_lons, grid_lats, grid_speeds = _interpolate_grid_v3(
-                point_lons, point_lats, point_speeds, lon_min, lon_max, lat_min, lat_max,
+                point_lons, point_lats, point_speeds,
+                xlim[0], xlim[1], ylim[0], ylim[1],
                 resolution=150,  # higher resolution
+                valley_axis_deg=_valley_axis_deg(lake_id),
             )
             # Phase 4 (W5): the colormap is anchored to the SHARED speed
             # palette — the same band hexes the web map and the bot use, at
@@ -486,7 +554,7 @@ def _draw_panel_v3(
             # Constant vmax=30 for cross-time comparability
             # V6 FIX: clip heatmap to lake polygon (A2)
             from matplotlib.patches import Polygon as MplPolygon
-            lake_patch_clip = MplPolygon(_LAKE_POLYGON, closed=True, transform=ax.transData)
+            lake_patch_clip = MplPolygon(lake_polygon, closed=True, transform=ax.transData)
             cs = ax.pcolormesh(
                 grid_lons, grid_lats, grid_speeds,
                 cmap=cmap, alpha=0.70, shading="gouraud",
@@ -501,7 +569,7 @@ def _draw_panel_v3(
 
             # Contour lines (clipped to the lake — no contours over land)
             from matplotlib.patches import Polygon as MplPolygon
-            clip_patch = MplPolygon(_LAKE_POLYGON, closed=True, transform=ax.transData)
+            clip_patch = MplPolygon(lake_polygon, closed=True, transform=ax.transData)
             ct = ax.contour(
                 grid_lons, grid_lats, grid_speeds,
                 levels=[5, 10, 15, 20, 25, 30],
@@ -532,7 +600,7 @@ def _draw_panel_v3(
         if vp is None or vp.label is None:
             continue  # aux gradient points carry no card
         spots.append({**p, "name": _map_display_name(vp.label),
-                      "side": _open_water_side(p["lon"], p["lat"])})
+                      "side": _open_water_side(p["lon"], p["lat"], lake_id)})
     _draw_spot_cards(ax, spots, xlim)
 
     # Compass + scale bar (whole-lake map: 5 km reference)
@@ -561,10 +629,41 @@ def _draw_panel_v3(
     if show_title:
         n_spots = len(valid)
         title = (
-            f"LakeWind — Lake Como wind field ({n_spots} spots)\n"
+            f"LakeWind — {lake_name} wind field ({n_spots} spots)\n"
             f"{target_time.strftime('%Y-%m-%d %H:%M UTC')}"
         )
         ax.set_title(title, fontsize=11, fontweight="bold", pad=8)
+
+
+def group_predictions_by_lake(
+    predictions: list[dict[str, Any]],
+) -> dict[str, list[dict[str, Any]]]:
+    """Split predictions by their point's lake (Phase 6 multi-lake).
+
+    Points without a lake (legacy/aux) group under lake_como so a settings
+    upgrade can never orphan them. Points unknown to settings are dropped.
+    Order follows the settings lakes order (Como first), then extras.
+    """
+    from lakewind.config import load_settings
+
+    s = load_settings()
+    lake_of = {vp.id: (vp.lake or _DEFAULT_LAKE) for vp in s.virtual_points}
+    ordered: list[str] = list((s.lakes or {}).keys()) or [_DEFAULT_LAKE]
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for p in predictions:
+        lid = lake_of.get(p.get("point_id", ""))
+        if lid is None:
+            continue
+        groups.setdefault(lid, []).append(p)
+    # stable, settings-ordered output (only lakes that actually have data)
+    out: dict[str, list[dict[str, Any]]] = {}
+    for lid in ordered:
+        if groups.get(lid):
+            out[lid] = groups[lid]
+    for lid, preds in groups.items():
+        if lid not in out:
+            out[lid] = preds
+    return out
 
 
 def generate_heatmap_v3(
@@ -572,19 +671,24 @@ def generate_heatmap_v3(
     target_time: datetime | None = None,
     title: str | None = None,
     compact: bool = False,
+    lake_id: str | None = None,
 ) -> bytes | None:
-    """Generate a V3 single-panel heatmap PNG.
+    """Generate a V3 single-panel heatmap PNG for ONE lake.
 
     Args:
         predictions: List of prediction dicts with point_id, wind_speed_kn, etc.
+            Predictions for points on other lakes are ignored — pass the whole
+            set and scope with lake_id, or split with group_predictions_by_lake.
         target_time: Timestamp for the map title.
         compact: If True, generate a smaller thumbnail (~200KB).
+        lake_id: Which lake to render (default: lake_como).
 
     Returns:
-        PNG image bytes, or None if no valid predictions.
+        PNG image bytes, or None if no valid predictions for this lake.
     """
     if target_time is None:
         target_time = utcnow()
+    lake_id = lake_id or _DEFAULT_LAKE
 
     try:
         import matplotlib.font_manager as fm
@@ -600,19 +704,28 @@ def generate_heatmap_v3(
 
     fig, ax = plt.subplots(figsize=figsize, constrained_layout=True)
     fig.patch.set_facecolor("white")
+    # Reserve a bottom strip for the source footer — constrained_layout only
+    # knows about axes/titles, so a bare fig.text at y=0.005 used to collide
+    # with the x-axis tick labels (visible on every rendered map).
+    try:
+        fig.get_layout_engine().set(rect=(0, 0.028, 1, 0.972))
+    except Exception:
+        pass
 
     _draw_panel_v3(
         ax, predictions, target_time,
         show_title=True,
         show_good_sailing=not compact,
         show_data_overlay=not compact,
+        lake_id=lake_id,
     )
 
     # Footer with data sources (live counts — no rotting constants)
+    _, _, _, _, lake_name = _lake_bbox(lake_id)
     fig.text(
         0.5, 0.005,
-        f"LakeWind V5  •  MOS bias-corrected  •  {len(predictions)} spots  •  "
-        f"anisotropic RBF along the {_valley_axis_deg():.0f}\u00b0 valley axis  •  "
+        f"LakeWind V5  •  MOS bias-corrected  •  {lake_name}  •  "
+        f"anisotropic RBF along the {_valley_axis_deg(lake_id):.0f}\u00b0 valley axis  •  "
         f"verified OSM shoreline  •  shore-side cards, ring = sailable (≥8 kn)",
         ha="center", fontsize=5.5, color="#888", fontstyle="italic",
     )
@@ -726,4 +839,5 @@ def generate_trend_chart(
 __all__ = [
     "generate_heatmap_v3",
     "generate_trend_chart",
+    "group_predictions_by_lake",
 ]
