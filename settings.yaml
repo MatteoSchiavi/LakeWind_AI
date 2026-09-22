@@ -53,8 +53,22 @@ lakes:
     lon_min: 8.64
     lon_max: 8.82
     valley_axis_deg: 10.0
+  lake_bracciano:
+    id: lake_bracciano
+    name: "Lake Bracciano"
+    geojson: "lake_bracciano_shoreline.geojson"
+    # Volcanic basin in Lazio (OSM relation via Nominatim, 56.7 km2 — known
+    # 56.5-57.5 km2). Round lake, so the panel is nearly square. Axis 135 =
+    # the NW-SE corridor of the afternoon thermal (see docs/spots/
+    # lake_bracciano.md); for a round lake the anisotropy matters little,
+    # the corridor only shapes the interpolation elongation.
+    lat_min: 42.075
+    lat_max: 42.165
+    lon_min: 12.170
+    lon_max: 12.290
+    valley_axis_deg: 135.0
 
-# Section 2.2 — virtual observation points (15 operational spots + 4 auxiliary)
+# Section 2.2 — virtual observation points (26 operational spots + 4 auxiliary)
 # Phase 5.5 multi-spot expansion — ALL coordinates verified via TWO independent
 # sources (OpenStreetMap/Nominatim + it.wikipedia, cross-checked < 1.5 km) and
 # validated against the real Lake Como shoreline polygon
@@ -105,6 +119,16 @@ virtual_points:
   - {id: luino,          lat: 46.0015, lon: 8.7290,  label: "Luino",           sector: maggiore_nord, anchor_lat: 46.0020, anchor_lon: 8.7420, lake: lake_maggiore}
   - {id: cannero,        lat: 46.0180, lon: 8.7000,  label: "Cannero Riviera", sector: maggiore_nord, anchor_lat: 46.0219, anchor_lon: 8.6850, lake: lake_maggiore}
   - {id: cannobio,       lat: 46.0630, lon: 8.7100,  label: "Cannobio",        sector: maggiore_nord, anchor_lat: 46.0645, anchor_lon: 8.7145, lake: lake_maggiore}
+  # --- Phase 6 expansion: Lake Bracciano (Lazio, 4th lake) ---------------
+  # Anchors verified via Nominatim (town admin centers, all on land) and
+  # projected onto open water along the shortest path (0.27-0.41 km
+  # offshore) against the fetched OSM shoreline. Regimes researched in
+  # docs/spots/lake_bracciano.md: afternoon thermal 10-12 kn (NW prevailing,
+  # SSW phase early afternoon, N Tramontana on synoptic days).
+  - {id: trevignano,     lat: 42.15222, lon: 12.25320, label: "Trevignano Romano", sector: bracciano, anchor_lat: 42.15593, anchor_lon: 12.24620, lake: lake_bracciano}
+  - {id: bracciano_city, lat: 42.10955, lon: 12.19022, label: "Bracciano",        sector: bracciano, anchor_lat: 42.10110, anchor_lon: 12.17386, lake: lake_bracciano}
+  - {id: vigna_di_valle, lat: 42.08845, lon: 12.22092, label: "Vigna di Valle",   sector: bracciano, anchor_lat: 42.07678, anchor_lon: 12.20764, lake: lake_bracciano}
+  - {id: anguillara,     lat: 42.09691, lon: 12.27516, label: "Anguillara Sabazia", sector: bracciano, anchor_lat: 42.08371, anchor_lon: 12.28301, lake: lake_bracciano}
   # --- Auxiliary points (4) — macro-area pressure gradients ---
   - {id: zurich,          lat: 47.376, lon: 8.541}
   - {id: milano_linate,   lat: 45.445, lon: 9.278}
@@ -136,6 +160,11 @@ operational_point_ids:
   - luino
   - cannero
   - cannobio
+  # Phase 6: Lake Bracciano (Lazio)
+  - trevignano
+  - bracciano_city
+  - vigna_di_valle
+  - anguillara
 
 # Section 4.3 — Open-Meteo multi-model NWP
 open_meteo:
@@ -319,7 +348,8 @@ model:
   # along/cross-valley decomposition of the forecast wind.
   valley_axis_deg: 10.0
   # Phase 6: per-point axis overrides — Garda runs NNE-SSW (~6 deg),
-  # Maggiore north ~10 deg (same family as Como).
+  # Maggiore north ~10 deg (same family as Como), Bracciano's afternoon
+  # thermal follows the NW-SE corridor (~135 deg).
   valley_axis_overrides:
     riva_del_garda: 6.0
     torbole: 6.0
@@ -328,6 +358,10 @@ model:
     luino: 10.0
     cannero: 10.0
     cannobio: 10.0
+    trevignano: 135.0
+    bracciano_city: 135.0
+    vigna_di_valle: 135.0
+    anguillara: 135.0
   # Deep Audit R10: deterministic model used for aux-point (Zurich/Milano/…)
   # gradients — replaces the former unordered rows[0] pick.
   aux_reference_model: "icon_eu"

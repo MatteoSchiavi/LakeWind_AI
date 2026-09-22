@@ -41,7 +41,7 @@ interface WindPoint {
 // Phase 6: per-lake view registry — presentation constants mirroring
 // settings.yaml lakes (geometry lives in /lake-<name>.geojson, verified OSM
 // polygons). FIELD_BOUNDS is the interpolation overlay extent (padded bbox).
-export type LakeId = 'lake_como' | 'lake_garda' | 'lake_maggiore';
+export type LakeId = 'lake_como' | 'lake_garda' | 'lake_maggiore' | 'lake_bracciano';
 const LAKE_VIEWS: Record<string, {
   name: string; geojson: string; center: [number, number]; zoom: number;
   axisDeg: number; fieldBounds: [[number, number], [number, number]];
@@ -60,6 +60,11 @@ const LAKE_VIEWS: Record<string, {
     name: 'Lake Maggiore', geojson: '/lake-maggiore.geojson',
     center: [46.06, 8.72], zoom: 11, axisDeg: 10.0,
     fieldBounds: [[45.94, 8.63], [46.19, 8.83]],
+  },
+  lake_bracciano: {
+    name: 'Lake Bracciano', geojson: '/lake-bracciano.geojson',
+    center: [42.12, 12.23], zoom: 12, axisDeg: 135.0,
+    fieldBounds: [[42.07, 12.16], [42.17, 12.30]],
   },
 };
 
