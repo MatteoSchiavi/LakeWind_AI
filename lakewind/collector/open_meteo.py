@@ -25,6 +25,12 @@ from lakewind.utils.timeutil import utcnow
 
 logger = logging.getLogger(__name__)
 
+# Data & Prediction audit (Minor): synoptic run keys stored by THIS process —
+# see OpenMeteoCollector.store for why re-pulls are logged. Deliberately
+# unbounded per process (22 points × ~10 models × few runs/day ≈ hundreds of
+# small tuples; the process restarts daily at worst).
+_stored_run_keys: set[tuple[str, str, Any]] = set()
+
 
 def demultiplex_hourly(
     hourly: dict[str, list], models: list[str]
@@ -240,7 +246,24 @@ class OpenMeteoCollector(BaseCollector):
         return kept
 
     def store(self, rows: list[dict[str, Any]]) -> int:
-        return access.bulk_insert_forecast_runs(rows)
+        # Data & Prediction audit (Minor): run_time is snapped to the model's
+        # synoptic init, so a re-pull within the same window UPSERT-overwrites
+        # the earlier pull instead of storing a distinct run. That is the
+        # intended idempotency contract, but it silently collapses the
+        # run-to-run evolution signal for live data — make it VISIBLE (one
+        # in-process check, no extra DB load). Training-grade run evolution
+        # is preserved separately via the Previous Runs backfill (R15/#2).
+        n = access.bulk_insert_forecast_runs(rows)
+        for key in {(r["point_id"], r["model_name"], r.get("run_time")) for r in rows}:
+            if key in _stored_run_keys:
+                logger.info(
+                    "open_meteo: re-pull for %s/%s run %s — UPSERT overwrote the "
+                    "earlier pull (same synoptic window; expected at 30-min cadence)",
+                    key[0], key[1], key[2],
+                )
+            else:
+                _stored_run_keys.add(key)
+        return n
 
 
 def _safe_get(d: dict[str, Any], key: str, idx: int) -> Any:

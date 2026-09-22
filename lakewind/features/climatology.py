@@ -40,6 +40,23 @@ def _circular_mean(angles_deg: list[float]) -> float | None:
     return (math.degrees(mean_rad) + 360.0) % 360.0
 
 
+# Data & Prediction audit #7: day-of-year windows must WRAP around the year
+# boundary. The former `BETWEEN max(1, doy-w) AND min(366, doy+w)` clamped at
+# the edges, so an early-January query never matched climatologically adjacent
+# late-December days (and vice versa) — silently dropping ~8% of the year from
+# every climatology normal, exactly the season where Foehn is most active.
+# Shared SQL fragment: circular distance min(|doy-t|, 366-|doy-t|) <= window.
+_DOY_WRAP_SQL = (
+    "LEAST(ABS(CAST(strftime('%j', timestamp) AS INTEGER) - ?), "
+    "366 - ABS(CAST(strftime('%j', timestamp) AS INTEGER) - ?)) <= ?"
+)
+
+
+def _doy_wrap_params(target_doy: int, window_days: int) -> list[int]:
+    """Bind params for _DOY_WRAP_SQL (target doy twice + window)."""
+    return [target_doy, target_doy, window_days]
+
+
 _CLIMATOLOGY_TABLE_CHECKED = False
 
 
@@ -130,21 +147,19 @@ def _get_circular_dir_normal(
 ) -> float | None:
     """Get the circular-mean wind direction normal."""
     target_doy = target_time.timetuple().tm_yday
-    doy_start = max(1, target_doy - window_days)
-    doy_end = min(366, target_doy + window_days)
     cutoff = target_time - timedelta(days=years_back * 365)
 
     with access.cursor() as conn:
         cur = conn.execute(
-            """
+            f"""
             SELECT wind_direction_10m
             FROM v4_climatology
             WHERE point_id = ?
               AND wind_direction_10m IS NOT NULL
-              AND CAST(strftime('%j', timestamp) AS INTEGER) BETWEEN ? AND ?
+              AND {_DOY_WRAP_SQL}
               AND timestamp >= ?
             """,
-            [point_id, doy_start, doy_end, cutoff],
+            [point_id, *_doy_wrap_params(target_doy, window_days), cutoff],
         )
         dirs = [row[0] for row in cur.fetchall() if row[0] is not None]
 
@@ -154,23 +169,21 @@ def _get_circular_dir_normal(
 def _get_breva_climatology(point_id: str, target_time: datetime) -> float | None:
     """Historical avg wind speed during 11-16h local for this date (±15 days)."""
     target_doy = target_time.timetuple().tm_yday
-    doy_start = max(1, target_doy - 15)
-    doy_end = min(366, target_doy + 15)
     cutoff = target_time - timedelta(days=10 * 365)
 
     # 11-16 UTC ≈ 13-18 local (Europe/Rome = UTC+2 in summer)
     with access.cursor() as conn:
         cur = conn.execute(
-            """
+            f"""
             SELECT AVG(wind_speed_10m)
             FROM v4_climatology
             WHERE point_id = ?
               AND wind_speed_10m IS NOT NULL
-              AND CAST(strftime('%j', timestamp) AS INTEGER) BETWEEN ? AND ?
+              AND {_DOY_WRAP_SQL}
               AND CAST(strftime('%H', timestamp) AS INTEGER) BETWEEN 11 AND 16
               AND timestamp >= ?
             """,
-            [point_id, doy_start, doy_end, cutoff],
+            [point_id, *_doy_wrap_params(target_doy, 15), cutoff],
         )
         row = cur.fetchone()
     return float(row[0]) if row and row[0] is not None else None
@@ -183,8 +196,6 @@ def _get_foehn_frequency(point_id: str, target_time: datetime) -> float | None:
     isn't in the operational_point_ids, returns None.
     """
     target_doy = target_time.timetuple().tm_yday
-    doy_start = max(1, target_doy - 15)
-    doy_end = min(366, target_doy + 15)
     cutoff = target_time - timedelta(days=10 * 365)
 
     # Check if we have Zurich data
@@ -206,12 +217,12 @@ def _get_foehn_frequency(point_id: str, target_time: datetime) -> float | None:
     # Need both Zurich and Milano pressures
     with access.cursor() as conn:
         cur = conn.execute(
-            """
+            f"""
             WITH z AS (
                 SELECT DATE(timestamp) as d, AVG(pressure_msl) as p
                 FROM v4_climatology
                 WHERE point_id = 'zurich' AND pressure_msl IS NOT NULL
-                  AND CAST(strftime('%j', timestamp) AS INTEGER) BETWEEN ? AND ?
+                  AND {_DOY_WRAP_SQL}
                   AND timestamp >= ?
                 GROUP BY DATE(timestamp)
             ),
@@ -219,14 +230,17 @@ def _get_foehn_frequency(point_id: str, target_time: datetime) -> float | None:
                 SELECT DATE(timestamp) as d, AVG(pressure_msl) as p
                 FROM v4_climatology
                 WHERE point_id = 'milano_linate' AND pressure_msl IS NOT NULL
-                  AND CAST(strftime('%j', timestamp) AS INTEGER) BETWEEN ? AND ?
+                  AND {_DOY_WRAP_SQL}
                   AND timestamp >= ?
                 GROUP BY DATE(timestamp)
             )
             SELECT AVG(CASE WHEN z.p - m.p >= 8 THEN 1.0 ELSE 0 END) as foehn_freq
             FROM z JOIN m ON z.d = m.d
             """,
-            [doy_start, doy_end, cutoff, doy_start, doy_end, cutoff],
+            [
+                *_doy_wrap_params(target_doy, 15), cutoff,
+                *_doy_wrap_params(target_doy, 15), cutoff,
+            ],
         )
         row = cur.fetchone()
 
@@ -248,21 +262,19 @@ def _get_seasonal_percentile(
         return None
 
     target_doy = target_time.timetuple().tm_yday
-    doy_start = max(1, target_doy - 15)
-    doy_end = min(366, target_doy + 15)
     cutoff = target_time - timedelta(days=10 * 365)
 
     with access.cursor() as conn:
         cur = conn.execute(
-            """
+            f"""
             SELECT wind_speed_10m
             FROM v4_climatology
             WHERE point_id = ?
               AND wind_speed_10m IS NOT NULL
-              AND CAST(strftime('%j', timestamp) AS INTEGER) BETWEEN ? AND ?
+              AND {_DOY_WRAP_SQL}
               AND timestamp >= ?
             """,
-            [point_id, doy_start, doy_end, cutoff],
+            [point_id, *_doy_wrap_params(target_doy, 15), cutoff],
         )
         speeds = [row[0] for row in cur.fetchall() if row[0] is not None]
 

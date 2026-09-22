@@ -225,6 +225,7 @@ def predict_at(
     model_version: str | None = None,
     reference_forecast_model: str | None = None,
     compute_shap: bool = True,
+    shared_cache: dict | None = None,
 ) -> InferenceResult | None:
     """End-to-end prediction for one virtual point + time.
 
@@ -239,6 +240,11 @@ def predict_at(
 
     `compute_shap=False` skips SHAP top-contributors (used by backtest where
     explanation text is not needed and SHAP is the dominant cost).
+
+    `shared_cache` (audit #9): optional dict shared across back-to-back
+    predict_at calls for the same point (one serving cycle predicts 25
+    horizons) — forecast/observation lookups are answered from it instead of
+    re-querying DuckDB for every horizon. See build_features_for.
     """
     s = load_settings()
 
@@ -265,7 +271,11 @@ def predict_at(
         reference_forecast_model = s.model.reference_model
 
     # 1) Build features (Spec §8 step 3)
-    fr = build_features_for(point_id, valid_time, reference_forecast_model=reference_forecast_model)
+    fr = build_features_for(
+        point_id, valid_time,
+        reference_forecast_model=reference_forecast_model,
+        shared_cache=shared_cache,
+    )
     if fr is None:
         return None
 

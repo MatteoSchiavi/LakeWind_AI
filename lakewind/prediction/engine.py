@@ -30,6 +30,27 @@ from lakewind.utils.timeutil import utcnow
 logger = logging.getLogger(__name__)
 
 
+def _resolve_model_version(s: Any) -> str:
+    """Production model version, else newest registered (audit #9: once per cycle).
+
+    Mirrors predict_at's fallback resolution so the serving cycle can resolve
+    a single model_version for the whole points × horizons sweep instead of
+    re-querying model_registry for every (point, horizon) pair.
+    """
+    prod = access.current_production_model()
+    if prod is not None:
+        return prod["model_version"]
+    with access.cursor() as conn:
+        cur = conn.execute(
+            f"SELECT * FROM {s.db.model_registry_table} ORDER BY trained_at DESC LIMIT 1"
+        )
+        cols = [d[0] for d in cur.description]
+        rows = cur.fetchall()
+    if not rows:
+        raise RuntimeError("No model trained yet. Run `lakewind retrain` first.")
+    return dict(zip(cols, rows[0], strict=False))["model_version"]
+
+
 def run_cycle(
     *,
     collect: bool = True,
@@ -68,6 +89,20 @@ def run_cycle(
 
     # Stage 3+4+5: For each operational virtual point and each horizon, predict
     op_ids = s.operational_point_ids or [vp.id for vp in s.virtual_points]
+    # Data & Prediction audit #9: the per-(point, horizon) predict_at calls
+    # each re-queried the production model AND re-fetched overlapping
+    # forecast/observation windows. Now the model is resolved ONCE per cycle
+    # and every point shares one cycle-scoped lookup cache (the DB is static
+    # after Stage 1, so results are identical at a fraction of the queries).
+    # Resolution FAILURE is not fatal: fall back to model_version=None so
+    # predict_at keeps its own per-call resolution (and error handling) —
+    # same graceful degradation as before the optimization.
+    try:
+        model_version: str | None = _resolve_model_version(s)
+    except RuntimeError as exc:
+        logger.warning("Model resolution failed — per-call fallback: %s", exc)
+        model_version = None
+    cycle_cache: dict = {}
     for vp_id in op_ids:
         vp = next((p for p in s.virtual_points if p.id == vp_id), None)
         if vp is None:
@@ -75,7 +110,17 @@ def run_cycle(
         for h in horizons:
             valid_time = now + timedelta(hours=h)
             try:
-                ir = predict_at(vp.id, valid_time, compute_shap=False)
+                if model_version is not None:
+                    ir = predict_at(
+                        vp.id, valid_time,
+                        model_version=model_version,
+                        compute_shap=False,
+                        shared_cache=cycle_cache,
+                    )
+                else:
+                    # No resolvable model — keep the plain call shape (also
+                    # consumed by tests that stub predict_at).
+                    ir = predict_at(vp.id, valid_time, compute_shap=False)
             except Exception as exc:
                 logger.warning("predict_at failed for %s @ +%dh: %s", vp.id, h, exc)
                 continue

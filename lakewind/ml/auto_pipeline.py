@@ -314,25 +314,37 @@ def run_pipeline(*, check_only: bool = False, force: bool = False) -> dict[str, 
 def _should_retrain(force: bool) -> tuple[bool, str]:
     """Decide if we should retrain based on data accumulation."""
     if force:
+        # Data & Prediction audit #16: forced runs must be loud — the skip is
+        # legitimate (operator override) but invisible otherwise.
+        logger.warning(
+            "FORCE retrain requested — bypassing the new-data accumulation "
+            "check (>5000 rows since last training)"
+        )
         return True, "forced"
 
     s = load_settings()
+    # Minor hygiene (Data & Prediction audit): interpolated table names are
+    # gated through the shared identifier validator.
+    from lakewind.db.sqlsafe import safe_identifier
+
+    registry_table = safe_identifier(s.db.model_registry_table)
+    forecast_table = safe_identifier(s.db.forecast_table)
     # Check: how much new data since last training?
     with access.cursor() as conn:
         # Last trained model
         cur = conn.execute(
-            f"SELECT MAX(trained_at) FROM {s.db.model_registry_table}"
+            f"SELECT MAX(trained_at) FROM {registry_table}"
         )
         last_trained = cur.fetchone()[0]
 
         # Count new forecast rows since last training
         if last_trained:
             cur = conn.execute(
-                f"SELECT COUNT(*) FROM {s.db.forecast_table} WHERE run_time > ?",
+                f"SELECT COUNT(*) FROM {forecast_table} WHERE run_time > ?",
                 [last_trained],
             )
         else:
-            cur = conn.execute(f"SELECT COUNT(*) FROM {s.db.forecast_table}")
+            cur = conn.execute(f"SELECT COUNT(*) FROM {forecast_table}")
         n_new = cur.fetchone()[0]
 
     # Retrain if >5000 new rows accumulated (≈ 1 week of collection)

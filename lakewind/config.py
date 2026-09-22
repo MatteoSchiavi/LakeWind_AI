@@ -88,7 +88,13 @@ class OpenMeteoConfig(BaseModel):
     ensemble_models: list[str] = Field(default_factory=list)
     hourly_vars: list[str]
     wind_speed_unit: str = "kn"
-    timezone: str = "auto"
+    # Data & Prediction audit (Minor): the code-level default was "auto",
+    # which Open-Meteo resolves in the STATION's local timezone — storing
+    # those timestamps into the naive-UTC convention produced the systematic
+    # 1-2h shift fixed earlier. settings.yaml overrides to "UTC", but a fresh
+    # settings file or test fixture omitting the key silently re-introduced
+    # the bug. UTC is now also the code-level default.
+    timezone: str = "UTC"
     forecast_days: int = 7
     backfill: BackfillConfig = Field(default_factory=BackfillConfig)
 

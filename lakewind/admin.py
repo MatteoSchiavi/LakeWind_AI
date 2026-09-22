@@ -242,9 +242,11 @@ def get_admin_status() -> str:
     lines.append("")
     lines.append("📊 *Database*")
     try:
+        from lakewind.db.sqlsafe import safe_identifier
+
         with access.cursor() as conn:
             for table in ["forecast_runs", "observations", "predictions", "model_registry", "sailing_log"]:
-                cur = conn.execute(f"SELECT COUNT(*) FROM {table}")
+                cur = conn.execute(f"SELECT COUNT(*) FROM {safe_identifier(table)}")
                 count = cur.fetchone()[0]
                 lines.append(f"  {table}: {count:,}")
     except Exception as exc:

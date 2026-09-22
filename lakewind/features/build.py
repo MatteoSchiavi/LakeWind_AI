@@ -79,11 +79,19 @@ def _prefetch_forecasts(
     span_times = sorted({t for (_, t) in by_key} | times)
 
     def _select(cands: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Latest run per model — same as the SQL ROW_NUMBER in fetch_forecasts_at."""
+        """Latest run per model — same as the SQL ROW_NUMBER in fetch_forecasts_at.
+
+        Includes the same as-of guard (Data & Prediction audit #2): a row
+        whose run_time is after its own valid_time is a leakage hazard and is
+        never eligible, so the memo cannot diverge from the SQL path.
+        """
         best: dict[str, dict[str, Any]] = {}
         for r in cands:
-            m = r["model_name"]
             rt = r.get("run_time")
+            vt = r.get("valid_time")
+            if rt is not None and vt is not None and rt > vt:
+                continue  # as-of violation — excluded in the SQL path too
+            m = r["model_name"]
             prev = best.get(m)
             if prev is None or (rt is not None and (prev.get("run_time") is None or rt > prev["run_time"])):
                 best[m] = r
@@ -127,6 +135,7 @@ def build_features_for(
     *,
     reference_forecast_model: str | None = None,
     observation_lookback_minutes: int = 60,
+    shared_cache: dict | None = None,
 ) -> FeatureResult | None:
     """Build the feature vector for a single (point, valid_time) sample.
 
@@ -144,11 +153,21 @@ def build_features_for(
     lookups within this sample (thermal inertia, lake-breeze, lag and aux
     fetches overlap heavily) — ~40% fewer queries per sample with identical
     results, because all fetches inside one sample read the same DB snapshot.
+
+    Data & Prediction audit #9: `shared_cache` lets ONE caller (the serving
+    cycle, which predicts many horizons for the same point back-to-back)
+    reuse forecast AND observation lookups across samples. The DB does not
+    change between those samples (collectors already ran), so results are
+    identical at a fraction of the queries. Training passes nothing and
+    keeps the per-call memo (samples there span months — a shared cache
+    would only grow memory).
     """
     s = load_settings()
     if reference_forecast_model is None:
         reference_forecast_model = s.model.reference_model
-    memo: dict[tuple[str, datetime, int], list[dict[str, Any]]] = {}
+    memo: dict[tuple[str, datetime, int], list[dict[str, Any]]] = (
+        shared_cache if shared_cache is not None else {}
+    )
 
     # Phase 3: one bulk range query covers every forecast lookup this sample
     # performs (base, lags, thermal history, aux gradients) — the per-key
@@ -179,6 +198,26 @@ def build_features_for(
             memo[key] = access.fetch_forecasts_at(pid, t, lead_minutes_window=window)
         return memo[key]
 
+    def _obs_cached(lat: float, lon: float, anchor: datetime, max_age: int) -> list[dict[str, Any]]:
+        """Observation lookup shared across samples when shared_cache is set.
+
+        Keyed on the exact query parameters (audit #9): consecutive serving
+        horizons for the same point re-issue identical obs queries — the
+        issue-time anchor barely moves within one cycle. Cached entries live
+        in the same dict as forecast memo keys under a reserved namespace;
+        only populated when a shared_cache was supplied.
+        """
+        if shared_cache is None:
+            return access.fetch_latest_observation_near(
+                lat, lon, anchor, max_age_minutes=max_age,
+            )
+        key = ("__obs__", round(lat, 5), round(lon, 5), anchor, max_age)
+        if key not in shared_cache:
+            shared_cache[key] = access.fetch_latest_observation_near(
+                lat, lon, anchor, max_age_minutes=max_age,
+            )
+        return shared_cache[key]
+
     # 1) FORECAST FEATURES — per model, no averaging (resolved BEFORE the obs
     #    fetch so the obs anchor can use the reference run's issue time).
     forecasts = _fetch(point_id, valid_time, 30)
@@ -206,9 +245,9 @@ def build_features_for(
     if vp_early is not None:
         try:
             # FEATURE side: only what was knowable at ISSUE time.
-            nearest_obs = access.fetch_latest_observation_near(
+            nearest_obs = _obs_cached(
                 vp_early.lat, vp_early.lon, obs_anchor,
-                max_age_minutes=observation_lookback_minutes,
+                observation_lookback_minutes,
             )
         except Exception as exc:
             logger.debug("Obs lookup skipped: %s", exc)
@@ -216,9 +255,9 @@ def build_features_for(
             # TARGET side: the ground truth AT the valid time — this is what
             # the model must predict, so it is (correctly) anchored at
             # valid_time and must NEVER be fed into the feature vector.
-            target_obs_candidates = access.fetch_latest_observation_near(
+            target_obs_candidates = _obs_cached(
                 vp_early.lat, vp_early.lon, valid_time,
-                max_age_minutes=observation_lookback_minutes,
+                observation_lookback_minutes,
             )
         except Exception as exc:
             logger.debug("Target obs lookup skipped: %s", exc)
@@ -485,8 +524,18 @@ def build_features_for(
         lag_time = valid_time - timedelta(minutes=lag_min)
         lag_fc = _fetch(point_id, lag_time, 120)
         ref_lag = next((f for f in lag_fc if f["model_name"] == reference_forecast_model), None)
+        # Data & Prediction audit #11: the former `if ref_lag is None and
+        # lag_fc: ref_lag = lag_fc[0]` silently substituted whatever model
+        # happened to sort first — exactly the cross-model substitution the
+        # base-case logic above refuses ("return None rather than silently
+        # substituting another model"). A lag series that switches reference
+        # models mid-history injects a step change into lag*_speed_dt.
+        # Aligned with the base case: reference missing → feature is None.
         if ref_lag is None and lag_fc:
-            ref_lag = lag_fc[0]
+            logger.debug(
+                "Lag %d min: reference model %s missing for %s @ %s — lag features None",
+                lag_min, reference_forecast_model, point_id, lag_time,
+            )
         if ref_lag is None:
             fv[f"lag{lag_min}_speed"] = None
             fv[f"lag{lag_min}_dir"] = None

@@ -615,6 +615,34 @@ def maybe_promote(report: BacktestReport, *, force: bool = False) -> bool:
     real_sample_ok = n_station >= int(s.model.min_promotion_station_samples)
     promoted = force or (delta >= gate.min_mae_improvement_kn and dir_delta >= gate.min_dir_improvement_deg and real_sample_ok)
 
+    # Data & Prediction audit #16: force=True bypasses every gate silently.
+    # A manual override is legitimate (Spec §7.3: human decision), but it
+    # must be LOUD and say exactly which checks were skipped — this is very
+    # likely how the ensemble config that failed its own gate got promoted.
+    if force and not (delta >= gate.min_mae_improvement_kn and dir_delta >= gate.min_dir_improvement_deg and real_sample_ok):
+        bypassed: list[str] = []
+        if delta < gate.min_mae_improvement_kn:
+            bypassed.append(
+                f"MAE improvement {delta:+.3f} kn < required {gate.min_mae_improvement_kn}"
+            )
+        if dir_delta < gate.min_dir_improvement_deg:
+            bypassed.append(
+                f"dir-error improvement {dir_delta:+.3f}° < required {gate.min_dir_improvement_deg}"
+            )
+        if not real_sample_ok:
+            bypassed.append(
+                f"station samples {n_station} < required {int(s.model.min_promotion_station_samples)}"
+            )
+        logger.warning(
+            "FORCE PROMOTION of %s bypassing %d upgrade-gate check(s): %s",
+            report.candidate_model_version, len(bypassed), "; ".join(bypassed),
+        )
+    elif force:
+        logger.warning(
+            "FORCE PROMOTION of %s requested (all upgrade-gate checks passed anyway)",
+            report.candidate_model_version,
+        )
+
     access.record_experiment_attempt(
         candidate_name=report.candidate_model_version,
         feature_set_version=s.model.feature_set_version,

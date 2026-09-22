@@ -62,6 +62,16 @@ def status() -> dict[str, Any]:
     return out
 
 
+def is_cycle_active() -> bool:
+    """True while a collect/predict/artifact cycle is mid-flight (audit #15).
+
+    The single-flight `cycle_lock` in _loop is a local; this flag mirrors it
+    into module state so the shutdown handler (stability._signal_handler) can
+    wait for an in-flight cycle instead of abandoning it blindly.
+    """
+    return bool(_state.get("cycle_active"))
+
+
 def _station_collect() -> list[dict[str, Any]]:
     """Run only the ground-station collectors (never blocks NWP cadence)."""
     from lakewind.collector import all_collectors
@@ -310,6 +320,7 @@ async def _loop(stop: asyncio.Event) -> None:
             continue
 
         async with cycle_lock:
+            _state["cycle_active"] = True
             cycle_kind = "nwp_cycle" if nwp_due else "station_cycle"
             cycle_start_dt = utcnow()
             try:
@@ -373,9 +384,16 @@ async def _loop(stop: asyncio.Event) -> None:
                     next_nwp = time.monotonic() + nwp_every
                 if station_due:
                     next_station = time.monotonic() + station_every
+            except asyncio.CancelledError:
+                # task.cancel() during shutdown — clear the audit #15 flag so
+                # a concurrently-running shutdown handler does not wait for a
+                # cycle that will never finish, then propagate.
+                _state["cycle_active"] = False
+                raise
             # Nudge station cadence when a full cycle already refreshed data.
             if nwp_due:
                 next_station = min(next_station, next_nwp)
+            _state["cycle_active"] = False
 
     _state["running"] = False
     logger.info("Pipeline loop stopped")
@@ -423,4 +441,5 @@ __all__ = [
     "stop_background",
     "run_forever",
     "status",
+    "is_cycle_active",
 ]

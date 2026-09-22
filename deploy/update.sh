@@ -112,6 +112,24 @@ if $DO_PULL; then
     log "Updated to commit: $NEW_COMMIT"
 fi
 
+# --- Step 2b: Retire the legacy pipeline timer (Data & Prediction audit #1) ---
+# The audit reproduced the failure: a systemd timer that runs
+# `docker exec lakewind lakewind collect/predict` as a SEPARATE process
+# collides with the bot process's persistent DuckDB write connection
+# ("Conflicting lock is held"). pipeline_loop.py (in-process, single-flight)
+# has superseded that mechanism entirely — both running together is exactly
+# what produces the lock conflict. Best-effort, non-fatal, host-level.
+if command -v systemctl >/dev/null 2>&1 && \
+   systemctl list-unit-files 2>/dev/null | grep -q "^lakewind-pipeline"; then
+    warn "Legacy lakewind-pipeline.timer detected — disabling (pipeline_loop.py supersedes it; running both causes DuckDB lock conflicts)"
+    systemctl disable --now lakewind-pipeline.timer 2>/dev/null || \
+        warn "Could not disable automatically — run: sudo systemctl disable --now lakewind-pipeline.timer"
+    sudo rm -f /etc/systemd/system/lakewind-pipeline.service \
+               /etc/systemd/system/lakewind-pipeline.timer 2>/dev/null || true
+    sudo systemctl daemon-reload 2>/dev/null || true
+    ok "Legacy pipeline timer retired"
+fi
+
 # --- Step 3: Rebuild Docker image (service still up — no downtime yet) ---
 log "Rebuilding Docker image..."
 if ! docker compose build --no-cache 2>&1 | tail -5; then

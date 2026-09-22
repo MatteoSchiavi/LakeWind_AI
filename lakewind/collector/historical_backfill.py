@@ -134,11 +134,59 @@ def backfill_forecasts(
     points: list[str] | None = None,
     models: list[str] | None = None,
     delay_seconds: float | None = None,
+    source: str = "auto",
 ) -> dict[str, int]:
     """Backfill forecast_runs with historical forecasts.
 
+    `source` (Data & Prediction audit #2):
+      - "auto" (default): try the LEAKAGE-FREE Previous Runs API first
+        (explicit run_time, honest lead times); if it yields no rows for the
+        window (coverage/quota limits), fall back to the stitched Historical
+        Forecast API with a loud log — its values are hindsight-optimal and
+        its run_time is approximated, so the as-of guard in
+        access.fetch_forecasts_at is the remaining line of defence.
+      - "previous_runs": Previous Runs API only — raises nothing, just
+        returns zeros when the window is out of coverage.
+      - "historical": stitched Historical Forecast API (old behaviour).
+
     Returns a dict {point_id: rows_inserted} summary.
     """
+    if source not in ("auto", "previous_runs", "historical"):
+        raise ValueError(f"backfill source must be auto|previous_runs|historical, got {source!r}")
+    if source in ("auto", "previous_runs"):
+        logger.info(
+            "Backfill %s-%s: trying leakage-free Previous Runs API first (audit #2)",
+            start.date(), end.date(),
+        )
+        summary = backfill_previous_runs(
+            start=start, end=end, points=points, models=models,
+            delay_seconds=delay_seconds,
+        )
+        total = sum(summary.values())
+        if source == "previous_runs" or total > 0:
+            return summary
+        logger.warning(
+            "Previous Runs API returned 0 rows for %s-%s (coverage/quota) — "
+            "FALLING BACK to the stitched Historical Forecast API. Those rows "
+            "carry hindsight-optimal values with approximated run_time; treat "
+            "lead-sensitive training features accordingly.",
+            start.date(), end.date(),
+        )
+    return _backfill_stitched(
+        start=start, end=end, points=points, models=models,
+        delay_seconds=delay_seconds,
+    )
+
+
+def _backfill_stitched(
+    *,
+    start: datetime,
+    end: datetime,
+    points: list[str] | None = None,
+    models: list[str] | None = None,
+    delay_seconds: float | None = None,
+) -> dict[str, int]:
+    """Stitched Historical Forecast API backfill (the original implementation)."""
     s = load_settings()
     pts = [p for p in s.virtual_points if (points is None or p.id in points)]
     mdl_list = models or s.open_meteo.models
@@ -336,14 +384,37 @@ def backfill_previous_runs(
     return summary
 
 
-def _parse_previous_runs(data: dict[str, Any], point_id: str, model_name: str) -> list[dict[str, Any]]:
+def _parse_previous_runs(data: dict[str, Any] | list[Any], point_id: str, model_name: str) -> list[dict[str, Any]]:
     """Parse one Previous Runs API response into forecast_runs rows.
 
     The response is the standard hourly JSON with an explicit per-run time
     axis; run_time is taken from the response's `run` metadata when present
     (top level or hourly block), else from the block's first hour snapped to
     the model's real init cadence — never a blind valid_time-minus-6h.
+
+    Defensive (audit #2: recovery now depends on this path): when the API
+    returns SEVERAL runs for the requested window — a top-level LIST, or a
+    dict with a `runs` array — every block is parsed and each carries its own
+    run_time, so multiple distinct runs land in the table instead of only the
+    first one.
     """
+    blocks: list[Any]
+    if isinstance(data, list):
+        blocks = data
+    elif isinstance(data, dict) and isinstance(data.get("runs"), list):
+        blocks = data["runs"]
+    else:
+        blocks = [data]
+    rows: list[dict[str, Any]] = []
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        rows.extend(_parse_one_previous_run(block, point_id, model_name))
+    return rows
+
+
+def _parse_one_previous_run(data: dict[str, Any], point_id: str, model_name: str) -> list[dict[str, Any]]:
+    """Parse a single run block of the Previous Runs API (see _parse_previous_runs)."""
     hourly = data.get("hourly", {})
     times = hourly.get("time", [])
     if not times:
@@ -481,6 +552,11 @@ if __name__ == "__main__":  # pragma: no cover
     parser.add_argument("--end", type=str, default=None, help="End date YYYY-MM-DD")
     parser.add_argument("--era5-only", action="store_true", help="Only backfill ERA5 observations")
     parser.add_argument("--forecasts-only", action="store_true", help="Only backfill historical forecasts")
+    parser.add_argument(
+        "--source", choices=["auto", "previous_runs", "historical"], default="auto",
+        help="Forecast backfill source: auto = leakage-free Previous Runs API "
+             "with stitched-API fallback (audit #2)",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -497,9 +573,9 @@ if __name__ == "__main__":  # pragma: no cover
     print(f"Backfilling from {start.date()} to {end.date()}")
 
     if not args.era5_only:
-        backfill_forecasts(start=start, end=end)
+        backfill_forecasts(start=start, end=end, source=args.source)
     if not args.forecasts_only:
         backfill_era5(start=start, end=end)
 
 
-__all__ = ["backfill_forecasts", "backfill_era5"]
+__all__ = ["backfill_forecasts", "backfill_previous_runs", "backfill_era5"]

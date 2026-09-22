@@ -34,6 +34,7 @@ import requests
 
 from lakewind.config import load_settings
 from lakewind.db import access
+from lakewind.features.climatology import _DOY_WRAP_SQL, _doy_wrap_params
 from lakewind.utils.timeutil import utcnow
 
 logger = logging.getLogger(__name__)
@@ -321,25 +322,41 @@ def get_climatology_normal(
     Example: get_climatology_normal("mid_channel", July 5th, "wind_speed_10m")
     returns the average wind speed at mid_channel for June 20 - July 20 over
     the last 10 years.
+
+    Data & Prediction audit #7: the ±window_days day-of-year window now wraps
+    around the year boundary (circular distance), so early-January queries
+    match late-December climatology and vice versa. The interpolated
+    `variable` is gated through the shared identifier allowlist (audit,
+    Minor hygiene).
     """
     ensure_climatology_table()
+    from lakewind.db.sqlsafe import safe_identifier
+
+    variable = safe_identifier(
+        variable,
+        allowlist={
+            "wind_speed_10m", "wind_direction_10m", "wind_gusts_10m",
+            "pressure_msl", "temperature_2m", "dew_point_2m",
+            "cloud_cover", "shortwave_radiation",
+        },
+    )
     target_doy = target_time.timetuple().tm_yday
 
-    # Query: average the variable over the window across all years
+    # Query: average the variable over the window across all years.
+    # Window comparison uses the CIRCULAR day-of-year distance (audit #7)
+    # instead of a clamped BETWEEN.
     sql = f"""
         SELECT AVG({variable}) as normal_val
         FROM v4_climatology
         WHERE point_id = ?
           AND {variable} IS NOT NULL
-          AND CAST(strftime('%j', timestamp) AS INTEGER) BETWEEN ? AND ?
+          AND {_DOY_WRAP_SQL}
           AND timestamp >= ?
     """
-    doy_start = max(1, target_doy - window_days)
-    doy_end = min(366, target_doy + window_days)
     cutoff = target_time - timedelta(days=years_back * 365)
 
     with access.cursor() as conn:
-        cur = conn.execute(sql, [point_id, doy_start, doy_end, cutoff])
+        cur = conn.execute(sql, [point_id, *_doy_wrap_params(target_doy, window_days), cutoff])
         row = cur.fetchone()
 
     if row and row[0] is not None:

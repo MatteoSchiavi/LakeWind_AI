@@ -15,13 +15,16 @@ How it works (split conformal):
 
 Guarantee: with exchangeability, P(y_true in interval) ≥ alpha (e.g. 90%).
 
-For wind forecasting, we use a **locally-weighted conformal** variant:
-  - Scale the nonconformity score by the model's predicted expected_error
-  - This gives wider intervals for uncertain predictions, narrower for confident ones
-  - Formula: s_i = |y_i - pred_i| / max(expected_error_i, 0.1)
-
-This is more informative than isotonic alone — it gives per-prediction
-intervals that the user can trust.
+IMPORTANT (Data & Prediction audit #3): the score function must be IDENTICAL
+at calibration and application time — that is what makes the coverage
+guarantee hold. This module previously promised a "locally-weighted" variant
+(`s_i = |y_i - pred_i| / max(expected_error_i, 0.1)`) but calibrated with the
+PLAIN score while `ConformalCalibrator.calibrate()/interval()` still scaled
+`q_hat` by `expected_error / 0.1` at application time — two different score
+functions, which voids the guarantee (measured interval coverage collapsed to
+22-25% against the 75% target). The unified contract is now the PLAIN score:
+q_hat is in KNOTS, and application (here AND in infer.apply_conformal_band,
+the actual serving path) adds it unscaled.
 """
 from __future__ import annotations
 
@@ -60,29 +63,30 @@ class ConformalCalibrator:
     def calibrate(self, prediction: float, expected_error: float | None = None) -> float:
         """Return the conformal-calibrated prediction.
 
-        For the median (q=0.5), the prediction is unchanged but the interval
-        width is q_hat * max(expected_error, 0.1).
+        Audit #3: `expected_error` is ACCEPTED for API compatibility but is
+        deliberately IGNORED — the calibration scores were computed as plain
+        `|y - pred|` (knots), so scaling here by `expected_error / 0.1` would
+        apply a different score function than the one that produced `q_hat`,
+        voiding the coverage guarantee. q_hat is already in the right units.
 
-        For lower/upper quantiles, we shift the prediction by ±q_hat.
+        For the median (q=0.5), the prediction is unchanged.
+        For lower/upper quantiles, we shift the prediction by ∓q_hat.
         """
-        if expected_error is None or expected_error < 0.1:
-            scale = 1.0
-        else:
-            scale = expected_error / 0.1  # normalize to calibration scale
-
         if self.quantile == 0.5:
             return prediction  # median unchanged
         elif self.quantile < 0.5:
-            return prediction - self.q_hat * scale
+            return prediction - self.q_hat
         else:
-            return prediction + self.q_hat * scale
+            return prediction + self.q_hat
 
     def interval(self, center: float, expected_error: float | None = None) -> tuple[float, float]:
-        """Return (lower, upper) bounds of the conformal interval."""
-        scale = 1.0
-        if expected_error is not None and expected_error > 0.1:
-            scale = expected_error / 0.1
-        margin = self.q_hat * scale
+        """Return (lower, upper) bounds of the conformal interval.
+
+        Plain split-conformal margin (audit #3): `expected_error` is accepted
+        for API compatibility but ignored — see calibrate(). The width is
+        exactly 2 * q_hat, matching the calibration-stage score function.
+        """
+        margin = self.q_hat
         return (center - margin, center + margin)
 
 
@@ -167,7 +171,10 @@ def train_conformal_calibrator(
         logger.error("Failed to predict with model %s: %s", model_version, exc)
         return None
 
-    # Nonconformity scores: |y_true - y_pred|
+    # Nonconformity scores: |y_true - y_pred| (PLAIN, in knots).
+    # Audit #3: this MUST stay the exact inverse of the application stage —
+    # ConformalCalibrator.calibrate()/interval() and infer.apply_conformal_band
+    # both apply q_hat unscaled. Do not "enrich" one stage without the other.
     scores = np.abs(y - preds)
 
     # Conformal quantile
@@ -238,8 +245,9 @@ def calibrate_prediction(
 ) -> dict[str, float]:
     """Apply conformal calibration to a prediction's quantile outputs.
 
-    Returns calibrated {bias_u_q10, bias_u_q50, bias_u_q90, bias_v_q10, ...}
-    with per-sample adaptive intervals.
+    Returns calibrated {bias_u_q10, bias_u_q50, bias_u_q90, bias_v_q10, ...}.
+    Audit #3: plain split-conformal shifts — q_hat (knots) applied unscaled,
+    identical score function at calibration and application time.
     """
     result: dict[str, float] = {}
     for target, vals in [
@@ -248,8 +256,11 @@ def calibrate_prediction(
     ]:
         for q, val in zip([0.1, 0.5, 0.9], vals, strict=False):
             cal = load_conformal_calibrator(model_version, target, q)
+            # expected_error intentionally NOT passed (audit #3): the
+            # calibrator ignores it and passing it would imply a locally-
+            # weighted contract that the calibration stage does not implement.
             if cal is not None:
-                result[f"bias_{target}_q{int(q*100):02d}"] = cal.calibrate(val, expected_error)
+                result[f"bias_{target}_q{int(q*100):02d}"] = cal.calibrate(val)
             else:
                 result[f"bias_{target}_q{int(q*100):02d}"] = val
     return result

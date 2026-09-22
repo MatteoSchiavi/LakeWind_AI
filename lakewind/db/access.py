@@ -1466,6 +1466,10 @@ def fetch_forecasts_bulk(
         SELECT {cols} FROM {s.db.forecast_table}
         WHERE point_id IN ({marks})
           AND valid_time BETWEEN ? AND ?
+          -- Same as-of guard as fetch_forecasts_at (audit #2): bulk rows feed
+          -- the feature builder's memo, so a run issued after its own
+          -- valid_time must never enter the candidate pool either.
+          AND run_time <= valid_time
     """
     with cursor(read_only=True) as conn:
         cur = conn.execute(sql, [*point_ids, valid_from, valid_to])
@@ -1512,6 +1516,12 @@ def fetch_forecasts_at(
           FROM {s.db.forecast_table}
           WHERE point_id = ?
             AND ABS(DATEDIFF('minute', valid_time, ?)) <= ?
+            -- Data-leakage guard (Data & Prediction audit #2): a stored
+            -- forecast may only serve a valid_time if its producing run was
+            -- issued at or before that valid_time. Without this, any future
+            -- mislabeled/stitched row could win the "latest run" ranking and
+            -- feed hindsight into training features.
+            AND run_time <= valid_time
         )
         SELECT * FROM ranked WHERE rn = 1
         ORDER BY model_name

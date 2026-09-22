@@ -37,7 +37,9 @@ def classify_regime(
 ) -> RegimeResult:
     """Classify weather regime using deterministic rules only.
 
-    Priority: storm > foehn > breva > tivano > calm
+    Priority (order actually checked below — docstring aligned to code,
+    Data & Prediction audit Minor): foehn_strong > storm (high_cape AND
+    strong_speed) > foehn_likely > breva > tivano > calm.
     """
     s = load_settings()
     tz = ZoneInfo(s.project.timezone)

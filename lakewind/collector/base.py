@@ -174,6 +174,18 @@ PHYSICAL_LIMITS = {
 def apply_physical_limits(row: dict[str, Any]) -> str:
     """Return 'ok' | 'suspect'. Mutates nothing — sets fields to None if out of range."""
     flag = "ok"
+    # Data & Prediction audit #12: NORMALIZE direction BEFORE the physical
+    # range check. The former order (range check at (0, 360) first, % 360
+    # after) discarded valid readings like -5° (== 355°) or 370° (== 10°) as
+    # "suspect" instead of wrapping them into range. Sources that report
+    # signed or >360 directions are common (METAR, some ARPA sensors).
+    d = row.get("wind_dir_deg")
+    if d is not None:
+        try:
+            row["wind_dir_deg"] = float(d) % 360.0
+        except (TypeError, ValueError):
+            row["wind_dir_deg"] = None
+            flag = "suspect"
     for k, (lo, hi) in PHYSICAL_LIMITS.items():
         v = row.get(k)
         if v is None:
@@ -186,14 +198,6 @@ def apply_physical_limits(row: dict[str, Any]) -> str:
             continue
         if fv < lo or fv > hi:
             row[k] = None
-            flag = "suspect"
-    # Normalize direction
-    d = row.get("wind_dir_deg")
-    if d is not None:
-        try:
-            row["wind_dir_deg"] = float(d) % 360.0
-        except (TypeError, ValueError):
-            row["wind_dir_deg"] = None
             flag = "suspect"
     return flag
 

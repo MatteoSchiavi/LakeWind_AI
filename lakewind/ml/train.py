@@ -686,19 +686,37 @@ def train(
     if getattr(s.model, "feature_selection", False) and X_val is not None:
         params_sel = s.model.lgbm_params.model_dump()
         try:
-            sel_u = _select_features(
-                X_tr, y_tr_u, X_val, y_val_u, params_sel,
-                top_k=int(getattr(s.model, "feature_selection_top_k", 120)),
-            )
-            sel_v = _select_features(
-                X_tr, y_tr_v, X_val, y_val_v, params_sel,
-                top_k=int(getattr(s.model, "feature_selection_top_k", 120)),
-            )
-            # Union of per-target survivors (targets share the input schema)
-            selected_cols = [c for c in feature_cols_tr if c in set(sel_u) | set(sel_v)]
+            # Data & Prediction audit #10: selection previously ran ONCE, at
+            # the median (the unused `quantile` parameter of _select_features
+            # defaulted to 0.5), and the median's shortlist was reused for the
+            # 0.1/0.9 models. Features that matter specifically for tail
+            # behaviour — which drives interval width — were pruned for not
+            # helping the median, a plausible contributor to the interval
+            # coverage shortfall. Selection now runs PER (target, quantile)
+            # and the survivors are unioned, so every deployed quantile model
+            # keeps the features its own objective needs.
+            survivors: set[str] = set()
+            for target_name_sel, y_tr_sel, y_val_sel in (
+                ("u", y_tr_u, y_val_u),
+                ("v", y_tr_v, y_val_v),
+            ):
+                for q in s.model.quantiles:
+                    sel = _select_features(
+                        X_tr, y_tr_sel, X_val, y_val_sel, params_sel,
+                        top_k=int(getattr(s.model, "feature_selection_top_k", 120)),
+                        quantile=float(q),
+                    )
+                    survivors |= set(sel)
+                    logger.info(
+                        "Feature selection: target=%s q=%.2f → %d survivors",
+                        target_name_sel, q, len(sel),
+                    )
+            # Union of per-(target, quantile) survivors (targets share the
+            # input schema)
+            selected_cols = [c for c in feature_cols_tr if c in survivors]
             logger.info(
-                "Feature selection: %d → %d features (u:%d survivors, v:%d survivors)",
-                len(feature_cols_tr), len(selected_cols), len(sel_u), len(sel_v),
+                "Feature selection: %d → %d features (union over %d quantiles × 2 targets)",
+                len(feature_cols_tr), len(selected_cols), len(list(s.model.quantiles)),
             )
         except Exception as exc:
             logger.warning("Feature selection failed (%s) — training on all features", exc)

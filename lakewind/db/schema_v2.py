@@ -17,9 +17,12 @@ console = Console()
 
 # V2 schema additions — all tables prefixed with `v2_` to make diff explicit
 V2_SCHEMA_SQL = """
--- Note: v2_regime_log, v2_model_registry, v2_feature_cache, v2_kalman_state
--- are deprecated in V4 (regime classifier, stacking, Kalman all deleted).
--- They're kept for backward compatibility but not populated.
+-- Data & Prediction audit (Minor): the dead V4 tables (v2_regime_log,
+-- v2_model_registry, v2_kalman_state, v2_feature_cache) are REMOVED from the
+-- schema script — nothing in the codebase ever wrote them, and keeping the
+-- DDL invited future contributors to build against them. Databases created
+-- by older versions keep whatever tables they already have (all statements
+-- are IF NOT EXISTS; nothing is dropped here).
 
 -- User registry: one row per Telegram user
 CREATE TABLE IF NOT EXISTS v2_users (
@@ -76,64 +79,16 @@ CREATE TABLE IF NOT EXISTS v2_image_cache (
     expires_at TIMESTAMP
 );
 
--- V2 regime classifications (per-sample, stored for analysis)
-CREATE TABLE IF NOT EXISTS v2_regime_log (
-    id BIGINT PRIMARY KEY,
-    point_id VARCHAR,
-    valid_time TIMESTAMP,
-    regime VARCHAR,                         -- 'calm' | 'breva' | 'tivano' | 'foehn' | 'storm'
-    confidence DOUBLE,
-    rules_detected JSON,                    -- which deterministic rules fired
-    classifier_probabilities JSON           -- if classifier used
-);
-
--- V2 model registry: extended with backend + ensemble info
-CREATE TABLE IF NOT EXISTS v2_model_registry (
-    model_version VARCHAR PRIMARY KEY,
-    trained_at TIMESTAMP,
-    feature_set_version VARCHAR,
-    backend VARCHAR,                        -- 'lightgbm' | 'xgboost_gpu' | 'mlp' | 'stacked'
-    training_period_start DATE,
-    training_period_end DATE,
-    backtest_mae_kn DOUBLE,
-    backtest_dir_error_deg DOUBLE,
-    backtest_crps DOUBLE,                   -- Continuous Ranked Probability Score
-    backtest_calibration_error DOUBLE,      -- |actual_coverage - predicted_coverage|
-    promoted_to_production BOOLEAN,
-    is_stacked BOOLEAN DEFAULT FALSE,       -- part of a stacked ensemble?
-    stack_weight DOUBLE DEFAULT 1.0,
-    git_commit VARCHAR,
-    notes VARCHAR
-);
-
--- V2 Kalman filter state (online bias correction)
-CREATE TABLE IF NOT EXISTS v2_kalman_state (
-    point_id VARCHAR PRIMARY KEY,
-    bias_u DOUBLE DEFAULT 0.0,
-    bias_v DOUBLE DEFAULT 0.0,
-    p_uu DOUBLE DEFAULT 1.0,                -- covariance
-    p_vv DOUBLE DEFAULT 1.0,
-    p_uv DOUBLE DEFAULT 0.0,
-    q DOUBLE DEFAULT 0.01,                  -- process noise
-    r DOUBLE DEFAULT 0.5,                   -- measurement noise
-    last_update TIMESTAMP
-);
+-- V2 regime/kalman/model-registry/feature-cache tables REMOVED from the
+-- schema script (Data & Prediction audit, Minor) — deprecated in V4, zero
+-- writers/readers in the codebase. Existing databases are untouched.
 
 -- V2 feedback table REMOVED in Phase 5 (approved Q3): zero callers since
 -- introduction; the p5 migration in schema.py drops it from existing DBs.
 -- Feedback surfaces are /report (tiered observations) and bot /log.
 
--- V2 feature store cache (materialized features for latest predict cycle)
-CREATE TABLE IF NOT EXISTS v2_feature_cache (
-    cache_key VARCHAR PRIMARY KEY,          -- f"{point_id}:{valid_time_iso}"
-    feature_vector JSON,
-    built_at TIMESTAMP,
-    hit_count INTEGER DEFAULT 0
-);
-
 CREATE INDEX IF NOT EXISTS idx_v2_alerts_user ON v2_alerts(telegram_user_id);
 CREATE INDEX IF NOT EXISTS idx_v2_subs_user ON v2_subscriptions(telegram_user_id);
-CREATE INDEX IF NOT EXISTS idx_v2_regime_point_time ON v2_regime_log(point_id, valid_time);
 """
 
 
