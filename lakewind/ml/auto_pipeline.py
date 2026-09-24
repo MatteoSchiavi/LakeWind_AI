@@ -136,11 +136,15 @@ def run_pipeline(*, check_only: bool = False, force: bool = False) -> dict[str, 
         from lakewind.ml.train import train
         end = utcnow()
         start = end - timedelta(days=s.model.walk_forward.train_window_days)
+        # Hold out the last 30 days for conformal calibration (Step 6) —
+        # calibrating on training data produced overconfident bands.
+        cal_window = timedelta(days=30)
+        train_end = end - cal_window
         if check_only:
             train_result = None
             summary["steps"].append({"step": "train", "status": "check_only"})
         else:
-            train_result = train(start=start, end=end)
+            train_result = train(start=start, end=train_end)
         duration = time.perf_counter() - t0
         if train_result:
             summary["steps"].append({
@@ -181,6 +185,7 @@ def run_pipeline(*, check_only: bool = False, force: bool = False) -> dict[str, 
     # --- Step 4: CPCV backtest ---
     t0 = time.perf_counter()
     logger.info("Step 4: CPCV backtest on new model...")
+    report = None  # bound even when run_cpcv_backtest raises (Step 5 reads it)
     try:
         from lakewind.ml.cpcv_backtest import run_cpcv_backtest
         end = utcnow()
@@ -274,8 +279,8 @@ def run_pipeline(*, check_only: bool = False, force: bool = False) -> dict[str, 
         logger.info("Step 6: Training conformal calibrators...")
         try:
             from lakewind.ml.conformal import train_conformal_calibrator
-            end = utcnow()
-            start = end - timedelta(days=30)
+            cal_end = utcnow()
+            cal_start = cal_end - timedelta(days=30)  # == the training holdout
             calibrators_trained = 0
             if not check_only:
                 from lakewind.config import load_settings as _ls
@@ -284,7 +289,7 @@ def run_pipeline(*, check_only: bool = False, force: bool = False) -> dict[str, 
                     for q in [0.1, 0.5, 0.9]:
                         cal = train_conformal_calibrator(
                             new_model_version, target, q,
-                            start=start, end=end, alpha=cal_alpha,
+                            start=cal_start, end=cal_end, alpha=cal_alpha,
                         )
                         if cal is not None:
                             calibrators_trained += 1

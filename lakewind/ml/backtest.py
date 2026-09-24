@@ -283,9 +283,20 @@ def _persistence_prediction(
         obs = [dict(zip(cols, row, strict=False)) for row in cur.fetchall()]
     if not obs:
         return None
-    # Pick the closest by haversine distance to the virtual point
+    # Rank by FRESHNESS first, then distance: the former pure distance pick
+    # could select a 2-hour-old reading 50 m away over a 10-minute-old
+    # reading 2 km away, understating the persistence baseline the candidate
+    # is measured against (inflating the improvement claim).
+    freshest_ts = max((o.get("timestamp") for o in obs), default=None)
+    if freshest_ts is None:
+        return None
+    recent = [
+        o for o in obs
+        if o.get("timestamp") is not None
+        and (freshest_ts - o["timestamp"]).total_seconds() <= 1800
+    ] or [max(obs, key=lambda o: o.get("timestamp") or datetime.min)]
     best = min(
-        obs,
+        recent,
         key=lambda o: _haversine(vp.lat, vp.lon, o.get("lat") or 0.0, o.get("lon") or 0.0),
     )
     s_val = best.get("wind_speed_kn")
@@ -330,12 +341,17 @@ def run_backtest(
     start = start or (end - timedelta(days=s.model.walk_forward.train_window_days + s.model.walk_forward.test_window_days * 4))
     pts = points or [p.id for p in s.virtual_points]
 
-    # Build a single candidate if none provided
+    # Build a single candidate if none provided.
+    # Honesty fix (walk-forward): the candidate must stop training at the
+    # FIRST test window's train_end (start + train_days). The former
+    # `end - test_days` trained the candidate PAST every evaluated test
+    # window except the last two — in-sample metrics, inflated promotion
+    # deltas.
     if candidate_model_version is None:
         logger.info("Training fresh candidate model for backtest...")
         res = train_model(
             start=start,
-            end=end - timedelta(days=s.model.walk_forward.test_window_days),
+            end=start + timedelta(days=s.model.walk_forward.train_window_days),
             reference_forecast_model=reference_forecast_model,
         )
         if res is None:
@@ -368,8 +384,8 @@ def run_backtest(
     nwp_errors: list[float] = []
     nwp_dir_errors: list[float] = []
     interval_covered: list[bool] = []
-    decision_hits: list[bool] = []
-    decision_attempts: list[bool] = []
+    decision_tp: list[bool] = []   # predicted GO and actually GO
+    decision_fp: list[bool] = []   # predicted GO but actually NO-GO
     # V5: Separate errors by observation source (Claude audit)
     cand_errors_era5: list[float] = []
     cand_errors_real: list[float] = []
@@ -466,16 +482,21 @@ def run_backtest(
                     crowdsourced_samples.append(cand_err)
 
                 # Decision usefulness (Spec §1.2: sustained wind >=8 kn for >=2h
-                # in 11:00-16:00 LOCAL time, not UTC)
+                # in 11:00-16:00 LOCAL time, not UTC). PRECISION, not accuracy:
+                # the contract is "when we say GO, it IS GO" — TP/(TP+FP).
+                # Accuracy on calm-dominated data hides a flood of false GOs.
+                # Window is 11 <= h < 16 (the former <=16 counted the 16:00
+                # hour too, overshooting the spec).
                 from zoneinfo import ZoneInfo
                 local_hour = s_row["valid_time"].replace(tzinfo=ZoneInfo("UTC")).astimezone(
                     ZoneInfo("Europe/Rome")
                 ).hour
-                if 11 <= local_hour <= 16:
+                if 11 <= local_hour < 16:
                     actual_yes = s_row["obs_speed"] >= 8.0
                     predicted_yes = cand_speed >= 8.0
-                    decision_attempts.append(True)
-                    decision_hits.append(predicted_yes == actual_yes)
+                    if predicted_yes:
+                        decision_tp.append(bool(actual_yes))
+                        decision_fp.append(not actual_yes)
 
                 # Per-regime attribution
                 if s_row["regime_breva"]:
@@ -517,7 +538,11 @@ def run_backtest(
     mae_vs_pers_pct = (1.0 - cand_mae / pers_mae) * 100.0 if pers_mae > 0 else 0.0
     dir_vs_nwp_pct = (1.0 - cand_dir / nwp_dir) * 100.0 if nwp_dir > 0 else 0.0
     interval_cov = (sum(interval_covered) / len(interval_covered) * 100.0) if interval_covered else 0.0
-    decision_prec = (sum(decision_hits) / len(decision_attempts) * 100.0) if decision_attempts else 0.0
+    # Decision PRECISION: of the hours we said GO, how many actually were?
+    n_predicted_go = len(decision_tp) + len(decision_fp)
+    decision_prec = (
+        (sum(decision_tp) / n_predicted_go * 100.0) if n_predicted_go else 0.0
+    )
 
     sc = s.success_criteria
     success = (
@@ -607,7 +632,11 @@ def maybe_promote(report: BacktestReport, *, force: bool = False) -> bool:
     prod = access.current_production_model()
     prod_mae = prod["backtest_mae_kn"] if prod and prod.get("backtest_mae_kn") else float("inf")
     delta = prod_mae - report.candidate_mae_kn
-    dir_delta = (prod["backtest_dir_error_deg"] if prod else float("inf")) - report.candidate_dir_error_deg
+    # NULL-safe: the CLI promote path registers production with NULL metrics
+    # (deliberately — "preserves upgrade gate"); the former line crashed with
+    # TypeError (None - float) before the attempt could even be recorded.
+    prod_dir = prod.get("backtest_dir_error_deg") if prod else None
+    dir_delta = (prod_dir if prod_dir is not None else float("inf")) - report.candidate_dir_error_deg
     # Phase 5 (S5/F14): the gate counts STATION-tier samples only —
     # crowdsourced /report rows (previously counted as "real") can no
     # longer satisfy the promotion requirement.

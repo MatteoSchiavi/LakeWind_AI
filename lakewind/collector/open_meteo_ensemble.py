@@ -26,6 +26,7 @@ from lakewind.collector.base import (
     apply_physical_limits,
     nearest_model_init_time,
 )
+from lakewind.collector.open_meteo import demultiplex_hourly
 from lakewind.config import load_settings
 from lakewind.db import access
 from lakewind.utils.timeutil import utcnow
@@ -90,7 +91,7 @@ class OpenMeteoEnsembleCollector(BaseCollector):
         models = list(self.cfg.ensemble_models)
         if not models:
             return out
-        match_order = sorted(models, key=len, reverse=True)
+        n_failed_points = 0
         for pt in self.points:
             params = {
                 "latitude": pt.lat,
@@ -111,24 +112,19 @@ class OpenMeteoEnsembleCollector(BaseCollector):
                     continue
                 data = resp.json()
             except Exception as exc:
+                n_failed_points += 1
                 logger.warning("Ensemble fetch failed for %s: %s", pt.id, exc)
                 continue
 
             hourly = data.get("hourly", {}) or {}
             shared_time = hourly.get("time")
-            per_model: dict[str, dict[str, list]] = {}
-            unprefixed: dict[str, list] = {}
-            for key, values in hourly.items():
-                if key == "time":
-                    continue  # shared axis, attached per emitted model below
-                matched = False
-                for m in match_order:
-                    if key.startswith(m + "_"):
-                        per_model.setdefault(m, {})[key[len(m) + 1:]] = values
-                        matched = True
-                        break
-                if not matched:
-                    unprefixed[key] = values
+            # Port of the main collector's hardened demultiplexer (the
+            # 2026-09-11 incident hardening): accepts BOTH `model_var` and
+            # `var_model` key layouts, longest-slug-first with explicit '_'
+            # boundaries. The old inline matcher only knew `model_var`, so a
+            # suffix flip would fall through to unprefixed and attribute ALL
+            # four models' data to models[0] (cross-model spread contamination).
+            per_model, unprefixed = demultiplex_hourly(hourly, models)
 
             if not per_model and unprefixed:
                 # Single-model shape → payload belongs to the first requested model.
@@ -146,6 +142,14 @@ class OpenMeteoEnsembleCollector(BaseCollector):
                 if not mh.get("time"):
                     continue
                 out.append({"point_id": pt.id, "model_name": m, "json": {"hourly": mh}})
+
+        # Total-failure surfacing (mirrors the main collector): ALL points
+        # failing raises so the retry wrapper fires and source_health
+        # records ok=False instead of a permanently "fresh" dead upstream.
+        if n_failed_points and n_failed_points == len(self.points) and not out:
+            raise RuntimeError(
+                f"Ensemble: all {n_failed_points} points failed this cycle"
+            )
         return out
 
     def to_rows(self, raw: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -238,9 +242,24 @@ class OpenMeteoEnsembleCollector(BaseCollector):
         return rows
 
     def validate(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Physical limits + the same wind-less drop guard as the main
+        collector: a row with NEITHER speed NOR gust cannot serve anything
+        and only appears after upstream payload-layout changes — reject at
+        the door instead of poisoning forecast_runs and the spread stats."""
+        kept: list[dict[str, Any]] = []
         for r in rows:
             apply_physical_limits(r)
-        return rows
+            if r.get("wind_speed_kn") is None and r.get("wind_gust_kn") is None:
+                continue
+            kept.append(r)
+        dropped = len(rows) - len(kept)
+        if dropped:
+            logger.warning(
+                "Open-Meteo Ensemble: dropped %d/%d wind-less rows — upstream "
+                "payload layout mismatch? (demultiplex keys changed?)",
+                dropped, len(rows),
+            )
+        return kept
 
     def store(self, rows: list[dict[str, Any]]) -> int:
         # Store alongside regular forecasts (model_name like "icon_seamless_ens")

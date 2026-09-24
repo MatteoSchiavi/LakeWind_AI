@@ -107,6 +107,12 @@ def train_conformal_calibrator(
       2. Use the model to predict each sample
       3. Compute nonconformity scores |y_true - y_pred|
       4. Take the alpha-quantile of scores → q_hat
+
+    `calibration_fraction` (now actually honoured — the former signature
+    accepted it and silently ignored it): only the TAIL fraction of the
+    window is used for the nonconformity scores. Callers should STILL pass
+    a window disjoint from the model's training data (start >= train end);
+    the fraction bounds the in-sample damage when they cannot.
     """
     from lakewind.ml.train import load_model_bundle, predict_with_bundle
 
@@ -148,6 +154,20 @@ def train_conformal_calibrator(
         elif X[c].dtype == object:
             X[c] = pd.to_numeric(X[c], errors="coerce")
 
+    # Honour calibration_fraction: score ONLY the tail slice of the window.
+    cal_start = start + (end - start) * (1.0 - float(calibration_fraction))
+    mask = df["valid_time"] >= cal_start
+    if mask.sum() < 100:
+        logger.warning(
+            "Not enough calibration samples in the tail fraction: %d of %d "
+            "(window %s..%s, tail from %s)",
+            int(mask.sum()), len(df), start, end, cal_start,
+        )
+        return None
+    df_scored = df.loc[mask].reset_index(drop=True)
+    X = X.loc[mask].reset_index(drop=True)
+    y = df_scored[f"target_{target}"].values
+
     # Pre-Phase-6 fix: align X to the bundle's exact feature list — the same
     # contract the serving path enforces via _row_to_matrix. Without this, a
     # schema drift between training time and calibration time (e.g. the
@@ -161,8 +181,6 @@ def train_conformal_calibrator(
     expected_cols = bundle.get("features")
     if isinstance(expected_cols, list) and expected_cols:
         X = X.reindex(columns=expected_cols)  # absent -> NaN (missing-data policy)
-
-    y = df[f"target_{target}"].values
 
     # Load the model and predict
     try:
@@ -204,6 +222,17 @@ def train_conformal_calibrator(
             "n_calibration": n,
             "scores": scores,
         }, fh)
+
+    # Serving-path cache invalidation: infer._CALIB_CACHE pins calibrators
+    # per model_version FOREVER, so a recalibration of the SAME production
+    # version never reached the product until process restart. Drop the
+    # cached entry so the next prediction loads the fresh artifact.
+    try:
+        from lakewind.ml.infer import _CALIB_CACHE
+
+        _CALIB_CACHE.pop(model_version, None)
+    except Exception:  # pragma: no cover — invalidation must never break fitting
+        pass
 
     logger.info(
         "Conformal calibrator trained: %s q=%.2f alpha=%.2f q_hat=%.4f (n=%d)",

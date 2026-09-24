@@ -19,7 +19,7 @@ For historical data, ARPA provides a separate form-based download.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import requests
@@ -206,10 +206,12 @@ class ArpaLombardiaCollector(BaseCollector):
 
             try:
                 ts_str = str(srow.get("data") or "")
-                # ARPA format: "2024-01-01T12:00:00.000+00:00" or "2024-01-01T12:00:00"
+                # ARPA format: "2024-01-01T12:00:00.000+00:00" or "2024-01-01T12:00:00".
+                # Convert to UTC then strip — the blind `replace(tzinfo=None)`
+                # stored local wall time as UTC the day ARPA serves Rome offsets.
                 ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
                 if ts.tzinfo:
-                    ts = ts.replace(tzinfo=None)
+                    ts = ts.astimezone(UTC).replace(tzinfo=None)
             except Exception:
                 continue
 

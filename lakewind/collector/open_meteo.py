@@ -103,6 +103,7 @@ class OpenMeteoCollector(BaseCollector):
         out: list[dict[str, Any]] = []
         session = requests.Session()
         models = list(self.cfg.models)
+        n_failed_points = 0
         for pt in self.points:
             params = {
                 "latitude": pt.lat,
@@ -123,6 +124,7 @@ class OpenMeteoCollector(BaseCollector):
                     continue
                 data = resp.json()
             except Exception as exc:
+                n_failed_points += 1
                 logger.warning("Open-Meteo fetch failed for %s: %s", pt.id, exc)
                 continue
 
@@ -150,6 +152,15 @@ class OpenMeteoCollector(BaseCollector):
                     # No time axis → unusable block; skip gracefully.
                     continue
                 out.append({"point_id": pt.id, "model_name": m, "json": {"hourly": mh}})
+
+        # Total-failure surfacing: per-point exceptions were swallowed, so the
+        # retry wrapper never fired and a fully dead upstream logged ok=True.
+        # Partial failures still degrade gracefully; ALL points failing raises
+        # so _fetch_raw_with_retry retries and source_health records ok=False.
+        if n_failed_points and n_failed_points == len(self.points) and not out:
+            raise RuntimeError(
+                f"Open-Meteo: all {n_failed_points} points failed this cycle"
+            )
         return out
 
     def to_rows(self, raw: list[dict[str, Any]]) -> list[dict[str, Any]]:

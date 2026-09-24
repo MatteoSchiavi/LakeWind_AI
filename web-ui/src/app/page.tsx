@@ -557,7 +557,10 @@ export default function LakeWindDashboard() {
   // Stale detection (W4/F6): pipeline generation older than 3h => banner
   const staleMinutes = useMemo(() => {
     if (!lastGeneration) return null;
-    const gen = new Date(lastGeneration).getTime();
+    // last_generation is NAIVE UTC from the pipeline — `new Date(s)` parses
+    // it as browser-local, under-reporting the age by 1-2 h and firing the
+    // stale banner late. Append Z so it parses as UTC.
+    const gen = new Date(`${lastGeneration}Z`).getTime();
     if (Number.isNaN(gen)) return null;
     return Math.round((Date.now() - gen) / 60000);
   }, [lastGeneration]);
@@ -643,7 +646,7 @@ export default function LakeWindDashboard() {
           <div className="mb-4 flex items-center gap-2 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950/50 dark:text-amber-300">
             <AlertCircle className="h-4 w-4" />
             {t(lang, 'staleBanner', {
-              t: lastGeneration ? new Date(lastGeneration).toLocaleTimeString(lang === 'it' ? 'it-IT' : 'en-US', { hour: '2-digit', minute: '2-digit' }) : '—',
+              t: lastGeneration ? new Date(`${lastGeneration}Z`).toLocaleTimeString(lang === 'it' ? 'it-IT' : 'en-US', { hour: '2-digit', minute: '2-digit' }) : '—',
             })}
           </div>
         )}
@@ -880,7 +883,7 @@ export default function LakeWindDashboard() {
           <p>{t(lang, 'footerLine', { n: points.filter(p => p.is_operational).length })}</p>
           <p className="mt-1">
             {t(lang, 'model')}: {selectedPred?.model_version ?? '—'} ·
-            {t(lang, 'generated')}: {selectedPred ? new Date(selectedPred.generated_at).toLocaleString(lang === 'it' ? 'it-IT' : 'en-US') : '—'}
+            {t(lang, 'generated')}: {selectedPred ? new Date(`${selectedPred.generated_at}Z`).toLocaleString(lang === 'it' ? 'it-IT' : 'en-US') : '—'}
           </p>
         </footer>
       </main>

@@ -164,7 +164,21 @@ def compute_macro_area_pressure_differentials(
 
     def _get_pressure(point_id: str) -> float | None:
         fc = _memo_fetch(memo, point_id, valid_time, 180)
-        for f in fc:
+        # Deterministic pick mirroring build.py's _pick_aux_row (R10): the
+        # pinned aux reference model first, then any deterministic model in
+        # row order; ensemble rows ("*_ens") are never used for gradients.
+        # The former first-non-None scan picked alphabetically-first
+        # ecmwf_ifs025 (or an ensemble row) while build.py pinned icon_eu —
+        # two different values for the SAME physical gradient.
+        if not fc:
+            return None
+        s2 = load_settings()
+        pin = getattr(s2.model, "aux_reference_model", "icon_eu")
+        deterministic = [r for r in fc if not str(r.get("model_name", "")).endswith("_ens")]
+        ordered = ([r for r in deterministic if r.get("model_name") == pin]
+                   + [r for r in deterministic if r.get("model_name") != pin]
+                   or list(fc))
+        for f in ordered:
             if f.get("pressure_msl") is not None:
                 return float(f["pressure_msl"])
         return None
@@ -289,19 +303,30 @@ def compute_lake_breeze_potential(
     # Phase 3 perf: the caller passes the obs it ALREADY fetched for the
     # sample (60-min window) instead of issuing its own 3-DAY obs query that
     # returned ~800 rows per sample just to look for a water-temp reading.
-    # Callers without obs in hand fall back to a short 6 h lookup.
+    # FIX: fall back to the short 6 h lookup whenever the provided list has
+    # NO water-temp row — not only when it is None. The 60-min sample window
+    # rarely contains the ~hourly ARPA-hydro reading, so the #1 Breva
+    # predictor used to be None for most samples even though a fresh
+    # reading existed minutes earlier.
     obs = observations
-    if obs is None:
-        vp = next((p for p in s.virtual_points if p.id == point_id), None)
-        if vp is not None:
-            obs = access.fetch_latest_observation_near(
-                vp.lat, vp.lon, valid_time, max_age_minutes=360
-            )
     water_temp: float | None = None
     for o in (obs or []):
         if o.get("source") == "lake_water_temp" and o.get("temperature") is not None:
             water_temp = float(o["temperature"])
             break
+    if water_temp is None:
+        vp = next((p for p in s.virtual_points if p.id == point_id), None)
+        if vp is not None:
+            try:
+                recent = access.fetch_latest_observation_near(
+                    vp.lat, vp.lon, valid_time, max_age_minutes=360
+                )
+            except Exception:
+                recent = []
+            for o in (recent or []):
+                if o.get("source") == "lake_water_temp" and o.get("temperature") is not None:
+                    water_temp = float(o["temperature"])
+                    break
 
     air_water_delta: float | None = None
     if air_temp is not None and water_temp is not None:

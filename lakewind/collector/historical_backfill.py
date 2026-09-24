@@ -117,13 +117,18 @@ def _get_with_retry(session: requests.Session, url: str, params: dict, timeout: 
 
 
 def _chunk_date_range(start: datetime, end: datetime, chunk_days: int) -> list[tuple[datetime, datetime]]:
-    """Split [start, end] into chunks of at most `chunk_days` days."""
+    """Split [start, end] into inclusive chunks of at most `chunk_days` days.
+
+    The former `cur + chunk_days` / `cur = nxt` produced chunk_days+1
+    inclusive days per request (over the API's stated cap) and re-fetched
+    every boundary day.
+    """
     chunks: list[tuple[datetime, datetime]] = []
     cur = start
     while cur < end:
-        nxt = min(cur + timedelta(days=chunk_days), end)
+        nxt = min(cur + timedelta(days=chunk_days - 1), end)
         chunks.append((cur, nxt))
-        cur = nxt  # next chunk starts where this one ends
+        cur = nxt + timedelta(days=1)
     return chunks
 
 
@@ -434,7 +439,10 @@ def _parse_one_previous_run(data: dict[str, Any], point_id: str, model_name: str
             first_valid = datetime.fromisoformat(times[0].replace("Z", "+00:00"))
         except Exception:
             return []
-        run_time = nearest_model_init_time(first_valid, model_name)
+        # Strip tzinfo AFTER anchoring: first_valid may be aware (Z-suffixed
+        # upstream), and an aware run_time next to naive valid_time rows
+        # breaks lead arithmetic and DuckDB's naive-UTC convention.
+        run_time = nearest_model_init_time(first_valid, model_name).replace(tzinfo=None)
     rows: list[dict[str, Any]] = []
     for i, t_iso in enumerate(times):
         try:

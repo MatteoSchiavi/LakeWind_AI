@@ -310,7 +310,11 @@ async def _loop(stop: asyncio.Event) -> None:
             if time.monotonic() >= next_review:
                 await _daily_review()
                 next_review = _next_review_monotonic()
-            await asyncio.sleep(min(next_nwp, next_station) - now_s)
+            # Recompute the clock AFTER maintenance/review: `now_s` was
+            # captured before those ran, so the sleep could overshoot by the
+            # full maintenance duration and delay the next NWP cycle.
+            now_s = time.monotonic()
+            await asyncio.sleep(max(1.0, min(next_nwp, next_station) - now_s))
             continue
 
         if cycle_lock.locked():

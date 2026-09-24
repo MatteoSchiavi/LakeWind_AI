@@ -482,8 +482,21 @@ def retrain(
 
     end = utcnow()
     start = end - timedelta(days=days) if not production_window else None
+    # Hold out the last 30 days for the conformal calibrator set: fitting it
+    # on training data yields in-sample residuals and overconfident bands.
+    cal_window = timedelta(days=30)
+    if start is not None:
+        train_end = end - cal_window
+        if train_end <= start:
+            train_end = end  # tiny window: prefer training over calibration
+            cal_start = end - timedelta(days=1)
+        else:
+            cal_start = train_end
+    else:
+        train_end = end
+        cal_start = end - cal_window
     result = train(
-        start=start, end=end, backend=backend,
+        start=start, end=train_end, backend=backend,
         disable_models=list(disable_model) or None,
     )
     if result is None:
@@ -502,7 +515,7 @@ def retrain(
     # serves the raw quantile band and breaks the 80% coverage contract.
     from lakewind.ml.review import fit_bundle_calibrators
 
-    cal = fit_bundle_calibrators(result.model_version, end=end)
+    cal = fit_bundle_calibrators(result.model_version, start=cal_start, end=end)
     if cal["ok"]:
         console.print(
             f"  Calibrators: {cal['calibrators_trained']}/6 fitted "
@@ -516,6 +529,16 @@ def retrain(
 
 
 @app.command("tune")
+def _ensure_cache_dir() -> str:
+    """data/cache/ next to the DB, created on demand (Optuna's SQLite
+    storage cannot create parent directories)."""
+    from pathlib import Path
+
+    p = Path(get_db_path()).parent / "cache"
+    p.mkdir(parents=True, exist_ok=True)
+    return str(p / "tune_study.db")
+
+
 def tune(
     days: int = typer.Option(120, help="Tuning window in days (time-ordered val split applied inside)"),
     trials: int = typer.Option(40, help="Number of Optuna TPE trials"),
@@ -527,11 +550,10 @@ def tune(
     The study persists in data/cache/tune_study.db — reruns resume.
     """
     _setup_logging()
-    from lakewind.config import get_db_path as _gdp
     from lakewind.ml.tune import tune_from_db
 
     best = tune_from_db(days=days, n_trials=trials,
-                        storage_path=str(_gdp().parent / "cache" / "tune_study.db"))
+                        storage_path=str(_ensure_cache_dir()))
     console.print(f"[bold green]Tuning complete ({trials} trials)[/bold green]")
     console.print("Merge these into settings.yaml `model.lgbm_params`:")
     for k, v in best.items():

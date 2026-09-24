@@ -48,9 +48,16 @@ def _bucket_floor(dt: datetime, minutes: int) -> datetime:
 
 
 def _naive(dt: datetime) -> datetime:
-    """DuckDB stores naive UTC — normalize both sides before comparing."""
+    """DuckDB stores naive UTC — normalize both sides before comparing.
+
+    The blind `replace(tzinfo=None)` reinterpreted any aware datetime's wall
+    clock as UTC; convert explicitly so a Rome-aware input shifts correctly
+    instead of silently landing 1-2 h off.
+    """
     if dt.tzinfo is not None:
-        return dt.replace(tzinfo=None)
+        from lakewind.utils.timeutil import to_aware_utc
+
+        return to_aware_utc(dt).replace(tzinfo=None)
     return dt
 
 

@@ -106,6 +106,7 @@ class DecisionHour:
     p_go: float                   # P(>= 8 kn)
     p_strong: float               # P(>= 12 kn)
     regime: str | None = None
+    gust_kn: float | None = None  # display metadata — NOT a decision input
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -118,6 +119,7 @@ class DecisionHour:
             "p_go": round(self.p_go, 3),
             "p_strong": round(self.p_strong, 3),
             "regime": self.regime,
+            "gust_kn": round(self.gust_kn, 2) if self.gust_kn is not None else None,
         }
 
 
@@ -211,6 +213,7 @@ def compute_decision(
                 p_go=probability_at_least(row, go_threshold_kn),
                 p_strong=probability_at_least(row, strong_threshold_kn),
                 regime=_row_regime(row),
+                gust_kn=_row_float(row, "wind_gust_kn"),
             )
         )
 

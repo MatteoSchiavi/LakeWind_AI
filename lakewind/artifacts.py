@@ -88,21 +88,55 @@ def _fresh(p: Path, max_age_minutes: float) -> bool:
 
 
 def lookup_map_png(target_time: datetime, offset_hours: int) -> bytes | None:
-    """Newest pre-rendered map for the requested offset within max age."""
+    """Pre-rendered map for the requested offset within max age.
+
+    Honesty fix: the former lookup returned the NEWEST file for the offset
+    and IGNORED `target_time`, so /api/map labelled a PNG with a valid_time
+    up to max-age (100 min) away from the artifact's own. The cycle key is
+    embedded in the filename — parse it and prefer the artifact CLOSEST to
+    the requested target (freshness is still capped by max age).
+    """
     s = load_settings()
-    max_age = s.cache.map_max_age_minutes or DEFAULT_MAX_AGE_MINUTES
-    for p in sorted(_map_dir().glob(f"map_*_+{offset_hours}h.png"), reverse=True):
-        if _fresh(p, max_age):
-            try:
-                return p.read_bytes()
-            except OSError:  # pragma: no cover — file vanished mid-read
-                continue
+    max_age = s.cache.map_max_age_minutes
+    if max_age is None:  # explicit 0 must stay 0 (the `or` made it impossible)
+        max_age = DEFAULT_MAX_AGE_MINUTES
+    if target_time.tzinfo is not None:
+        target_time = target_time.replace(tzinfo=None)
+    best_p: Path | None = None
+    best_diff: float | None = None
+    for p in _map_dir().glob(f"map_*_+{offset_hours}h.png"):
+        if not _fresh(p, max_age):
+            continue
+        artifact_target = _parse_cycle_key(p.name)
+        diff = (
+            abs((artifact_target - target_time).total_seconds())
+            if artifact_target is not None
+            else None
+        )
+        if best_diff is None or (diff is not None and diff < best_diff):
+            best_p, best_diff = p, diff
+    if best_p is not None:
+        try:
+            return best_p.read_bytes()
+        except OSError:  # pragma: no cover — file vanished mid-read
+            return None
     return None
+
+
+def _parse_cycle_key(filename: str) -> datetime | None:
+    """Extract the target valid_time from 'map_<YYYYmmddHHMM>_+Nh.png'."""
+    try:
+        stem = filename.split("_", 1)[1].rsplit("_", 1)[0]
+        return datetime.strptime(stem, "%Y%m%d%H%M")
+    except (IndexError, ValueError):
+        return None
 
 
 def lookup_trend_png(point_id: str) -> bytes | None:
     s = load_settings()
-    max_age = s.cache.map_max_age_minutes or DEFAULT_MAX_AGE_MINUTES
+    max_age = s.cache.map_max_age_minutes
+    if max_age is None:
+        max_age = DEFAULT_MAX_AGE_MINUTES
     for p in sorted(_trend_dir().glob(f"trend_{point_id}_*.png"), reverse=True):
         if _fresh(p, max_age):
             try:
@@ -195,6 +229,7 @@ __all__ = [
     "MAP_OFFSET_HOURS",
     "lookup_map_png",
     "lookup_trend_png",
+    "map_path",
     "precompute_maps",
     "precompute_trends",
     "stats",

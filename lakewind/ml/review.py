@@ -55,14 +55,19 @@ logger = logging.getLogger(__name__)
 
 
 def _dedupe_latest(preds: list[dict[str, Any]]) -> dict[tuple[str, Any], dict[str, Any]]:
-    """Keep the newest generation per (point_id, valid_time)."""
+    """Keep the newest generation per (point_id, valid_time).
+
+    A missing generated_at ranks OLDEST (datetime.min), not newest — the
+    former `or utcnow()` made NULL rows beat every real timestamp and made
+    None-vs-None ordering depend on two different utcnow() calls.
+    """
     best: dict[tuple[str, Any], dict[str, Any]] = {}
     for p in preds:
         key = (p.get("point_id"), p.get("valid_time"))
         cur = best.get(key)
-        if cur is None or (p.get("generated_at") or utcnow()) >= (
-            cur.get("generated_at") or utcnow()
-        ):
+        cand_gen = p.get("generated_at") or datetime.min
+        cur_gen = (cur.get("generated_at") if cur else None) or datetime.min
+        if cur is None or cand_gen >= cur_gen:
             best[key] = p
     return best
 
@@ -91,12 +96,21 @@ def evaluate_recent(
     start = now - timedelta(days=baseline_days)
 
     preds: list[dict[str, Any]] = []
+    # Raw rows accumulate ~50 per hour per point (25 horizons every 30 min);
+    # the former flat limit=50000 truncated the 90-day baseline to ~42 days.
+    # Size the limit from the window AND dedupe per point inside the loop so
+    # memory stays bounded (only the newest generation per valid_time is
+    # kept across points).
+    rows_per_point = int(baseline_days * 24 * 50 * 1.2) + 1000
     for pid in s.operational_point_ids or [vp.id for vp in s.virtual_points]:
         try:
-            preds.extend(access.latest_predictions(point_id=pid, limit=50000, start_time=start))
+            point_rows = access.latest_predictions(
+                point_id=pid, limit=rows_per_point, start_time=start
+            )
+            preds.extend(_dedupe_latest(point_rows).values())
         except Exception as exc:  # noqa: BLE001 — one point must not kill the review
             logger.warning("evaluate_recent: predictions for %s failed: %s", pid, exc)
-    deduped = list(_dedupe_latest(preds).values())
+    deduped = preds
 
     per_lead: dict[str, list[float]] = {}
     recent_errs: list[float] = []
@@ -188,6 +202,7 @@ def fit_bundle_calibrators(
     *,
     window_days: int = 30,
     end: datetime | None = None,
+    start: datetime | None = None,
     skip_existing: bool = False,
 ) -> dict[str, Any]:
     """Fit the full conformal calibrator set for a model bundle.
@@ -197,6 +212,13 @@ def fit_bundle_calibrators(
     candidate can never reach production without its calibrator set (the
     serving path silently falls back to the raw uncalibrated band when the
     artifacts are missing, breaking the 80% coverage contract).
+
+    Honesty fix: `start` lets the caller pin the calibration window BEYOND
+    the model's training end. In-sample scores (fitting the calibrator on
+    data the model was just trained on) systematically underestimate the
+    nonconformity quantile and overconfident bands. The retrain callers now
+    hold out the last `window_days` from training and calibrate on exactly
+    that holdout.
 
     `skip_existing` (verification harness resumability): keep already-fitted
     calibrators for the SAME model_version. Production recalibration
@@ -211,7 +233,7 @@ def fit_bundle_calibrators(
     s = load_settings()
     alpha = float(s.model.conformal_alpha)
     end = end or utcnow()
-    start = end - timedelta(days=window_days)
+    start = start or (end - timedelta(days=window_days))
     trained = 0
     skipped = 0
     for target in ("u", "v"):
@@ -231,6 +253,7 @@ def fit_bundle_calibrators(
         "alpha": alpha,
         "calibrators_trained": trained,
         "calibrators_skipped": skipped,
+        "calibration_window": [start.isoformat(), end.isoformat()],
     }
 
 
@@ -241,11 +264,31 @@ def recalibrate_production_bundle() -> dict[str, Any]:
     breach triggers this recalibration at the CONFIGURED alpha — closing the
     gap where a drifted band silently kept serving (F12: one code path,
     settings-driven alpha, shared with the post-retrain calibration).
+
+    Honesty fix: the calibration window is clamped to start AFTER the
+    production model's training_end (registry) — scoring residuals on data
+    the model was trained on underestimates q_hat. When too little unseen
+    data has accumulated since training, the fit returns ok=False and the
+    previous calibrators keep serving (better honest-stale than quietly
+    overconfident).
     """
     prod = access.current_production_model()
     if not prod:
         return {"ok": False, "reason": "no production model registered"}
-    return fit_bundle_calibrators(str(prod["model_version"]))
+    cal_days = 30
+    end = utcnow()
+    start = end - timedelta(days=cal_days)
+    t_end = prod.get("training_end")
+    if t_end is not None:
+        try:
+            if isinstance(t_end, str):
+                t_end = datetime.fromisoformat(t_end)
+            if isinstance(t_end, datetime):
+                te = t_end if t_end.tzinfo is None else t_end.replace(tzinfo=None)
+                start = max(start, te)
+        except (ValueError, TypeError):
+            pass
+    return fit_bundle_calibrators(str(prod["model_version"]), start=start, end=end)
 
 
 def drift_sentinel(snapshot: dict[str, Any]) -> dict[str, Any] | None:
@@ -334,6 +377,8 @@ def _maybe_auto_promote(candidate_version: str) -> dict[str, Any]:
     dir_ok = delta_dir >= float(gate.min_dir_improvement_deg)
     return {
         "candidate": candidate_version,
+        "cand_mae_kn": None if cand_mae == float("inf") else round(cand_mae, 3),
+        "cand_dir_deg": None if cand_dir == float("inf") else round(cand_dir, 3),
         "delta_mae_kn": round(delta_mae, 3),
         "delta_dir_deg": round(delta_dir, 3),
         "mae_ok": mae_ok,
@@ -427,10 +472,17 @@ def run_daily_review(*, check_only: bool = False, force: bool = False) -> dict[s
             from lakewind.ml.train import train
 
             start_w, end_w = _production_window()
-            result = train(start=start_w, end=end_w)
+            # Hold out the last CAL_WINDOW_DAYS for conformal calibration:
+            # scoring the calibrator on training data underestimates q_hat
+            # (in-sample residuals) and breaks the 80% coverage contract.
+            cal_window = timedelta(days=30)
+            train_end = end_w - cal_window
+            result = train(start=start_w, end=train_end)
             if result is not None:
                 candidate_version = result.model_version
-                cal = fit_bundle_calibrators(candidate_version, end=end_w)
+                cal = fit_bundle_calibrators(
+                    candidate_version, start=train_end, end=end_w,
+                )
                 retrain_step["train"] = {
                     "model_version": candidate_version,
                     "n_samples": result.n_samples,
@@ -470,13 +522,16 @@ def run_daily_review(*, check_only: bool = False, force: bool = False) -> dict[s
             else:
                 gate_check["promoted"] = False
             # Every attempt is recorded — successful or not (Spec §7.2).
+            # The registry columns take the candidate's ABSOLUTE metrics;
+            # the former code stored the improvement DELTAS here, making
+            # experiment history read as a perfect 0.0-MAE model.
             access.record_experiment_attempt(
                 candidate_name=candidate_version,
                 feature_set_version=s.model.feature_set_version,
-                backtest_mae_kn=gate_check.get("delta_mae_kn") or 0.0,
-                backtest_dir_error_deg=gate_check.get("delta_dir_deg") or 0.0,
-                vs_production_mae_delta=gate_check.get("delta_mae_kn") or 0.0,
-                vs_production_dir_delta=gate_check.get("delta_dir_deg") or 0.0,
+                backtest_mae_kn=gate_check.get("cand_mae_kn"),
+                backtest_dir_error_deg=gate_check.get("cand_dir_deg"),
+                vs_production_mae_delta=gate_check.get("delta_mae_kn"),
+                vs_production_dir_delta=gate_check.get("delta_dir_deg"),
                 promoted=bool(gate_check.get("promoted")),
                 notes="daily review " + ("auto-promote" if gate_check.get("promoted") else "recommendation"),
             )

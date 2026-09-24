@@ -40,10 +40,10 @@ from itertools import combinations
 from typing import Any
 
 import numpy as np
+import pandas as pd
 
 from lakewind.config import load_settings
 from lakewind.features.build import build_features_for
-from lakewind.ml.infer import predict_at
 from lakewind.utils.wind import WindVector, circular_direction_error_deg
 
 logger = logging.getLogger(__name__)
@@ -113,15 +113,17 @@ def generate_cpcv_paths(
         end = (g + 1) * group_size if g < n_groups - 1 else n_samples
         groups.append(list(range(start, end)))
 
-    purge_samples = purge_hours // sample_interval_hours
-    embargo_samples = embargo_hours // sample_interval_hours
+    purge_samples = math.ceil(purge_hours / max(1, sample_interval_hours))
+    embargo_samples = math.ceil(embargo_hours / max(1, sample_interval_hours))
+    # ceil, not floor: a 2h purge with 6h sampling must still drop the
+    # adjacent sample (floor made both 0 — purging did nothing). Over-
+    # purging costs a few training samples; under-purging leaks.
 
     paths: list[CPCVPath] = []
     for path_id, test_combo in enumerate(combinations(range(n_groups), n_test_groups)):
         test_indices: list[int] = []
         for g in test_combo:
             test_indices.extend(groups[g])
-        set(test_indices)
 
         # Train = all groups not in test
         train_indices: list[int] = []
@@ -173,10 +175,15 @@ def run_cpcv_backtest(
 
     For each path:
       1. Build features for ALL samples in [start, end]
-      2. Split into train/test per the path
-      3. Train a model on the path's train set
-      4. Evaluate on the path's test set
+      2. Split into train/test per the path (purged + embargoed)
+      3. Train a LightGBM quantile model set on the path's train set
+      4. Evaluate the path's OWN models on the path's test set
       5. Compare vs persistence + raw NWP
+
+    `model_version` is accepted for caller compatibility but NO LONGER used
+    for scoring: the former implementation evaluated that (production)
+    bundle on windows it was trained on — in-sample numbers presented as
+    cross-validation. Every path now trains its own models.
 
     Returns aggregated mean ± std across all paths.
     """
@@ -229,7 +236,32 @@ def run_cpcv_backtest(
     )
     logger.info("CPCV: %d paths generated (C(%d,%d))", len(paths), n_groups, n_test_groups)
 
-    # Step 2: run each path
+    # Step 2: run each path — with TRUE per-path training.
+    #
+    # P0 fix (pre-Phase-6 audit): the former loop scored the PRODUCTION
+    # bundle (the `model_version` argument) on windows that model had been
+    # TRAINED on — train_indices / purged_indices / embargo_indices were
+    # computed and never used, so every "path" was an in-sample re-scan and
+    # the significance test / improvement numbers were meaningless. Each
+    # path now fits its own LightGBM quantile models on its (purged,
+    # embargoed) train split and scores the held-out test groups, exactly
+    # what the module docstring always claimed.
+    df = pd.DataFrame(all_samples)  # positional order == all_samples
+    from lakewind.ml.train import _feature_matrix, _time_ordered_split, _train_lightgbm
+
+    X_all, _feature_cols = _feature_matrix(df)
+    y_u_all = df["target_u"]
+    y_v_all = df["target_v"]
+
+    # Bounded per-path budget: C(6,2)=15 paths x 6 quantile models. The full
+    # production budget (3000 rounds) would run for hours; 250 rounds with
+    # early stopping on a 10% time-ordered validation slice is enough for a
+    # path-level estimate.
+    lgbm_params = dict(s.model.lgbm_params)
+    lgbm_params.pop("num_iterations", None)
+    MAX_ROUNDS = 250
+    EARLY_STOPPING = 40
+
     path_results: list[dict[str, Any]] = []
     for path in paths:
         logger.info("CPCV path %d/%d: train=%d, test=%d, purged=%d, embargo=%d",
@@ -237,49 +269,91 @@ def run_cpcv_backtest(
                     len(path.train_indices), len(path.test_indices),
                     len(path.purged_indices), len(path.embargo_indices))
 
+        exclude = set(path.purged_indices) | set(path.embargo_indices)
+        train_pos = [i for i in path.train_indices if i not in exclude]
+        test_pos = path.test_indices
+        if len(train_pos) < 200 or not test_pos:
+            logger.warning("CPCV path %d skipped (train=%d after purge)",
+                           path.path_id, len(train_pos))
+            continue
+
+        train_df = df.iloc[train_pos]
+        X_tr_full = X_all.iloc[train_pos]
+        # Time-ordered 10% validation slice inside the path's train set for
+        # early stopping (same anti-leakage rule as production training).
+        tr_df, val_df = _time_ordered_split(train_df, 0.10)
+        if val_df is not None and len(val_df) >= 50:
+            X_tr, X_va = X_all.loc[tr_df.index], X_all.loc[val_df.index]
+            u_tr, u_va = y_u_all.loc[tr_df.index].to_numpy(), y_u_all.loc[val_df.index].to_numpy()
+            v_tr, v_va = y_v_all.loc[tr_df.index].to_numpy(), y_v_all.loc[val_df.index].to_numpy()
+        else:
+            X_tr, X_va = X_tr_full, None
+            u_tr, u_va = y_u_all.iloc[train_pos].to_numpy(), None
+            v_tr, v_va = y_v_all.iloc[train_pos].to_numpy(), None
+
+        X_te = X_all.iloc[test_pos]
+        models: dict[tuple[str, float], Any] = {}
+        try:
+            for tgt, y_tr, y_va in (("u", u_tr, u_va), ("v", v_tr, v_va)):
+                for q in (0.1, 0.5, 0.9):
+                    model, _info = _train_lightgbm(
+                        X_tr, y_tr, q, lgbm_params,
+                        X_val=X_va,
+                        y_val=y_va if y_va is not None else None,
+                        early_stopping_rounds=EARLY_STOPPING if X_va is not None else 0,
+                        max_rounds=MAX_ROUNDS,
+                    )
+                    models[(tgt, q)] = model
+        except Exception as exc:
+            logger.warning("CPCV path %d training failed: %s", path.path_id, exc)
+            continue
+
+        # Reconstruct the wind field on the test set from the path's models
+        # (same math as infer.predict_at: final = reference + bias, in u/v).
+        bu50 = models[("u", 0.5)].predict(X_te)
+        bv50 = models[("v", 0.5)].predict(X_te)
+        bu10 = models[("u", 0.1)].predict(X_te)
+        bu90 = models[("u", 0.9)].predict(X_te)
+        bv10 = models[("v", 0.1)].predict(X_te)
+        bv90 = models[("v", 0.9)].predict(X_te)
+
         cand_errors: list[float] = []
         cand_dir_errors: list[float] = []
         pers_errors: list[float] = []
         nwp_errors: list[float] = []
         interval_covered: list[bool] = []
 
-        for idx in path.test_indices:
-            sample = all_samples[idx]
-            pid = sample["point_id"]
-            vt = sample["valid_time"]
+        for row_pos, vt_idx in enumerate(test_pos):
+            sample = all_samples[vt_idx]
+            obs_speed = sample["obs_speed"]
+            obs_dir = sample["obs_dir"]
 
-            # Candidate prediction (using the production model)
-            try:
-                cand = predict_at(
-                    pid, vt, model_version=model_version, compute_shap=False
-                )
-            except Exception:
-                cand = None
-            if cand is None:
-                continue
-
-            cand_err = abs(cand.wind_speed_kn - sample["obs_speed"])
-            cand_dir_err = circular_direction_error_deg(
-                cand.wind_dir_deg, sample["obs_dir"]
+            final = WindVector.from_uv(
+                sample["ref_speed"] * -math.sin(math.radians(sample["ref_dir"])) + bu50[row_pos],
+                sample["ref_speed"] * -math.cos(math.radians(sample["ref_dir"])) + bv50[row_pos],
             )
+            cand_speed = max(0.0, final.speed_kn)
+            cand_err = abs(cand_speed - obs_speed)
+            cand_dir_err = circular_direction_error_deg(final.direction_deg, obs_dir)
             cand_errors.append(cand_err)
             cand_dir_errors.append(cand_dir_err)
 
-            # 80% interval coverage
-            lo = max(0.0, cand.wind_speed_kn - cand.expected_error_kn)
-            hi = cand.wind_speed_kn + cand.expected_error_kn
-            interval_covered.append(lo <= sample["obs_speed"] <= hi)
+            # 80% interval coverage: expected_error = half the 90-10 width
+            # combined across u and v (infer.BiasPrediction.expected_error_kn)
+            expected_err = float(np.hypot(bu90[row_pos] - bu10[row_pos],
+                                          bv90[row_pos] - bv10[row_pos])) / 2.0
+            lo = max(0.0, cand_speed - expected_err)
+            hi = cand_speed + expected_err
+            interval_covered.append(lo <= obs_speed <= hi)
 
             # Persistence: previous sample's observation
-            if idx > 0:
-                prev = all_samples[idx - 1]
-                if prev["point_id"] == pid:
-                    pers_err = abs(prev["obs_speed"] - sample["obs_speed"])
-                    pers_errors.append(pers_err)
+            if vt_idx > 0:
+                prev = all_samples[vt_idx - 1]
+                if prev["point_id"] == sample["point_id"]:
+                    pers_errors.append(abs(prev["obs_speed"] - obs_speed))
 
             # Raw NWP
-            nwp_err = abs(sample["ref_speed"] - sample["obs_speed"])
-            nwp_errors.append(nwp_err)
+            nwp_errors.append(abs(sample["ref_speed"] - obs_speed))
 
         if not cand_errors:
             continue

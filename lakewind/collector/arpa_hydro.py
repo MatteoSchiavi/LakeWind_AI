@@ -33,7 +33,7 @@ rows without wind_speed/wind_dir).
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import requests
@@ -153,9 +153,16 @@ class ArpaHydroCollector(BaseCollector):
             if meta is None:
                 continue
             try:
+                # Convert to UTC then strip — a blind `replace(tzinfo=None)`
+                # would store local wall time as UTC the day ARPA serves
+                # Rome offsets instead of +00:00.
                 ts = datetime.fromisoformat(
                     str(srow.get("data") or "").replace("Z", "+00:00")
-                ).replace(tzinfo=None)
+                )
+                if ts.tzinfo:
+                    ts = ts.astimezone(UTC).replace(tzinfo=None)
+                else:
+                    ts = ts.replace(tzinfo=None)
             except Exception:
                 continue
             raw_val = srow.get("valore")

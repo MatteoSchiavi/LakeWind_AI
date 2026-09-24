@@ -599,7 +599,12 @@ def train(
     against the full run via experiment_attempts/upgrade gate.
     """
     s = load_settings()
+    # The settings object is an lru_cache'd PROCESS-WIDE singleton — the
+    # former in-place `s.model.ensemble = ensemble` permanently flipped the
+    # ensemble flag for every later caller (serve path included) after any
+    # harness/A-B run. Override on a private copy instead.
     if ensemble is not None:
+        s = s.model_copy(deep=True)
         s.model.ensemble = ensemble
     if reference_forecast_model is None:
         reference_forecast_model = s.model.reference_model
@@ -879,7 +884,11 @@ def train(
             feature_set_version=s.model.feature_set_version,
             training_start=start.date(),
             training_end=end.date(),
-            backtest_mae_kn=round(speed_mae, 4) if speed_mae is not None else 0.0,
+            # NULL (not 0.0) when speed-space metrics are unavailable: 0.0
+            # reads as a PERFECT model in the auto-promote gate and the
+            # upgrade-gate delta, silently promoting unmeasurable candidates
+            # (same policy as the CLI promote path).
+            backtest_mae_kn=round(speed_mae, 4) if speed_mae is not None else None,
             backtest_dir_error_deg=round(dir_err, 3) if dir_err is not None else None,
             promoted=False,
             git_commit=_git_commit(),

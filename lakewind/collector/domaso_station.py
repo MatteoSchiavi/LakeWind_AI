@@ -62,6 +62,7 @@ def _to_float(s: str | None) -> float | None:
 
 
 def _kmh_to_kn(v: float | None) -> float | None:
+    """Legacy km/h→kn conversion (kept for external callers/tests)."""
     return None if v is None else round(v * 0.539957, 3)
 
 
@@ -98,14 +99,49 @@ def _parse_value_with_unit(s: str) -> tuple[float | None, str | None]:
     return None, None
 
 
+# Wind unit -> knots. The former code parsed the unit and DISCARDED it,
+# hardcoding km/h — a site-side unit switch would silently mis-scale the
+# station's wind into the training targets.
+_WIND_UNIT_TO_KN = {
+    "km/h": 0.539957, "kmh": 0.539957, "kph": 0.539957,
+    "m/s": 1.943844, "ms": 1.943844,
+    "kn": 1.0, "knots": 1.0, "kt": 1.0,
+    "mph": 0.868976,
+}
+
+
+def _wind_text_to_kn(s: str) -> float | None:
+    """Parse a wind string honouring its unit; unknown unit -> None + log."""
+    val, unit = _parse_value_with_unit(s)
+    if val is None:
+        return None
+    if unit is None:
+        return round(val * 0.539957, 3)  # page default (km/h) — keep assumption explicit
+    factor = _WIND_UNIT_TO_KN.get(unit)
+    if factor is None:
+        logger.warning("Domaso: unknown wind unit %r in %r — skipping value", unit, s)
+        return None
+    return round(val * factor, 3)
+
+
 class DomasoCollector(BaseCollector):
     """Scrape the Domaso live weather station from Nautica Domaso's webcam page."""
 
     source_name = "domaso_live"
 
+    # A frozen page re-scraped every 10 min used to be re-stamped as a BRAND
+    # NEW observation (timestamp=utcnow) with the same old values — a
+    # fabricated continuous series that freshness checks scored as fresh
+    # forever. Allow a few identical consecutive payloads (real calm lulls do
+    # repeat), then treat the page as stale and stop storing rows until it
+    # changes again.
+    STALE_PAYLOAD_ALLOWANCE = 3
+
     def __init__(self) -> None:
         s = load_settings()
         self.urls = [s.domaso.url, s.domaso.fallback_url]
+        self._last_values_sig: str | None = None
+        self._identical_count = 0
 
     def fetch_raw(self) -> str:
         last_err: Exception | None = None
@@ -186,17 +222,15 @@ class DomasoCollector(BaseCollector):
                     values[canonical] = val
             i += 2
 
-        # Extract wind values
-        wind_speed_kmh, _ = _parse_value_with_unit(values.get("Vento", ""))
+        # Extract wind values (unit-aware: km/h, m/s, kn, mph all supported)
+        wind_speed_kn = _wind_text_to_kn(values.get("Vento", ""))
         wind_dir_cardinal = values.get("Direzione Vento", "")
         wind_dir_deg = _parse_cardinal(wind_dir_cardinal)
-        wind_speed_kn = _kmh_to_kn(wind_speed_kmh)
 
         # Gust: prefer 'Raffica vento' (current gust), fall back to 'Raffica max'
-        gust_kmh, _ = _parse_value_with_unit(values.get("Raffica vento", ""))
-        if gust_kmh is None:
-            gust_kmh, _ = _parse_value_with_unit(values.get("Raffica max", ""))
-        wind_gust_kn = _kmh_to_kn(gust_kmh)
+        wind_gust_kn = _wind_text_to_kn(values.get("Raffica vento", ""))
+        if wind_gust_kn is None:
+            wind_gust_kn = _wind_text_to_kn(values.get("Raffica max", ""))
 
         # Temperature
         temp_c, _ = _parse_value_with_unit(values.get("Temperatura", ""))
@@ -226,6 +260,28 @@ class DomasoCollector(BaseCollector):
             "quality_flag": quality,
             "confidence": confidence,
         }
+
+        # Frozen-page guard: compare a signature of the MEASURED values (not
+        # the whole HTML — timestamps/markup churn). After the allowance, the
+        # page is considered stale and no row is stored until it changes.
+        sig = "|".join(
+            str(row.get(k))
+            for k in ("wind_speed_kn", "wind_dir_deg", "wind_gust_kn",
+                      "pressure", "temperature", "humidity")
+        )
+        if sig == self._last_values_sig:
+            self._identical_count += 1
+        else:
+            self._identical_count = 0
+            self._last_values_sig = sig
+        if self._identical_count >= self.STALE_PAYLOAD_ALLOWANCE:
+            if self._identical_count == self.STALE_PAYLOAD_ALLOWANCE:
+                logger.warning(
+                    "Domaso: %d identical consecutive readings — page looks "
+                    "frozen; skipping storage until values change",
+                    self._identical_count,
+                )
+            return []
         return [row]
 
     def validate(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:

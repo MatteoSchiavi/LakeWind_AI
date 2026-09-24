@@ -43,6 +43,8 @@ class BaseCollector(ABC):
     # Retry config (Spec §8 graceful degradation)
     max_retries: int = 2
     retry_backoff_seconds: float = 1.5
+    # Real attempt count of the last _fetch_raw_with_retry() call
+    _last_fetch_attempts: int = 0
 
     @abstractmethod
     def fetch_raw(self) -> Any:
@@ -64,9 +66,15 @@ class BaseCollector(ABC):
         raise NotImplementedError
 
     def _fetch_raw_with_retry(self) -> Any:
-        """Wrap fetch_raw with exponential backoff."""
+        """Wrap fetch_raw with exponential backoff.
+
+        Records the REAL attempt count (the former code reported
+        max_retries+1 on success and 0 on total failure — "failed after 0
+        attempts" — corrupting the health record either way).
+        """
         last_exc: Exception | None = None
         for attempt in range(self.max_retries + 1):
+            self._last_fetch_attempts = attempt + 1
             try:
                 return self.fetch_raw()
             except Exception as exc:
@@ -83,10 +91,11 @@ class BaseCollector(ABC):
     def collect(self) -> CollectResult:
         """Run the full fetch -> validate -> store cycle with retry/backoff."""
         start = time.perf_counter()
-        attempts = 0
+        attempts = 1
         try:
+            self._last_fetch_attempts = 0
             raw = self._fetch_raw_with_retry()
-            attempts = self.max_retries + 1
+            attempts = self._last_fetch_attempts or 1
             rows = self.to_rows(raw)
             rows = self.validate(rows)
             self.store(rows)
@@ -164,6 +173,12 @@ PHYSICAL_LIMITS = {
     "wind_gust_kn": (0.0, 150.0),
     "wind_dir_deg": (0.0, 360.0),
     "pressure": (850.0, 1100.0),
+    # Forecast-row aliases: forecast rows carry `pressure_msl` /
+    # `temperature_2m` (not the observation column names), which the former
+    # key list silently skipped — a corrupted payload (pressure_msl=0) was
+    # stored unflagged.
+    "pressure_msl": (850.0, 1100.0),
+    "temperature_2m": (-50.0, 60.0),
     "temperature": (-50.0, 60.0),
     "humidity": (0.0, 100.0),
     "cloud_cover": (0.0, 100.0),

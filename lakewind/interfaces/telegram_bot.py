@@ -14,6 +14,7 @@ Menu structure:
     📅 Today → Choose point → Hourly table
     🗺 Map → Choose time → Heatmap image
     ⛵ Sailing → GO/NO-GO recommendation
+    🗓 Weekend → Choose point → Sat 07:00 → Sun 22:00 timeline
     📈 Trend → Choose point → Chart image
     ⚠️ Alerts → Set/list/delete
     ⚙️ Settings → Language/units/point
@@ -251,47 +252,41 @@ def is_user_admin(user_id: int) -> bool:
 # --- Inline keyboards ---
 
 def _main_menu_kb(user_id: int | None = None) -> InlineKeyboardMarkup:
-    """Main menu - shows admin features for admin, limited for regular users."""
-    is_admin = user_id is not None and is_user_admin(user_id)
+    """Main menu — 2×4 grid plus a full-width Weekend row.
 
+    Weekend sits directly under Sailing: most sailors plan the WEEKEND,
+    not the next 24 h, and the two buttons answer the two halves of the
+    same question ("today?" vs "which day of the coming weekend?").
+
+    Admin gating: the 🔧 Admin entry appears ONLY for admins (Phase 6.5
+    union of the admin-UI split with the Weekend feature). Everything else
+    — Alerts, Settings, Status included — is part of the NORMAL UI and
+    stays for every user; "no admin capabilities" means the admin
+    button/commands, not the user features.
+    """
+    is_admin = user_id is not None and is_user_admin(user_id)
+    rows = [
+        [
+            InlineKeyboardButton("🌬 Wind", callback_data="m:wind"),
+            InlineKeyboardButton("📅 Today", callback_data="m:today"),
+        ],
+        [
+            InlineKeyboardButton("🗺 Map", callback_data="m:map"),
+            InlineKeyboardButton("⛵ Sailing", callback_data="m:sail"),
+        ],
+        [InlineKeyboardButton("🗓 Weekend", callback_data="m:weekend")],
+        [
+            InlineKeyboardButton("📈 Trend", callback_data="m:trend"),
+            InlineKeyboardButton("⚠️ Alerts", callback_data="m:alert"),
+        ],
+        [
+            InlineKeyboardButton("⚙️ Settings", callback_data="m:settings"),
+            InlineKeyboardButton("📊 Status", callback_data="m:status"),
+        ],
+    ]
     if is_admin:
-        # Admin gets full access
-        return InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton("🌬 Wind", callback_data="m:wind"),
-                InlineKeyboardButton("📅 Today", callback_data="m:today"),
-            ],
-            [
-                InlineKeyboardButton("🗺 Map", callback_data="m:map"),
-                InlineKeyboardButton("⛵ Sailing", callback_data="m:sail"),
-            ],
-            [
-                InlineKeyboardButton("📈 Trend", callback_data="m:trend"),
-                InlineKeyboardButton("⚠️ Alerts", callback_data="m:alert"),
-            ],
-            [
-                InlineKeyboardButton("⚙️ Settings", callback_data="m:settings"),
-                InlineKeyboardButton("📊 Status", callback_data="m:status"),
-            ],
-            [
-                InlineKeyboardButton("🔧 Admin", callback_data="m:admin"),
-            ],
-        ])
-    else:
-        # Regular users only get wind features
-        return InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton("🌬 Wind", callback_data="m:wind"),
-                InlineKeyboardButton("📅 Today", callback_data="m:today"),
-            ],
-            [
-                InlineKeyboardButton("🗺 Map", callback_data="m:map"),
-                InlineKeyboardButton("⛵ Sailing", callback_data="m:sail"),
-            ],
-            [
-                InlineKeyboardButton("📈 Trend", callback_data="m:trend"),
-            ],
-        ])
+        rows.append([InlineKeyboardButton("🔧 Admin", callback_data="m:admin")])
+    return InlineKeyboardMarkup(rows)
 
 
 def _point_kb(action: str, lang: str = "en") -> InlineKeyboardMarkup:
@@ -567,6 +562,7 @@ async def _help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "  /today [point] — hourly today\n"
         "  /map — wind heatmap\n"
         "  /sailing — GO/NO-GO recommendation\n"
+        "  /weekend [point] — Sat→Sun weekend wind timeline\n"
         "  /trend [point] — 24h trend chart\n"
         "  /alert — manage wind alerts\n"
         "  /status — data source health\n"
@@ -661,6 +657,13 @@ async def _menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await _sailing_recommendation(query, user, lang, units, user.get("telegram_user_id"))
         return
 
+    if data == "m:weekend":
+        await query.edit_message_text(
+            "🗓 Weekend\nChoose a spot 👇",
+            reply_markup=_point_kb("wk", lang),
+        )
+        return
+
     if data == "m:trend":
         await query.edit_message_text(
             "📈 Trend\nChoose a point 👇",
@@ -748,6 +751,18 @@ async def _menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     if data == "t:back":
         await query.edit_message_text("📅 Today\nChoose a point 👇", reply_markup=_point_kb("t", lang))
+        return
+
+    # --- Weekend: spot selected → Sat 07:00 → Sun 22:00 local timeline ---
+    if data.startswith("wk:") and data != "wk:back":
+        point_id = data[3:]
+        await _send_weekend(query, point_id, lang, units)
+        return
+
+    if data == "wk:back":
+        await query.edit_message_text(
+            "🗓 Weekend\nChoose a spot 👇", reply_markup=_point_kb("wk", lang)
+        )
         return
 
     # --- Map: time selected → generate + send heatmap ---
@@ -846,6 +861,130 @@ async def _sailing_recommendation(query, user, lang, units, user_id=None) -> Non
         chr(10).join(lines),
         reply_markup=_main_menu_kb(user_id),
     )
+
+
+async def _send_weekend(query, point_id: str, lang: str, units: str) -> None:
+    """🗓 Weekend timeline — Saturday 07:00 → Sunday 22:00 LOCAL.
+
+    The question most users actually have: not "is there wind in the next
+    24 h?" but "WHICH day + hour of the coming weekend should I sail?".
+    Served through the same forecast-store chain as /sailing (stored
+    projections for the first 24 h, on-demand model inference beyond —
+    the 7-day NWP window covers even the farthest reachable weekend).
+    Verdicts/probabilities reuse the SHARED decision module via
+    prediction.weekend so every surface answers with the same numbers.
+    """
+    import zoneinfo
+
+    from lakewind.forecast_store import store
+    from lakewind.prediction.weekend import build_weekend_plan, next_weekend_window
+    from lakewind.utils.timeutil import to_aware_utc
+
+    s = load_settings()
+    tz = zoneinfo.ZoneInfo(s.project.timezone)
+    local_now = to_local(utcnow(), s.project.timezone)
+
+    wk_start_local, wk_end_local = next_weekend_window(local_now)
+    hours_requested = int((wk_end_local - wk_start_local).total_seconds() // 3600) + 1
+    start_utc = to_aware_utc(wk_start_local).replace(tzinfo=None)
+
+    rows = await store.get_series(point_id, hours=hours_requested, start=start_utc)
+    if not rows:
+        await query.edit_message_text(
+            "❌ No weekend forecast available yet.\n"
+            "The NWP horizon may not reach it — try again after the next "
+            "collection cycle (every 30 min).",
+            reply_markup=_main_menu_kb(),
+        )
+        return
+
+    plan = build_weekend_plan(rows, tz, hours_requested=hours_requested)
+    text = _format_weekend_timeline(plan, point_id, lang, units, local_now)
+    await query.edit_message_text(
+        text,
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("« Back to spots", callback_data="wk:back"),
+            InlineKeyboardButton("🏠 Main menu", callback_data="m:back"),
+        ]]),
+    )
+
+
+_VERDICT_LABELS = {
+    "en": {"go": "✅ GO", "marginal": "🟡 MARGINAL", "no_go": "❌ NO-GO"},
+    "it": {"go": "✅ GO", "marginal": "🟡 MARGINALE", "no_go": "❌ NO"},
+}
+
+
+def _format_weekend_timeline(
+    plan, point_id: str, lang: str, units: str, local_now: datetime
+) -> str:
+    """Render the two-day weekend plan as a compact aligned table.
+
+    Columns: LOCAL hour · median speed · gust · direction · P(≥8 kn).
+    The ◀ marker sits on the current local hour when the weekend is live.
+    """
+    _, u = _convert_speed(10.0, units)
+    vlabels = _VERDICT_LABELS.get(lang, _VERDICT_LABELS["en"])
+    point = point_id.replace("_", " ").title()
+
+    day_parts = [d.label for d in plan.days]
+    lines = [
+        "━━━━━━━━━━━━━━━━━━━━━━",
+        f"  🗓 WEEKEND — {point}",
+        f"  {' → '.join(day_parts) if day_parts else 'no data'}  (speeds in {u})",
+        "━━━━━━━━━━━━━━━━━━━━━━",
+    ]
+
+    for day in plan.days:
+        lines.append(
+            f"  {day.label.upper()} — {vlabels[day.verdict]}"
+            f" · {day.n_go_hours}h ≥8kn · max {day.max_speed_kn:.1f}{u}"
+        )
+        for h in day.hours:
+            if h.hour is None:
+                continue
+            v, _ = _convert_speed(h.speed_kn, units)
+            gust_txt = f"{_convert_speed(h.gust_kn, units)[0]:>5.1f}" if h.gust_kn is not None else "    —"
+            direction = _fmt_cardinal(h.dir_deg) if h.dir_deg is not None else "--"
+            is_now = (
+                day.date == local_now.date() and h.hour == local_now.hour
+            )
+            marker = " ◀" if is_now else ""
+            lines.append(
+                f"  {h.hour:02d}:00 {v:>5.1f} {gust_txt} {direction:>3} {h.p_go * 100:>3.0f}%{marker}"
+            )
+        if not day.hours:
+            lines.append("  (no data beyond the NWP horizon)")
+
+    lines.append("━━━━━━━━━━━━━━━━━━━━━━")
+    if plan.best_hour is not None:
+        bh = plan.best_hour
+        bv, bu = _convert_speed(bh.speed_kn, units)
+        day_label = next(
+            (d.label for d in plan.days if any(h is bh for h in d.hours)),
+            "",
+        )
+        bdir = _fmt_cardinal(bh.dir_deg) if bh.dir_deg is not None else "--"
+        lines.append(
+            f"  🏆 BEST: {day_label} {bh.hour:02d}:00 — {bv:.1f}{bu} {bdir} · P {bh.p_go * 100:.0f}%"
+        )
+        if plan.verdict == "no_go":
+            lines.append(
+                "  🏠 No sailable window this weekend"
+                if lang == "en"
+                else "  🏠 Nessuna finestra navigabile questo weekend"
+            )
+    max_gust = max((d.max_gust_kn for d in plan.days if d.max_gust_kn is not None), default=None)
+    if max_gust is not None and max_gust >= 20.0:
+        gday = next((d.label for d in plan.days if d.max_gust_kn == max_gust), "")
+        gv, _ = _convert_speed(max_gust, units)
+        lines.append(f"  💨 Gusts up to {gv:.0f}{u} {gday}")
+    if plan.hours_found < plan.hours_requested:
+        lines.append(
+            f"  ℹ️ {plan.hours_found}/{plan.hours_requested} hours covered — far rows follow the 7-day NWP horizon"
+        )
+    lines.append("━━━━━━━━━━━━━━━━━━━━━━")
+    return "\n".join(lines)
 
 
 async def _send_map(query, target_time, lang, user_id=None) -> None:
@@ -1039,6 +1178,32 @@ async def _sailing_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             await self.message.reply_text(text, reply_markup=reply_markup)
     fq = FakeQuery(update.message)
     await _sailing_recommendation(fq, user, _get_user_lang(user), _get_user_units(user), user.get("telegram_user_id"))
+
+
+async def _weekend_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """`/weekend [point]` — the weekend timeline, one tap from the menu."""
+    allowed, user = await _authorize(update)
+    if not allowed:
+        return
+    if not _check_rate_limit(update.effective_user.id):
+        await update.message.reply_text("⏱ Too many commands. Try again later.")
+        return
+    lang = _get_user_lang(user)
+    units = _get_user_units(user)
+    point_id = (context.args[0] if context.args else None) or user.get("favorite_point_id")
+    if not point_id:
+        await update.message.reply_text("🗓 Choose a spot 👇", reply_markup=_point_kb("wk", lang))
+        return
+
+    class FakeQuery:
+        def __init__(self, msg):
+            self.message = msg
+        async def answer(self):
+            pass
+        async def edit_message_text(self, text, reply_markup=None):
+            await self.message.reply_text(text, reply_markup=reply_markup)
+    fq = FakeQuery(update.message)
+    await _send_weekend(fq, point_id, lang, units)
 
 
 async def _trend_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1712,6 +1877,7 @@ def _register_handlers(app) -> None:
     app.add_handler(CommandHandler("today", _today_cmd))
     app.add_handler(CommandHandler("map", _map_cmd))
     app.add_handler(CommandHandler("sailing", _sailing_cmd))
+    app.add_handler(CommandHandler("weekend", _weekend_cmd))
     app.add_handler(CommandHandler("trend", _trend_cmd))
     app.add_handler(CommandHandler("alert", _alert_cmd))
     app.add_handler(CommandHandler("status", _status_cmd))

@@ -30,6 +30,7 @@ from zoneinfo import ZoneInfo
 
 from lakewind.config import load_settings
 from lakewind.db import access
+from lakewind.features.targets import source_tier
 from lakewind.utils.solar import solar_state_at
 from lakewind.utils.wind import WindVector
 
@@ -456,26 +457,14 @@ def build_features_for(
     except Exception as exc:
         logger.debug("V4 climatology features skipped: %s", exc)
 
-    # 3e) V7 PHYSICS FEATURES (Phase 3) — terrain channeling decomposition,
-    # pressure tendency, thermal contrasts, gust factors, cross-model
-    # aggregates, effective insolation, stability interactions.
-    try:
-        from lakewind.features.physics import compute_all_v7_physics
-        alias = {"milano_linate": "milano", "dongo_shore": "dongo"}
-        aux_temps: dict[str, float | None] = {
-            alias.get(k, k): (v.get("temperature_2m") if isinstance(v, dict) else None)
-            for k, v in aux.items()
-        }
-        v7 = compute_all_v7_physics(
-            fv,
-            point_id,
-            aux_temps,
-            axis_deg=getattr(s.model, "valley_axis_deg", 10.0),
-            overrides=getattr(s.model, "valley_axis_overrides", None) or {},
-        )
-        fv.update(v7)
-    except Exception as exc:
-        logger.debug("V7 physics features skipped: %s", exc)
+    # 3e) V7 PHYSICS FEATURES — MOVED AFTER §4 (integration fix).
+    # compute_all_v7_physics consumes lag180/360_press (§4), solar_elevation
+    # and breva_window (§3d/flags) — the former placement BEFORE those
+    # sections meant ptend_3h/6h, foehn_grad_x_tend, therm_lake_po_x_breva,
+    # insol_x_elevation and insol_x_breva were permanently None (all-NaN
+    # columns no trained bundle ever used; new trainings get the signal).
+    # Placement after §4 keeps every live feature's value byte-identical,
+    # so existing bundles see NO skew.
 
     # 3d) V6.2 UPPER-AIR FEATURES (windmojo-inspired)
     # Wind at 850hPa/500hPa, temperature at 850hPa, geopotential at 500hPa
@@ -553,6 +542,29 @@ def build_features_for(
         else:
             fv[f"lag{lag_min}_speed_dt"] = None
 
+    # 3e) V7 PHYSICS FEATURES (Phase 3) — terrain channeling decomposition,
+    # pressure tendency, thermal contrasts, gust factors, cross-model
+    # aggregates, effective insolation, stability interactions.
+    # (Runs AFTER the lag/solar/breva sections it consumes — see §3e note.)
+    try:
+        from lakewind.features.physics import compute_all_v7_physics
+        alias = {"milano_linate": "milano", "dongo_shore": "dongo"}
+        aux_temps: dict[str, float | None] = {
+            alias.get(k, k): (v.get("temperature_2m") if isinstance(v, dict) else None)
+            for k, v in aux.items()
+        }
+        v7 = compute_all_v7_physics(
+            fv,
+            point_id,
+            aux_temps,
+            axis_deg=getattr(s.model, "valley_axis_deg", 10.0),
+            overrides=getattr(s.model, "valley_axis_overrides", None) or {},
+            reference_model=reference_forecast_model,
+        )
+        fv.update(v7)
+    except Exception as exc:
+        logger.debug("V7 physics features skipped: %s", exc)
+
     # 5) TEMPORAL FEATURES (Spec §6 priority 5)
     fv["hour_local"] = local_time.hour
     fv["day_of_year"] = local_time.timetuple().tm_yday
@@ -563,10 +575,20 @@ def build_features_for(
 
     # 6) GROUND STATION FEATURES (Spec §6 priority 6) — obs fetched once at
     # the top of this function, ANCHORED AT THE ISSUE TIME (shared with §3b).
+    # Selection is TIER-FIRST (Deep Audit R2 applied to the FEATURE side):
+    # the ERA5 collector writes reanalysis rows at the EXACT virtual-point
+    # coordinates, so pure distance-nearest always picked ERA5 in training
+    # (dist 0 by construction) while serving got real anemometers — a
+    # systematic train/serve skew of the strongest short-lead feature
+    # family. Stations now beat reanalysis here exactly like in the target
+    # selector (features/targets.py).
     if nearest_obs:
         best = min(
             nearest_obs,
-            key=lambda o: _haversine(vp.lat, vp.lon, o.get("lat") or 0.0, o.get("lon") or 0.0),
+            key=lambda o: (
+                source_tier(o.get("source")),
+                _haversine(vp.lat, vp.lon, o.get("lat") or 0.0, o.get("lon") or 0.0),
+            ),
         )
         dist_km = _haversine(vp.lat, vp.lon, best.get("lat") or 0.0, best.get("lon") or 0.0)
         # age is measured from the ISSUE anchor: "how stale was this
@@ -615,7 +637,7 @@ def build_features_for(
     target_weight: float | None = None
     target_obs_speed: float | None = None
     if target_obs_candidates:
-        from lakewind.features.targets import select_target_obs, source_tier, target_quality_weight
+        from lakewind.features.targets import select_target_obs, target_quality_weight
 
         for o in target_obs_candidates:
             ts = o.get("timestamp")

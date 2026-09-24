@@ -65,24 +65,33 @@ class TTLCache[K, V]:
 
     # -- core API ---------------------------------------------------------
 
+    # Sentinel distinguishing "no entry" from a cached None (a cached None
+    # is a legitimate negative-result and must not re-trigger the factory).
+    _MISSING = object()
+
     def get(self, key: K) -> V | None:
         """Return the live value for `key`, or None if absent/expired."""
+        value, found = self.get_with_flag(key)
+        return value if found else None
+
+    def get_with_flag(self, key: K) -> tuple[V | None, bool]:
+        """Return (value, found) — found=False only when absent/expired."""
         now = time.monotonic()
         with self._lock:
             entry = self._data.get(key)
             if entry is None:
                 self._misses += 1
-                return None
+                return None, False
             expires_at, value = entry
             if now >= expires_at:
                 # Expired: drop it (lazy eviction).
                 del self._data[key]
                 self._misses += 1
-                return None
+                return None, False
             # LRU touch.
             self._data.move_to_end(key)
             self._hits += 1
-            return value
+            return value, True
 
     def set(self, key: K, value: V, ttl: float | None = None) -> None:
         """Insert/overwrite `key` with `value` (default TTL applies if None)."""
@@ -118,9 +127,9 @@ class TTLCache[K, V]:
         may both compute (use SyncSingleFlight around this when the factory
         is expensive; the async path uses SingleFlight natively).
         """
-        cached = self.get(key)
-        if cached is not None:
-            return cached
+        value, found = self.get_with_flag(key)
+        if found:
+            return value
         value = factory()
         self.set(key, value, ttl=ttl)
         return value

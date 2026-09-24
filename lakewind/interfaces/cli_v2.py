@@ -332,10 +332,14 @@ def register_v2_commands(app: typer.Typer) -> None:
 
         s = load_settings()
         now = utcnow()
-        now - timedelta(days=days)
+        window_start = now - timedelta(days=days)
 
-        # Get predictions
-        preds = access.latest_predictions(point_id=point, limit=500)
+        # Get predictions (the --days window IS the prediction window — the
+        # former `now - timedelta(days=days)` result was discarded, so the
+        # option only ever filtered the observations).
+        preds = access.latest_predictions(
+            point_id=point, limit=2000, start_time=window_start
+        )
         # Get observations
         vp = next((p for p in s.virtual_points if p.id == point), None)
         if vp is None:

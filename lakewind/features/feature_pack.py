@@ -39,6 +39,7 @@ from typing import Any
 
 from lakewind.config import load_settings
 from lakewind.db import access
+from lakewind.features.targets import source_tier
 
 logger = logging.getLogger(__name__)
 
@@ -132,8 +133,15 @@ def compute_feature_pack(
                     if ts is None or o.get("wind_speed_kn") is None:
                         continue
                     d = abs((ts - target_t).total_seconds())
-                    if d <= 20 * 60 and (best is None or d < best[0]):
-                        best = (d, o)
+                    # Tier-first within the ±20 min window (R2 policy on the
+                    # feature side): in training, ERA5 rows sit EXACTLY on
+                    # the hour and used to win the pure time race over a
+                    # simultaneous real station; at serve time ERA5 is days
+                    # stale and the station wins — a pure train/serve skew.
+                    # Stations now beat reanalysis at the same instant.
+                    rank = (source_tier(o.get("source")), d)
+                    if d <= 20 * 60 and (best is None or rank < best[0]):
+                        best = (rank, o)
                 if best is not None:
                     obs_by_offset[off] = best[1]
         except Exception as exc:
@@ -175,6 +183,7 @@ def compute_feature_pack(
                 vp.lat, vp.lon, t_start, anchor, max_distance_km=25.0
             )
             obs_by_hour: dict[int, list[float]] = {}
+            obs_tier_by_hour: dict[int, list[int]] = {}
             for o in obs_rows:
                 ts = o.get("timestamp")
                 sp = _sf(o.get("wind_speed_kn"))
@@ -185,6 +194,22 @@ def compute_feature_pack(
                     continue
                 hour_key = int(round(age_h))
                 obs_by_hour.setdefault(hour_key, []).append(sp)
+                obs_tier_by_hour.setdefault(hour_key, []).append(
+                    source_tier(o.get("source"))
+                )
+            # Tier-first per hour bucket (R2 feature-side policy): an ERA5
+            # row and a station row inside the same hour bucket must not be
+            # AVERAGED together — in training the reanalysis row saturated
+            # every bucket while serving saw stations only. Keep only the
+            # best-tier rows of each bucket.
+            for hour_key, tiers in list(obs_tier_by_hour.items()):
+                best_tier = min(tiers)
+                if best_tier > 0 or len(set(tiers)) > 1:
+                    obs_by_hour[hour_key] = [
+                        sp for sp, t in zip(
+                            obs_by_hour[hour_key], tiers, strict=False
+                        ) if t == best_tier
+                    ]
             for win in _BIAS_WINDOWS_H:
                 diffs: list[float] = []
                 for hour_key, speeds in obs_by_hour.items():

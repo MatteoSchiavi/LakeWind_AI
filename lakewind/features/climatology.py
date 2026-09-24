@@ -21,13 +21,12 @@ from __future__ import annotations
 
 import logging
 import math
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from lakewind.db import access
 
 logger = logging.getLogger(__name__)
-
 
 def _circular_mean(angles_deg: list[float]) -> float | None:
     """Compute circular mean of wind directions (0-360)."""
@@ -167,26 +166,44 @@ def _get_circular_dir_normal(
 
 
 def _get_breva_climatology(point_id: str, target_time: datetime) -> float | None:
-    """Historical avg wind speed during 11-16h local for this date (±15 days)."""
+    """Historical avg wind speed during 11-16h LOCAL for this date (±15 days).
+
+    DST-correct: v4_climatology stores naive UTC, so a fixed UTC hour window
+    drifts by an hour across CET/CEST (the old comment hardwired the summer
+    offset). Candidate rows are fetched with a superset UTC window (9-15 h =
+    the union of local 11-16 across UTC+1/UTC+2) and filtered to the true
+    local hour here.
+    """
+    from zoneinfo import ZoneInfo
+
+    from lakewind.config import load_settings
+
     target_doy = target_time.timetuple().tm_yday
     cutoff = target_time - timedelta(days=10 * 365)
 
-    # 11-16 UTC ≈ 13-18 local (Europe/Rome = UTC+2 in summer)
     with access.cursor() as conn:
         cur = conn.execute(
             f"""
-            SELECT AVG(wind_speed_10m)
+            SELECT timestamp, wind_speed_10m
             FROM v4_climatology
             WHERE point_id = ?
               AND wind_speed_10m IS NOT NULL
               AND {_DOY_WRAP_SQL}
-              AND CAST(strftime('%H', timestamp) AS INTEGER) BETWEEN 11 AND 16
+              AND CAST(strftime('%H', timestamp) AS INTEGER) BETWEEN 9 AND 15
               AND timestamp >= ?
             """,
             [point_id, *_doy_wrap_params(target_doy, 15), cutoff],
         )
-        row = cur.fetchone()
-    return float(row[0]) if row and row[0] is not None else None
+        rows = cur.fetchall()
+
+    tz = ZoneInfo(load_settings().project.timezone)
+    vals = [
+        float(v)
+        for ts, v in rows
+        if v is not None
+        and 11 <= ts.replace(tzinfo=UTC).astimezone(tz).hour <= 16
+    ]
+    return sum(vals) / len(vals) if vals else None
 
 
 def _get_foehn_frequency(point_id: str, target_time: datetime) -> float | None:

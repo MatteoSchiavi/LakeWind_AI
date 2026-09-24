@@ -10,6 +10,7 @@ summary.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, timedelta
 
@@ -158,9 +159,14 @@ async def run_scheduler(ctx) -> None:
 
 
 async def _check_alerts(ctx) -> None:
-    """For each active alert, check if any forecast meets the threshold."""
+    """For each active alert, check if any forecast meets the threshold.
+
+    All DuckDB access runs in worker threads (asyncio.to_thread): this
+    scheduler shares the event loop with the Telegram bot AND the internal
+    API — a blocking 200-row query per alert per tick stalled all of them.
+    """
     now_utc = utcnow()
-    alerts = user_db.get_active_alerts()
+    alerts = await asyncio.to_thread(user_db.get_active_alerts)
     if not alerts:
         return
     logger.info("Checking %d active alerts", len(alerts))
@@ -190,12 +196,17 @@ async def _check_alerts(ctx) -> None:
                 if (now_utc - last).total_seconds() < 6 * 3600:
                     continue
 
-            # Get predictions for the lead window
-            preds = access.latest_predictions(point_id=point_id, limit=200)
+            # Get predictions for the lead window (off the event loop)
+            preds = await asyncio.to_thread(
+                access.latest_predictions, point_id=point_id, limit=200
+            )
             if not preds:
                 continue
-            # Filter to next lead_h hours
-            future_preds = []
+            # Keep ONLY the newest generation per valid_time FIRST: 200 rows
+            # span ~8 forecast generations, and duplicate hours used to
+            # satisfy the "sustained duration" window with 2+ copies of the
+            # SAME forecast hour — a 120-min alert firing off one hour.
+            latest_by_vt: dict[datetime, dict] = {}
             for p in preds:
                 vt = p.get("valid_time")
                 if isinstance(vt, str):
@@ -205,6 +216,16 @@ async def _check_alerts(ctx) -> None:
                         continue
                 if vt is None:
                     continue
+                if vt.tzinfo is not None:
+                    vt = vt.replace(tzinfo=None)
+                cur = latest_by_vt.get(vt)
+                gen = p.get("generated_at") or datetime.min
+                cur_gen = (cur.get("generated_at") if cur else None) or datetime.min
+                if cur is None or gen >= cur_gen:
+                    latest_by_vt[vt] = p
+            # Filter to next lead_h hours
+            future_preds = []
+            for vt, p in latest_by_vt.items():
                 if now_utc <= vt <= now_utc + timedelta(hours=lead_h):
                     if p.get("wind_speed_kn") is not None:
                         future_preds.append((vt, p["wind_speed_kn"]))
@@ -256,7 +277,7 @@ async def _check_alerts(ctx) -> None:
                 await bot.send_message(
                     chat_id=user_id, text=msg, parse_mode="Markdown"
                 )
-                mark_alert_triggered(alert["id"])
+                await asyncio.to_thread(mark_alert_triggered, alert["id"])
             except Exception as exc:
                 logger.warning("Failed to send alert to %s: %s", user_id, exc)
 
@@ -268,7 +289,7 @@ async def _check_alerts(ctx) -> None:
 async def _check_subscriptions(ctx) -> None:
     """Send daily summaries to users whose local time matches."""
     now_utc = utcnow()
-    due = user_db.get_due_subscriptions(now_utc)
+    due = await asyncio.to_thread(user_db.get_due_subscriptions, now_utc)
     if not due:
         return
     logger.info("Sending %d due subscriptions", len(due))
@@ -276,10 +297,23 @@ async def _check_subscriptions(ctx) -> None:
     bot: Bot = ctx.bot
     s = load_settings()
 
+    # ONE cached fetch per point per tick (was: one 200-row DuckDB query per
+    # (point, hour) PER SUBSCRIBER — O(users*hours) blocking queries on the
+    # shared event loop). Defined ONCE (not per-sub) so it binds a stable
+    # cache object; matching happens in memory via _match_pred.
+    pred_cache: dict[str, list] = getattr(ctx, "_lw_pred_cache", {})
+
+    def _get_point_preds(pid: str):
+        cached = pred_cache.get(pid)
+        if cached is None:
+            cached = access.latest_predictions(point_id=pid, limit=200)
+            pred_cache[pid] = cached
+        return cached
+
     for sub in due:
         try:
             user_id = sub["telegram_user_id"]
-            user = user_db.get_user(user_id)
+            user = await asyncio.to_thread(user_db.get_user, user_id)
             if not user:
                 continue
             # Phase 4 (W4/F5): the user's language now DRIVES the summary
@@ -298,15 +332,19 @@ async def _check_subscriptions(ctx) -> None:
             op_ids = s.operational_point_ids or []
             lines = [_t(lang, "daily_title").format(date=today_str)]
 
+            # ONE cached fetch per point per tick (was: one 200-row DuckDB
+            # query per (point, hour) PER SUBSCRIBER — O(users*hours) blocking
+            # queries on the shared event loop). match_pred reads memory.
             # Find best window of the day (11:00-16:00 local)
             best_speed = 0.0
             best_time = None
             best_point = None
             for vp_id in op_ids:
+                point_preds = await asyncio.to_thread(_get_point_preds, vp_id)
                 for h in range(11, 17):
                     target = local_now.replace(hour=h, minute=0, second=0, microsecond=0)
                     target_utc = to_aware_utc(target).replace(tzinfo=None)
-                    p = _fetch_pred_at(vp_id, target_utc)
+                    p = _match_pred(point_preds, target_utc)
                     if p and p.get("wind_speed_kn"):
                         if p["wind_speed_kn"] > best_speed:
                             best_speed = p["wind_speed_kn"]
@@ -339,10 +377,11 @@ async def _check_subscriptions(ctx) -> None:
             lines.append("")
             lines.append(_t(lang, "hourly"))
             fav = user.get("favorite_point_id") or op_ids[0]
+            fav_preds = await asyncio.to_thread(_get_point_preds, fav)
             for h in range(8, 22):
                 target = local_now.replace(hour=h, minute=0, second=0, microsecond=0)
                 target_utc = to_aware_utc(target).replace(tzinfo=None)
-                p = _fetch_pred_at(fav, target_utc)
+                p = _match_pred(fav_preds, target_utc)
                 if p and p.get("wind_speed_kn"):
                     v, u = _convert(p["wind_speed_kn"], units)
                     lines.append(f"  {h:02d}:00  {v:.1f} {u} {_cardinal(p['wind_dir_deg'])}")
@@ -358,7 +397,7 @@ async def _check_subscriptions(ctx) -> None:
                 await bot.send_message(
                     chat_id=user_id, text=msg, parse_mode="Markdown"
                 )
-                mark_subscription_sent(sub["id"])
+                await asyncio.to_thread(mark_subscription_sent, sub["id"])
             except Exception as exc:
                 logger.warning("Failed to send subscription to %s: %s", user_id, exc)
 
@@ -368,10 +407,18 @@ async def _check_subscriptions(ctx) -> None:
 
 
 def _fetch_pred_at(point_id: str, target_time: datetime) -> dict | None:
-    # V6.6 FIX: strip tzinfo consistently (DB returns naive UTC)
+    # Blocking convenience wrapper — the scheduler path uses
+    # _get_point_preds + _match_pred (cache + to_thread) instead.
     if target_time.tzinfo is not None:
         target_time = target_time.replace(tzinfo=None)
     preds = access.latest_predictions(point_id=point_id, limit=200)
+    return _match_pred(preds, target_time)
+
+
+def _match_pred(preds: list, target_time: datetime) -> dict | None:
+    """Nearest valid_time within 1h, over in-memory rows."""
+    if target_time.tzinfo is not None:
+        target_time = target_time.replace(tzinfo=None)
     best = None
     best_diff = None
     for p in preds:

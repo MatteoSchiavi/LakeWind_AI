@@ -23,6 +23,7 @@ from typing import Any
 
 from lakewind.config import load_settings
 from lakewind.db import access
+from lakewind.features.targets import STATION_SOURCE_PREFIXES
 from lakewind.utils.timeutil import utcnow
 
 logger = logging.getLogger(__name__)
@@ -52,7 +53,7 @@ def _latest_obs_by_class() -> dict[str, datetime | None]:
             continue
         if src == "era5_reanalysis" or src.startswith("cerra"):
             classes["reanalysis"] = ts if classes["reanalysis"] is None else max(classes["reanalysis"], ts)
-        elif src.startswith(("arpa_", "domaso", "diy", "netatmo", "lake_water_temp")):
+        elif src.startswith(STATION_SOURCE_PREFIXES):
             classes["station"] = ts if classes["station"] is None else max(classes["station"], ts)
     return classes
 

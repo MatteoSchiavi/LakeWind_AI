@@ -134,15 +134,21 @@ def compute_valley_axis_features(
     return out
 
 
-def compute_pressure_tendency(feature_vector: dict[str, Any]) -> dict[str, float | None]:
+def compute_pressure_tendency(
+    feature_vector: dict[str, Any],
+    reference_model: str | None = None,
+) -> dict[str, float | None]:
     """3 h / 6 h pressure tendency from the reference model's lag features.
 
-    build.py provides lag{180,360}_press for the reference model. Tendency is
-    p(t) − p(t−Δ) in hPa; negative = falling (approaching trough / pre-frontal
-    southerly), positive = rising (post-frontal N'ly / Foehn support).
+    build.py provides lag{180,360}_press for the SAMPLE's reference model
+    (settings model.reference_model — ecmwf_ifs025 since Phase 5.5). p_now
+    must come from the SAME model or the tendency mixes two NWP solutions.
+    The default keeps the historical icon_eu signature for direct callers;
+    build.py passes the sample's actual reference model.
     """
+    ref = reference_model or TENDENCY_REF_MODEL
     out: dict[str, float | None] = {}
-    p_now = _sf(feature_vector.get(f"fc_{TENDENCY_REF_MODEL}_pressure"))
+    p_now = _sf(feature_vector.get(f"fc_{ref}_pressure"))
     p_3h = _sf(feature_vector.get("lag180_press"))
     p_6h = _sf(feature_vector.get("lag360_press"))
     out["ptend_3h"] = round(p_now - p_3h, 2) if (p_now is not None and p_3h is not None) else None
@@ -374,15 +380,34 @@ def compute_all_v7_physics(
     aux_temps: dict[str, float | None],
     axis_deg: float = DEFAULT_VALLEY_AXIS_DEG,
     overrides: dict[str, float] | None = None,
+    reference_model: str | None = None,
 ) -> dict[str, float | None]:
-    """One-call composition used by features/build.py."""
+    """One-call composition used by features/build.py.
+
+    `reference_model`: the sample's reference forecast model — feeds the
+    pressure-tendency p_now so it matches the model that supplied the lag
+    features (default keeps the legacy icon_eu signature).
+
+    Integration fix (pre-Phase-6 audit): sub-steps that consume OTHER V7
+    outputs (compute_stability_interactions reads gust_factor_* and
+    insol_effective) now see them — the earlier sub-steps' results are
+    merged into feature_vector before the dependent step runs. The former
+    composition computed them into a local dict the dependent step never
+    saw, so blh_x_gustfactor / cape_x_insolation were permanently None.
+    """
     out: dict[str, float | None] = {}
     out.update(compute_valley_axis_features(feature_vector, point_id, axis_deg, overrides))
-    out.update(compute_pressure_tendency(feature_vector))
+    out.update(compute_pressure_tendency(feature_vector, reference_model=reference_model))
     out.update(compute_gust_factor_features(feature_vector))
     out.update(compute_cross_model_aggregates(feature_vector))
     out.update(compute_thermal_contrast_features(feature_vector, aux_temps))
     out.update(compute_effective_insolation(feature_vector))
+    # Visibility for the dependent step (see docstring): gust factors and
+    # effective insolation were computed two steps above.
+    feature_vector.update(
+        {k: v for k, v in out.items()
+         if k == "insol_effective" or k.startswith("gust_factor_")}
+    )
     out.update(compute_stability_interactions(feature_vector))
     return out
 

@@ -61,7 +61,8 @@ export async function GET(request: NextRequest) {
       wind_speed_q10_kn: (r.wind_speed_q10_kn as number | null) ?? null,
       wind_speed_q90_kn: (r.wind_speed_q90_kn as number | null) ?? null,
       regime: r.regime ? String(r.regime) : null,
-      time: new Date(String(r.valid_time ?? '')).getTime(),
+      // valid_time is naive UTC — 'Z' suffix makes Date parse it as UTC
+      time: new Date(`${String(r.valid_time ?? '')}Z`).getTime(),
     }));
 
     return NextResponse.json({ status: 'ok', point_id: pointId, hours, data });
