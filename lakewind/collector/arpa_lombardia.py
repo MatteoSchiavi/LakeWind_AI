@@ -60,6 +60,7 @@ class ArpaLombardiaCollector(BaseCollector):
     """Collect real-time wind data from ARPA Lombardia stations near Lake Como."""
 
     source_name = "arpa_lombardia"
+    is_station_cadence = True
 
     def __init__(self) -> None:
         s = load_settings()

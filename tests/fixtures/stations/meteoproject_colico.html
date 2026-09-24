@@ -1,0 +1,998 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>Meteo Project &bull; Osservatorio Meteorologico di Colico (LC) NausikaYacht</title>
+<meta name="Description" content="Dati, grafici, report foto stazione meteorologica di Colico (LC) NausikaYacht" />
+<meta name="Keywords" content="Meteo Colico (LC) NausikaYacht, Previsioni Colico (LC) NausikaYacht" />
+<meta name="robots" content="index,follow" />
+<meta name="revisit-after" content="7 days" />
+<meta name="distribution" content="Global" />
+<meta name="author" content="Stefano Guerra" />
+<meta name="viewport" content="width=device-width; initial-scale=1; maximum-scale=1">
+<link rel="shortcut icon" href="/favicon.ico" type="image/x-icon">
+<link rel="icon" href="/favicon.ico" type="image/x-icon">
+<meta http-equiv="Content-Type" content="text/html; charset=iso-8859-1"/>
+<script src="FancyZoom1.1/js-global/FancyZoom.js" type="text/javascript"></script>
+<script src="FancyZoom1.1/js-global/FancyZoomHTML.js" type="text/javascript"></script>
+<link rel="stylesheet" href="files/js/facebox.css" type="text/css" media="screen" />
+<script type="text/javascript" src="files/js/jquery.js"></script>
+<script type="text/javascript" src="files/js/facebox.js"></script>
+<script type="text/javascript">
+<!--
+jQuery(document).ready(function($) {
+      $('a[rel*=facebox]').facebox({
+        loading_image : 'files/js/loading.gif',
+        close_image   : 'files/js/closelabel.gif'
+      }) 
+    })
+
+function MM_openBrWindow(theURL,winName,features) { //v2.0
+  window.open(theURL,winName,features);
+}
+//-->
+</script>
+<link rel="stylesheet" href="style.css">
+<!--[if IE]> <script src="http://html5shiv.googlecode.com/svn/trunk/html5.js"></script><![endif]-->
+<link href='https://fonts.googleapis.com/css?family=Titillium+Web' rel='stylesheet' type='text/css'>
+<script src="//code.jquery.com/jquery-2.2.2.min.js"></script>
+</head>
+
+<body onload="setupZoom()">
+<table border="0" cellpadding="0" cellspacing="0" class="tabella-princ" align="center">
+  <tbody>
+    <tr>
+      <td valign="middle" class="cella-alta"><span class="testo-primariga">196 m. s.l.m., Colico, Lombardia, Italy - 46.138N; 9.371E</span></td>
+    </tr>
+    <tr>
+      <td class="cella2"><div class="temperatura"><strong> + 18</strong> &deg;C</div><img src="files/icon.png" width="68" height="68" alt="Meteo" align="absmiddle" class="respodesk" style="float:left; margin-top: 20px;
+margin-right: 28px;"/><h1 class="titolo-pagina">Osservatorio Meteorologico di<br /><div class="logoa"><img src="files/logo.png" alt="MeteoProject"/></div>
+      Colico (LC) NausikaYacht</h1><nav>
+
+			<a href="#" id="menu-icon"></a>
+			<ul style="z-index: 3">
+				<li><a href="index.php">HOME PAGE</a></li>
+    <li><a href="dati.php" >DATI COMPLETI</a></li>
+    <li><a href="grafici.php" >GRAFICI</a></li>
+    <li><a href="archivio.php" >ARCHIVIO DATI</a></li>
+        <li><a href="report.php" >REPORT MENSILI</a></li>
+    				<li><a href="webcam.php" >WEBCAM</a></li>				<li><a href="webcam-streaming.php" >STREAMING</a></li>				<li><a href="previsioni.php" >PREVISIONI</a></li>
+				<li><a href="https://www.meteoproject.it/" title="Stazioni meteo e Webcam">METEO-PROJECT</a></li>
+			</ul>
+		</nav></td>
+    </tr>    <tr>
+      <td><table width="100%" border="0" cellpadding="0" cellspacing="0">
+        <tbody>
+          <tr>
+            <td class="larghezzamenulato" valign="top" bgcolor="#EFEFEF"><table width="250" border="0" align="center" cellpadding="0" cellspacing="15" class="respodesk">
+              <tbody>
+               <tr><td>
+						<div class="rightnav" id="myTopnav">
+  <a href="index.php"><img src="files/icona1.png" alt="home page" width="30" align="absmiddle"/> &nbsp;Home Page</a>
+</div></td></tr>
+                <tr>
+                  <td><table width="100%" border="0" cellspacing="0" cellpadding="0">
+                    <tbody>
+                      <tr>
+                        <td height="50"><div class="divh2"><span class="sottotitolo">Dati Meteorologici</span></div></td>
+                      </tr>
+						<tr><td>
+						<div class="rightnav" id="myTopnav">
+  <a href="dati.php"><img src="files/icona2.png" alt="dati" width="30" align="absmiddle"/> &nbsp;Dati Completi</a>
+  <a href="grafici.php"><img src="files/icona3.png" alt="grafici" width="30" align="absmiddle"/> &nbsp;Grafici</a>
+  <a href="archivio.php"><img src="files/icona4.png" alt="archivio" width="30" align="absmiddle"/> &nbsp;Archivio Storico</a>
+    <a href="report.php"><img src="files/icona5.png" alt="report" width="30" align="absmiddle"/> &nbsp;Report</a>
+  </div></td></tr>
+                    </tbody>
+                  </table></td>
+                </tr>
+                <tr>
+                  <td><table width="100%" border="0" cellspacing="0" cellpadding="0">
+                    <tbody>
+                      <tr>
+                        <td height="50"><div class="divh2"><span class="sottotitolo">Webcam & Altro</span></div></td>
+                      </tr>
+						<tr><td>
+						<div class="rightnav" id="myTopnav">
+  <a href="webcam.php"><img src="files/icona6.png" alt="webcam" width="30" align="absmiddle"/> &nbsp;Webcam</a>  <a href="webcam-streaming.php"><img src="files/icona7.png" alt="webcam streaming" width="30" align="absmiddle"/> &nbsp;Streaming</a>  <a href="https://www.meteoproject.it"><img src="files/icona8.png" alt="meteo project" width="30" align="absmiddle"/> &nbsp;Meteo-Project</a>
+</div></td></tr>
+                      
+                    </tbody>
+                  </table></td>
+                </tr>
+                <tr>
+                  <td><table width="100%" border="0" cellspacing="0" cellpadding="0">
+                    <tbody>
+                      <tr>
+                        <td><div class="divh2"><span class="sottotitolo">Immagine Webcam</span></div></td>
+                      </tr>
+                      <tr>
+                        <td style="padding-top: 10px"><a href="https://stazioni.meteoproject.it/webcam/colico/colico.jpg"><img src="https://stazioni.meteoproject.it/webcam/colico/colico.jpg" alt="*" width="250" border="0" /></a></td>
+                      </tr>
+                    </tbody>
+                  </table></td>
+                </tr>
+                <tr>
+                  <td><table width="100%" border="0" cellspacing="0" cellpadding="0">
+                    <tbody>
+                      <tr>
+                        <td><div class="divh2"><span class="sottotitolo">MeteoSat - Sat24.com</span></div></td>
+                      </tr>
+                      <tr>
+                        <td style="padding-top: 10px"><img src="https://neige.meteociel.fr/satellite/anim_ir.gif" width="250" alt="Animazione Sat"/></td>
+                      </tr>
+                    </tbody>
+                  </table></td>
+                </tr>
+              </tbody>
+            </table></td>
+           <td valign="top" bgcolor="#FFF"><div class="titolo-sezione">Dati Meteo Dettagliati</div><table width="100%" border="0" cellspacing="0" cellpadding="0" style="margin-top:40px;">
+      <tr>
+       
+		  <td align="center" valign="top"> <div class="respodesk"> 
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<title>Documento senza titolo</title>
+<style type="text/css">
+<!--
+.tag2-1pic {
+	font-size: 12px;
+	color: #555;
+}
+	.tag2-1 {
+	font-size: 19px;
+	color: #555;
+}
+		.testo3 {
+	font-size: 15px;
+	color: #555;
+}
+.ora {
+	font-family: Tahoma, "Times New Roman", "Trebuchet MS";
+	font-size: 10px;
+	color: #000000;
+}
+.sfondotag1 {
+ background-color: rgba(0,0,0,0.1);
+}
+.sfondotag2 {
+ background-color: rgba(0,0,0,0.02);
+}
+.sfondotagmax {
+ background-color: rgba(255,0,0,0.06);
+}
+.sfondotagmin {
+ background-color: rgba(0,0,255,0.06);
+}
+.tag2-1pic1 {	font-family: Tahoma, "Times New Roman", "Trebuchet MS";
+	font-size: 10px;
+	color: #DDDDDD;
+	text-shadow:1px 1px 1px #222222;
+}
+
+-->
+</style>
+</head>
+<body leftmargin="0" topmargin="0">
+<div align="center"><span class="valori3">Dati aggiornati il </span><span class="valori3"><strong class="valor2">
+  24/09/26</strong><span class="valori3"> alle ore</span> <strong class="valor2">11.45</strong></span><br />
+  <br />
+</div>
+<table width="830" border="0" align="center" cellpadding="0" cellspacing="0">
+  <tr>
+     <td align="center"  class="titolocella"><span class="titolotabella">Situazione attuale</span></td>
+    <td height="25" align="center"class="titolocella"><span class="titolotabella">Estremi giornalieri</span></td>
+  </tr>
+  <tr>
+    <td colspan="2" align="center" class="tabellaext2"><table border="0" align="center" cellpadding="2" cellspacing="0" class="tag2-1">
+      <tr>
+        <td colspan="7" height="3"></td>
+      </tr>
+      <tr class="sfondotag1">
+        <td height="50">&nbsp;</td>
+        <td colspan="2"><div align="center">
+          <div align="left">
+            <table border="0" cellspacing="0" cellpadding="0">
+              <tr>
+                <td width="25"><div align="center"><img src="../img/min.png" /></div></td>
+                <td class="valori"><strong>DATI GENERALI </strong></td>
+              </tr>
+            </table>
+          </div>
+        </div></td>
+        <td width="130" class="sfondotagmin"><div align="center" class="blu"><strong>MIN</strong></div></td>
+        <td width="80"><div align="center">ora</div></td>
+        <td width="130" class="sfondotagmax"><div align="center" class="max"><strong>MAX</strong></div></td>
+        <td width="80"><div align="center">ora</div></td>
+      </tr>
+      <tr>
+        <td width="15" height="35">&nbsp;</td>
+        <td width="170" class="testo3">Temperatura</td>
+        <td width="140"><div align="center"><strong>17.6&deg;C</strong></div></td>
+        <td width="130" class="sfondotagmin"><div align="center"><strong>13.4&deg;C</strong></div></td>
+        <td width="80"><div align="center" class="tag2-1pic">07.26</div></td>
+        <td width="130" class="sfondotagmax"><div align="center"><strong>17.7&deg;C</strong></div></td>
+        <td width="80"><div align="center" class="tag2-1pic">10.38</div></td>
+      </tr>
+      <tr class="sfondotag2">
+        <td width="15" height="35">&nbsp;</td>
+        <td width="170" class="testo3">Umidit&agrave;</td>
+        <td width="140"><div align="center"><strong>74%</strong></div></td>
+        <td width="130" class="sfondotagmin"><div align="center"><strong>72%</strong></div></td>
+        <td width="80"><div align="center" class="tag2-1pic">10.31</div></td>
+        <td width="130" class="sfondotagmax"><div align="center"><strong>87%</strong></div></td>
+        <td width="80"><div align="center" class="tag2-1pic">06.40</div></td>
+      </tr>
+      <tr>
+        <td width="15" height="35">&nbsp;</td>
+        <td width="170" class="testo3">Dew Point</td>
+        <td width="140"><div align="center"><strong>12.8&deg;C</strong></div></td>
+        <td width="130" class="sfondotagmin"><div align="center"><strong>11.1&deg;C</strong></div></td>
+        <td width="80"><div align="center" class="tag2-1pic">04.46</div></td>
+        <td width="130" class="sfondotagmax"><div align="center"><strong>12.8&deg;C</strong></div></td>
+        <td width="80"><div align="center" class="tag2-1pic">00.00</div></td>
+      </tr>
+      <tr class="sfondotag2">
+        <td height="35">&nbsp;</td>
+        <td width="170" class="testo3">Heat Index</td>
+        <td width="140"><div align="center"><strong>17.8&deg;C</strong></div></td>
+        <td width="130" class="sfondotagmin"><div align="center">-</div></td>
+        <td width="80"><div align="center">-</div></td>
+        <td width="130" class="sfondotagmax"><div align="center"><strong>17.8&deg;C</strong></div></td>
+        <td width="80"><div align="center" class="tag2-1pic">10.30</div></td>
+      </tr>
+      <tr>
+        <td height="35">&nbsp;</td>
+        <td width="170" class="testo3">Pressione</td>
+        <td width="140"><div align="center"><strong>996.8 hPa</strong></div></td>
+        <td width="130" class="sfondotagmin"><div align="center"><strong>996.6 hPa</strong></div></td>
+        <td width="80"><div align="center" class="tag2-1pic">11.42</div></td>
+        <td width="130" class="sfondotagmax"><div align="center"><strong>999.7 hPa</strong></div></td>
+        <td width="80"><div align="center" class="tag2-1pic">00.58</div></td>
+      </tr>
+      <tr class="sfondotag2">
+        <td height="35">&nbsp;</td>
+        <td width="170" class="testo3">Wind Chill</td>
+        <td width="140"><div align="center"><strong>17.8&deg;C</strong></div></td>
+        <td width="130" class="sfondotagmin"><div align="center"><strong>13.3&deg;C</strong></div></td>
+        <td width="80"><div align="center" class="tag2-1pic">05.46</div></td>
+        <td width="130" class="sfondotagmax"><div align="center">-</div></td>
+        <td width="80"><div align="center">-</div></td>
+      </tr>
+      		       <tr>
+        <td colspan="7" height="3"></td>
+      </tr>
+      <tr>
+        <td height="35">&nbsp;</td>
+        <td class="testo3">Temp. Interna</td>
+        <td><div align="center"><strong>25.2°C</strong></div></td>
+        <td class="sfondotagmin"><div align="center"><strong>24.3°C</strong></div></td>
+        <td><div align="center" class="tag2-1pic">-</div></td>
+        <td class="sfondotagmax"><div align="center"><strong>27.8°C</strong></div></td>
+        <td><div align="center" class="tag2-1pic">-</div></td>
+      </tr>
+      <tr class="sfondotag2">
+        <td height="35">&nbsp;</td>
+        <td class="testo3">Umid. Interna</td>
+        <td><div align="center"><strong>47%</strong></div></td>
+        <td class="sfondotagmin"><div align="center"><strong>42%</strong></div></td>
+        <td><div align="center" class="tag2-1pic">-</div></td>
+        <td class="sfondotagmax"><div align="center"><strong>48%</strong></div></td>
+        <td><div align="center">-</div></td>
+      </tr>
+      <tr>
+        <td colspan="7" height="3"></td>
+      </tr>      <tr class="sfondotag1">
+        <td height="60">&nbsp;</td>
+        <td width="170"><div align="center">
+          <div align="left">
+            <table border="0" cellspacing="0" cellpadding="0">
+              <tr>
+                <td width="25"><div align="left"><img src="../img/vento.png" /></div></td>
+                <td class="valori"><strong>VENTO</strong></td>
+              </tr>
+            </table>
+          </div>
+        </div></td>
+        <td width="140">&nbsp;</td>
+        <td width="130" class="sfondotagmin"><div align="center" class="blu"><strong>MEDIA 10 MIN</strong></div></td>
+        <td width="80">&nbsp;</td>
+        <td width="130" class="sfondotagmax"><div align="center" class="max"><strong>RAFFICA</strong></div></td>
+        <td width="80"><div align="center">ora</div></td>
+      </tr>
+      <tr>
+        <td height="40">&nbsp;</td>
+        <td width="170" class="testo3">Velocit&agrave;</td>
+        <td width="140"><div align="center"><strong>3.2 Km/h</strong></div></td>
+        <td width="130" class="sfondotagmin"><div align="center"><strong>4.8 Km/h</strong></div></td>
+        <td width="80"><div align="center">-</div></td>
+        <td width="130" class="sfondotagmax"><div align="center"><strong>9.7 Km/h</strong></div></td>
+        <td width="80"><div align="center" class="tag2-1pic">11.02</div></td>
+      </tr>
+      <tr class="sfondotag2">
+        <td height="40">&nbsp;</td>
+        <td width="170" class="testo3">Direzione</td>
+        <td width="140"><div align="center">da <strong>W</strong></div></td>
+        <td width="130" class="sfondotagmin"><div align="center">-</div></td>
+        <td width="80"><div align="center">-</div></td>
+        <td width="130" class="sfondotagmax"><div align="center">-</div></td>
+        <td width="80"><div align="center">-</div></td>
+      </tr> <tr>
+        <td colspan="7" height="3"></td>
+      </tr>
+      <tr class="sfondotag1">
+        <td height="60">&nbsp;</td>
+        <td colspan="2"><div align="center">
+          <div align="left">
+            <table border="0" cellspacing="0" cellpadding="0">
+              <tr>
+                <td width="25"><div align="left"><img src="../img/rain.png" /></div></td>
+                <td class="valori"><strong>PRECIPITAZIONI</strong></td>
+              </tr>
+            </table>
+          </div>
+        </div></td>
+        <td width="130" class="sfondotagmin"><div align="center" class="blu"><strong>ACCUMULO</strong></div></td>
+        <td width="80">&nbsp;</td>
+        <td width="130" class="sfondotagmax"><div align="center" class="max"></div></td>
+        <td width="80"><div align="center"></div></td>
+      </tr>
+      <tr>
+        <td height="40">&nbsp;</td>
+        <td width="170" class="testo3">Intensit&agrave; di Pioggia</td>
+        <td width="140"><div align="center"><strong>0.0 mm/h</strong></div></td>
+        <td width="130" class="sfondotagmin"><div align="center"><strong>0.0 mm</strong></div></td>
+        <td width="80"><div align="center" class="tag2-1pic">giornaliero</div></td>
+        <td width="130" class="sfondotagmax"><div align="center"></div></td>
+        <td width="80"><div align="center" class="tag2-1pic"></div></td>
+      </tr>
+      <tr class="sfondotag2">
+        <td height="40">&nbsp;</td>
+        <td width="170" class="testo3">Intensit&agrave; Massima</td>
+        <td width="140"><div align="center"><strong>0.0 mm/h</strong></div></td>
+        <td width="130" class="sfondotagmin"><div align="center"><strong>3.3 mm</strong></div></td>
+        <td width="80"><div align="center" class="tag2-1pic">mensile </div></td>
+        <td width="130" class="sfondotagmax"><div align="center"></div></td>
+        <td width="80"><div align="center" class="tag2-1pic"></div></td>
+      </tr>
+      <tr>
+        <td height="40">&nbsp;</td>
+        <td width="170" class="testo3">Storm Rain</td>
+        <td width="140"><div align="center"><strong>0.0 mm</strong></div></td>
+        <td width="130" class="sfondotagmin"><div align="center"><strong>162.1 mm</strong></div></td>
+        <td width="80"><div align="center" class="tag2-1pic">annuale</div></td>
+        <td width="130" class="sfondotagmax"><div align="center"></div></td>
+        <td width="80"><div align="center" class="tag2-1pic"></div></td>
+      </tr>
+    </table></td>
+  </tr>
+</table>
+<br />
+<br />
+<table border="0" align="center" cellpadding="0" cellspacing="0">
+  <tr>
+    <td height="25" align="center"  class="titolocella"><span class="titolotabella">Estremi mensili</span></td>
+  </tr>
+  <tr>
+    <td align="center" class="tabellaext2"><table border="0" align="center" cellpadding="3" cellspacing="0" class="tag2-1">
+       <tr>
+        <td colspan="7" height="3"></td>
+        </tr>
+      <tr class="sfondotag1" >
+        <td height="40">&nbsp;</td>
+        <td width="120">&nbsp;</td>
+        <td width="10">&nbsp;</td>
+        <td width="120"><div align="center" class="blu"><img src="../img/min.gif" alt="*" width="20" height="12" align="absmiddle" /><strong>MIN</strong></div></td>
+        <td width="20">&nbsp;</td>
+        <td width="120"><div align="center" class="max"><img src="../img/max.gif" alt="*" width="20" height="12" align="absmiddle" /><strong>MAX</strong></div></td>
+        <td width="20">&nbsp;</td>
+      </tr>
+      <tr>
+        <td width="15" height="30">&nbsp;</td>
+        <td width="120" class="testo3">Temperatura</td>
+        <td width="10">&nbsp;</td>
+        <td width="120"><div align="center"><strong>13.4</strong>&deg;C</div></td>
+        <td width="20">&nbsp;</td>
+        <td width="120"><div align="center"><strong>32.1</strong>&deg;C</div></td>
+        <td width="20">&nbsp;</td>
+      </tr>
+      <tr  class="sfondotag2">
+        <td width="15" height="30">&nbsp;</td>
+        <td width="120" class="testo3">Umidit&agrave;</td>
+        <td width="10">&nbsp;</td>
+        <td width="120"><div align="center"><strong>19</strong>%</div></td>
+        <td width="20">&nbsp;</td>
+        <td width="120"><div align="center"><strong>94</strong>%</div></td>
+        <td width="20">&nbsp;</td>
+      </tr>
+      <tr>
+        <td width="15" height="30">&nbsp;</td>
+        <td width="120" class="testo3">Dew Point</td>
+        <td width="10">&nbsp;</td>
+        <td width="120"><div align="center"><strong>1.7</strong>&deg;C</div></td>
+        <td width="20">&nbsp;</td>
+        <td width="120"><div align="center"><strong>22.8</strong>&deg;C</div></td>
+        <td width="20">&nbsp;</td>
+      </tr>
+      <tr  class="sfondotag2">
+        <td height="30">&nbsp;</td>
+        <td width="120" class="testo3">Heat Index</td>
+        <td width="10">&nbsp;</td>
+        <td width="120"><div align="center">-</div></td>
+        <td width="20">&nbsp;</td>
+        <td width="120"><div align="center"><strong>33.9</strong>&deg;C</div></td>
+        <td width="20">&nbsp;</td>
+      </tr>
+      <tr>
+        <td width="15" height="30">&nbsp;</td>
+        <td width="120" class="testo3">Pressione</td>
+        <td width="10">&nbsp;</td>
+        <td width="120"><div align="center"><strong>985.1</strong> hPa</div></td>
+        <td width="20">&nbsp;</td>
+        <td width="120"><div align="center"><strong>1001.4</strong> hPa</div></td>
+        <td width="20">&nbsp;</td>
+      </tr>
+      <tr  class="sfondotag2">
+        <td width="15" height="30">&nbsp;</td>
+        <td width="120" class="testo3">Wind Chill</td>
+        <td width="10">&nbsp;</td>
+        <td width="120"><div align="center"><strong>13.3</strong>&deg;C</div></td>
+        <td width="20">&nbsp;</td>
+        <td width="120"><div align="center">-</div></td>
+        <td width="20">&nbsp;</td>
+      </tr>
+      <tr>
+        <td height="30">&nbsp;</td>
+        <td width="120" class="testo3">Raffica di Vento</td>
+        <td>&nbsp;</td>
+        <td width="120"><div align="center">-</div></td>
+        <td>&nbsp;</td>
+        <td width="120"><div align="center"><strong>49.9</strong> Km/h</div></td>
+        <td>&nbsp;</td>
+      </tr>
+    </table></td>
+  </tr>
+</table>
+<br />
+<br />
+<table border="0" align="center" cellpadding="0" cellspacing="0">
+  <tr>
+    <td height="25" align="center"  class="titolocella"><span class="titolotabella">Estremi annuali</span></td>
+  </tr>
+  <tr>
+    <td align="center" class="tabellaext2"><table border="0" align="center" cellpadding="3" cellspacing="0" class="tag2-1">
+      <tr>
+        <td colspan="7" height="3"></td>
+      </tr>
+      <tr class="sfondotag1" >
+        <td height="40">&nbsp;</td>
+        <td width="120">&nbsp;</td>
+        <td width="10">&nbsp;</td>
+        <td width="120"><div align="center" class="blu"><img src="../img/min.gif" alt="*" width="20" height="12" align="absmiddle" /><strong>MIN</strong></div></td>
+        <td width="20">&nbsp;</td>
+        <td width="120"><div align="center" class="max"><img src="../img/max.gif" alt="*" width="20" height="12" align="absmiddle" /><strong>MAX</strong></div></td>
+        <td width="20">&nbsp;</td>
+      </tr>
+      <tr>
+        <td width="15" height="30">&nbsp;</td>
+        <td width="120" class="testo3">Temperatura</td>
+        <td width="10">&nbsp;</td>
+        <td width="120"><div align="center"><strong>-3.9</strong>&deg;C</div></td>
+        <td width="20">&nbsp;</td>
+        <td width="120"><div align="center"><strong>36.7</strong>&deg;C</div></td>
+        <td width="20">&nbsp;</td>
+      </tr>
+      <tr  class="sfondotag2">
+        <td width="15" height="30">&nbsp;</td>
+        <td width="120" class="testo3">Umidit&agrave;</td>
+        <td width="10">&nbsp;</td>
+        <td width="120"><div align="center"><strong>13</strong>%</div></td>
+        <td width="20">&nbsp;</td>
+        <td width="120"><div align="center"><strong>97</strong>%</div></td>
+        <td width="20">&nbsp;</td>
+      </tr>
+      <tr>
+        <td width="15" height="30">&nbsp;</td>
+        <td width="120" class="testo3">Dew Point</td>
+        <td width="10">&nbsp;</td>
+        <td width="120"><div align="center"><strong>-13.3</strong>&deg;C</div></td>
+        <td width="20">&nbsp;</td>
+        <td width="120"><div align="center"><strong>25.0</strong>&deg;C</div></td>
+        <td width="20">&nbsp;</td>
+      </tr>
+      <tr  class="sfondotag2">
+        <td height="30">&nbsp;</td>
+        <td width="120" class="testo3">Heat Index</td>
+        <td width="10">&nbsp;</td>
+        <td width="120"><div align="center">-</div></td>
+        <td width="20">&nbsp;</td>
+        <td width="120"><div align="center"><strong>41.7</strong>&deg;C</div></td>
+        <td width="20">&nbsp;</td>
+      </tr>
+      <tr>
+        <td width="15" height="30">&nbsp;</td>
+        <td width="120" class="testo3">Pressione</td>
+        <td width="10">&nbsp;</td>
+        <td width="120"><div align="center"><strong>962.7 </strong>hPa</div></td>
+        <td width="20">&nbsp;</td>
+        <td width="120"><div align="center"><strong>1005.8 </strong>hPa</div></td>
+        <td width="20">&nbsp;</td>
+      </tr>
+      <tr  class="sfondotag2">
+        <td width="15" height="30">&nbsp;</td>
+        <td width="120" class="testo3">Wind Chill</td>
+        <td width="10">&nbsp;</td>
+        <td width="120"><div align="center"><strong>-6.7</strong>&deg;C</div></td>
+        <td width="20">&nbsp;</td>
+        <td width="120"><div align="center">-</div></td>
+        <td width="20">&nbsp;</td>
+      </tr>
+      <tr>
+        <td height="30">&nbsp;</td>
+        <td width="120" class="testo3">Raffica di Vento</td>
+        <td>&nbsp;</td>
+        <td width="120"><div align="center">-</div></td>
+        <td>&nbsp;</td>
+        <td width="120"><div align="center"><strong>157.7</strong> Km/h</div></td>
+        <td>&nbsp;</td>
+      </tr>
+    </table></td>
+  </tr>
+</table>
+</body>
+</html>
+</div><div class="respocell">
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<title>Documento senza titolo</title>
+<style type="text/css">
+<!--
+	@media only screen and (max-width : 640px) {
+.tag2-1pic {
+	font-size: 10px;
+	color: #555;
+}
+	.tag2-1 {
+	font-size: 12px;
+	color: #555;
+}
+		.testo3 {
+	font-size: 11px;
+	color: #555;
+}
+	.valori {
+	font-size: 13px;
+	color: #555;
+}
+		.blu {
+	font-size: 13px;
+	color: #2200E3;
+}
+		.max {
+	font-size: 13px;
+	color: #AE0002;
+}
+.ora {
+	font-family: Tahoma, "Times New Roman", "Trebuchet MS";
+	font-size: 10px;
+	color: #000000;
+}
+.sfondotag1 {
+ background-color: rgba(0,0,0,0.1);
+}
+.sfondotag2 {
+ background-color: rgba(0,0,0,0.02);
+}
+.sfondotagmax {
+ background-color: rgba(255,0,0,0.06);
+}
+.sfondotagmin {
+ background-color: rgba(0,0,255,0.06);
+}
+	}
+.tag2-1pic {	font-size: 12px;
+	color: #555;
+}
+-->
+</style>
+</head>
+<body leftmargin="0" topmargin="0">
+<div align="center"><span class="valori3">Dati aggiornati il </span><span class="valori3"><strong class="valor2">
+  24/09/26</strong><span class="valori3"> alle ore</span> <strong class="valor2">11.45</strong></span><br />
+  <br />
+</div>
+<table border="0" align="center" cellpadding="0" cellspacing="0">
+  <tr>
+     <td align="center"  class="titolocella"><span class="titolotabella">Attuale</span></td>
+    <td height="25" align="center"class="titolocella"><span class="titolotabella">Estremi giornalieri</span></td>
+  </tr>
+  <tr>
+    <td colspan="2" align="center" class="tabellaext2"><table border="0" align="center" cellpadding="2" cellspacing="0" class="tag2-1">
+      <tr>
+        <td colspan="7" height="3"></td>
+      </tr>
+      <tr class="sfondotag1">
+        <td height="50">&nbsp;</td>
+        <td colspan="2"><div align="center">
+          <div align="left">
+            <table border="0" cellspacing="0" cellpadding="0">
+              <tr>
+                <td width="25"><div align="center"><img src="../img/min.png" /></div></td>
+                <td class="valori"><strong>DATI GENERALI </strong></td>
+              </tr>
+            </table>
+          </div>
+        </div></td>
+        <td width="70" class="sfondotagmin"><div align="center" class="blu"><strong>MIN</strong></div></td>
+        <td width="47"><div align="center">ora</div></td>
+        <td width="70" class="sfondotagmax"><div align="center" class="max"><strong>MAX</strong></div></td>
+        <td width="47"><div align="center">ora</div></td>
+      </tr>
+      <tr>
+        <td width="15" height="35">&nbsp;</td>
+        <td width="80" class="testo3">Temperatura</td>
+        <td width="70"><div align="center"><strong>17.6&deg;C</strong></div></td>
+        <td width="70" class="sfondotagmin"><div align="center"><strong>13.4&deg;C</strong></div></td>
+        <td width="47"><div align="center" class="tag2-1pic">07.26</div></td>
+        <td width="70" class="sfondotagmax"><div align="center"><strong>17.7&deg;C</strong></div></td>
+        <td width="47"><div align="center" class="tag2-1pic">10.38</div></td>
+      </tr>
+      <tr class="sfondotag2">
+        <td width="15" height="35">&nbsp;</td>
+        <td width="80" class="testo3">Umidit&agrave;</td>
+        <td width="70"><div align="center"><strong>74%</strong></div></td>
+        <td width="70" class="sfondotagmin"><div align="center"><strong>72%</strong></div></td>
+        <td width="47"><div align="center" class="tag2-1pic">10.31</div></td>
+        <td width="70" class="sfondotagmax"><div align="center"><strong>87%</strong></div></td>
+        <td width="47"><div align="center" class="tag2-1pic">06.40</div></td>
+      </tr>
+      <tr>
+        <td width="15" height="35">&nbsp;</td>
+        <td width="80" class="testo3">Dew Point</td>
+        <td width="70"><div align="center"><strong>12.8&deg;C</strong></div></td>
+        <td width="70" class="sfondotagmin"><div align="center"><strong>11.1&deg;C</strong></div></td>
+        <td width="47"><div align="center" class="tag2-1pic">04.46</div></td>
+        <td width="70" class="sfondotagmax"><div align="center"><strong>12.8&deg;C</strong></div></td>
+        <td width="47"><div align="center" class="tag2-1pic">00.00</div></td>
+      </tr>
+      <tr class="sfondotag2">
+        <td height="35">&nbsp;</td>
+        <td width="80" class="testo3">Heat Index</td>
+        <td width="70"><div align="center"><strong>17.8&deg;C</strong></div></td>
+        <td width="70" class="sfondotagmin"><div align="center">-</div></td>
+        <td width="47"><div align="center">-</div></td>
+        <td width="70" class="sfondotagmax"><div align="center"><strong>17.8&deg;C</strong></div></td>
+        <td width="47"><div align="center" class="tag2-1pic">10.30</div></td>
+      </tr>
+      <tr>
+        <td height="35">&nbsp;</td>
+        <td width="80" class="testo3">Pressione</td>
+        <td width="70"><div align="center"><strong>996.8 hPa</strong></div></td>
+        <td width="70" class="sfondotagmin"><div align="center"><strong>996.6 hPa</strong></div></td>
+        <td width="47"><div align="center" class="tag2-1pic">11.42</div></td>
+        <td width="70" class="sfondotagmax"><div align="center"><strong>999.7 hPa</strong></div></td>
+        <td width="47"><div align="center" class="tag2-1pic">00.58</div></td>
+      </tr>
+      <tr class="sfondotag2">
+        <td height="35">&nbsp;</td>
+        <td width="80" class="testo3">Wind Chill</td>
+        <td width="70"><div align="center"><strong>17.8&deg;C</strong></div></td>
+        <td width="70" class="sfondotagmin"><div align="center"><strong>13.3&deg;C</strong></div></td>
+        <td width="47"><div align="center" class="tag2-1pic">05.46</div></td>
+        <td width="70" class="sfondotagmax"><div align="center">-</div></td>
+        <td width="47"><div align="center">-</div></td>
+      </tr>
+		  				<tr>
+        <td colspan="7" height="3"></td>
+      </tr>
+      <tr>
+        <td height="35">&nbsp;</td>
+        <td class="testo3">Temp. Interna</td>
+        <td><div align="center"><strong>25.2°C</strong></div></td>
+        <td class="sfondotagmin"><div align="center"><strong>24.3°C</strong></div></td>
+        <td><div align="center" class="tag2-1pic">-</div></td>
+        <td class="sfondotagmax"><div align="center"><strong>27.8°C</strong></div></td>
+        <td><div align="center" class="tag2-1pic">-</div></td>
+      </tr>
+      <tr class="sfondotag2">
+        <td height="35">&nbsp;</td>
+        <td class="testo3">Umid. Interna</td>
+        <td><div align="center"><strong>47%</strong></div></td>
+        <td class="sfondotagmin"><div align="center"><strong>42%</strong></div></td>
+        <td><div align="center" class="tag2-1pic">-</div></td>
+        <td class="sfondotagmax"><div align="center"><strong>48%</strong></div></td>
+        <td><div align="center">-</div></td>
+      </tr>
+      <tr>
+        <td colspan="7" height="3"></td>
+      </tr>       <tr>
+         <td colspan="7" height="3"></td>
+       </tr>
+      <tr class="sfondotag1">
+        <td height="60">&nbsp;</td>
+        <td colspan="2"><div align="center">
+          <div align="left">
+            <table border="0" cellspacing="0" cellpadding="0">
+              <tr>
+                <td width="25"><div align="left"><img src="../img/vento.png" /></div></td>
+                <td class="valori"><strong>VENTO</strong></td>
+                </tr>
+              </table>
+            </div>
+        </div></td>
+        <td width="70" class="sfondotagmin"><div align="center" class="blu"><strong>MEDIA<br />
+10 MIN</strong></div></td>
+        <td width="47">&nbsp;</td>
+        <td width="70" class="sfondotagmax"><div align="center" class="max"><strong>RAFFICA</strong></div></td>
+        <td width="47"><div align="center">ora</div></td>
+      </tr>
+      <tr>
+        <td height="40">&nbsp;</td>
+        <td width="80" class="testo3">Velocit&agrave;</td>
+        <td width="70"><div align="center"><strong>3.2 Km/h</strong></div></td>
+        <td width="70" class="sfondotagmin"><div align="center"><strong>4.8 Km/h</strong></div></td>
+        <td width="47"><div align="center">-</div></td>
+        <td width="70" class="sfondotagmax"><div align="center"><strong>9.7 Km/h</strong></div></td>
+        <td width="47"><div align="center" class="tag2-1pic">11.02</div></td>
+      </tr>
+      <tr class="sfondotag2">
+        <td height="40">&nbsp;</td>
+        <td width="80" class="testo3">Direzione</td>
+        <td width="70"><div align="center">da <strong>W</strong></div></td>
+        <td width="70" class="sfondotagmin"><div align="center">-</div></td>
+        <td width="47"><div align="center">-</div></td>
+        <td width="70" class="sfondotagmax"><div align="center">-</div></td>
+        <td width="47"><div align="center">-</div></td>
+      </tr> <tr>
+        <td colspan="7" height="3"></td>
+      </tr>
+      <tr class="sfondotag1">
+        <td height="60">&nbsp;</td>
+        <td colspan="2"><div align="center">
+          <div align="left">
+            <table border="0" cellspacing="0" cellpadding="0">
+              <tr>
+                <td width="25"><div align="left"><img src="../img/rain.png" /></div></td>
+                <td class="valori"><strong>PRECIPITAZIONI</strong></td>
+              </tr>
+            </table>
+          </div>
+        </div></td>
+        <td width="70" class="sfondotagmin"><div align="center" class="blu"><strong>ACCUMULO</strong></div></td>
+        <td width="47">&nbsp;</td>
+        <td width="70" class="sfondotagmax"><div align="center" class="max">
+                  </div></td>
+        <td width="47"><div align="center">
+                  </div></td>
+      </tr>
+      <tr>
+        <td height="40">&nbsp;</td>
+        <td width="80" class="testo3">Intensit&agrave; di Pioggia</td>
+        <td width="70"><div align="center"><strong>0.0 mm/h</strong></div></td>
+        <td width="70" class="sfondotagmin"><div align="center"><strong>0.0 mm</strong></div></td>
+        <td width="47"><div align="center" class="tag2-1pic">giornaliero</div></td>
+        <td width="70" class="sfondotagmax"><div align="center">
+                  </div></td>
+        <td width="47"><div align="center" class="tag2-1pic">
+                  </div></td>
+      </tr>
+      <tr class="sfondotag2">
+        <td height="40">&nbsp;</td>
+        <td width="80" class="testo3">Intensit&agrave; Massima</td>
+        <td width="70"><div align="center"><strong>0.0 mm/h</strong></div></td>
+        <td width="70" class="sfondotagmin"><div align="center"><strong>3.3 mm</strong></div></td>
+        <td width="47"><div align="center" class="tag2-1pic">mensile </div></td>
+        <td width="70" class="sfondotagmax"><div align="center">
+                  </div></td>
+        <td width="47"><div align="center" class="tag2-1pic">
+                  </div></td>
+      </tr>
+      <tr>
+        <td height="40">&nbsp;</td>
+        <td width="80" class="testo3">Storm Rain</td>
+        <td width="70"><div align="center"><strong>0.0 mm</strong></div></td>
+        <td width="70" class="sfondotagmin"><div align="center"><strong>162.1 mm</strong></div></td>
+        <td width="47"><div align="center" class="tag2-1pic">annuale</div></td>
+        <td width="70" class="sfondotagmax"><div align="center">
+                  </div></td>
+        <td width="47"><div align="center" class="tag2-1pic">
+                  </div></td>
+      </tr>
+    </table></td>
+  </tr>
+</table>
+<br />
+<br />
+<table border="0" align="center" cellpadding="0" cellspacing="0">
+  <tr>
+    <td height="25" align="center"  class="titolocella"><span class="titolotabella">Estremi mensili</span></td>
+  </tr>
+  <tr>
+    <td align="center" class="tabellaext2"><table border="0" align="center" cellpadding="3" cellspacing="0" class="tag2-1">
+       <tr>
+        <td colspan="7" height="3"></td>
+        </tr>
+      <tr class="sfondotag1" >
+        <td height="40">&nbsp;</td>
+        <td width="80">&nbsp;</td>
+        <td width="10">&nbsp;</td>
+        <td width="80"><div align="center" class="blu"><img src="../img/min.gif" alt="*" width="20" height="12" align="absmiddle" /><strong>MIN</strong></div></td>
+        <td width="20">&nbsp;</td>
+        <td width="80"><div align="center" class="max"><img src="../img/max.gif" alt="*" width="20" height="12" align="absmiddle" /><strong>MAX</strong></div></td>
+        <td width="20">&nbsp;</td>
+      </tr>
+      <tr>
+        <td width="15" height="30">&nbsp;</td>
+        <td width="80" class="testo3">Temperatura</td>
+        <td width="10">&nbsp;</td>
+        <td width="80"><div align="center"><strong>13.4</strong>&deg;C</div></td>
+        <td width="20">&nbsp;</td>
+        <td width="80"><div align="center"><strong>32.1</strong>&deg;C</div></td>
+        <td width="20">&nbsp;</td>
+      </tr>
+      <tr  class="sfondotag2">
+        <td width="15" height="30">&nbsp;</td>
+        <td width="80" class="testo3">Umidit&agrave;</td>
+        <td width="10">&nbsp;</td>
+        <td width="80"><div align="center"><strong>19</strong>%</div></td>
+        <td width="20">&nbsp;</td>
+        <td width="80"><div align="center"><strong>94</strong>%</div></td>
+        <td width="20">&nbsp;</td>
+      </tr>
+      <tr>
+        <td width="15" height="30">&nbsp;</td>
+        <td width="80" class="testo3">Dew Point</td>
+        <td width="10">&nbsp;</td>
+        <td width="80"><div align="center"><strong>1.7</strong>&deg;C</div></td>
+        <td width="20">&nbsp;</td>
+        <td width="80"><div align="center"><strong>22.8</strong>&deg;C</div></td>
+        <td width="20">&nbsp;</td>
+      </tr>
+      <tr  class="sfondotag2">
+        <td height="30">&nbsp;</td>
+        <td width="80" class="testo3">Heat Index</td>
+        <td width="10">&nbsp;</td>
+        <td width="80"><div align="center">-</div></td>
+        <td width="20">&nbsp;</td>
+        <td width="80"><div align="center"><strong>33.9</strong>&deg;C</div></td>
+        <td width="20">&nbsp;</td>
+      </tr>
+      <tr>
+        <td width="15" height="30">&nbsp;</td>
+        <td width="80" class="testo3">Pressione</td>
+        <td width="10">&nbsp;</td>
+        <td width="80"><div align="center"><strong>985.1</strong> hPa</div></td>
+        <td width="20">&nbsp;</td>
+        <td width="80"><div align="center"><strong>1001.4</strong> hPa</div></td>
+        <td width="20">&nbsp;</td>
+      </tr>
+      <tr  class="sfondotag2">
+        <td width="15" height="30">&nbsp;</td>
+        <td width="80" class="testo3">Wind Chill</td>
+        <td width="10">&nbsp;</td>
+        <td width="80"><div align="center"><strong>13.3</strong>&deg;C</div></td>
+        <td width="20">&nbsp;</td>
+        <td width="80"><div align="center">-</div></td>
+        <td width="20">&nbsp;</td>
+      </tr>
+      <tr>
+        <td height="30">&nbsp;</td>
+        <td width="80" class="testo3">Raffica di Vento</td>
+        <td>&nbsp;</td>
+        <td width="80"><div align="center">-</div></td>
+        <td>&nbsp;</td>
+        <td width="80"><div align="center"><strong>49.9</strong> Km/h</div></td>
+        <td>&nbsp;</td>
+      </tr>
+    </table></td>
+  </tr>
+</table>
+<br />
+<br />
+<table border="0" align="center" cellpadding="0" cellspacing="0">
+  <tr>
+    <td height="25" align="center"  class="titolocella"><span class="titolotabella">Estremi annuali</span></td>
+  </tr>
+  <tr>
+    <td align="center" class="tabellaext2"><table border="0" align="center" cellpadding="3" cellspacing="0" class="tag2-1">
+      <tr>
+        <td colspan="7" height="3"></td>
+      </tr>
+      <tr class="sfondotag1" >
+        <td height="40">&nbsp;</td>
+        <td width="80">&nbsp;</td>
+        <td width="10">&nbsp;</td>
+        <td width="80"><div align="center" class="blu"><img src="../img/min.gif" alt="*" width="20" height="12" align="absmiddle" /><strong>MIN</strong></div></td>
+        <td width="20">&nbsp;</td>
+        <td width="80"><div align="center" class="max"><img src="../img/max.gif" alt="*" width="20" height="12" align="absmiddle" /><strong>MAX</strong></div></td>
+        <td width="20">&nbsp;</td>
+      </tr>
+      <tr>
+        <td width="15" height="30">&nbsp;</td>
+        <td width="80" class="testo3">Temperatura</td>
+        <td width="10">&nbsp;</td>
+        <td width="80"><div align="center"><strong>-3.9</strong>&deg;C</div></td>
+        <td width="20">&nbsp;</td>
+        <td width="80"><div align="center"><strong>36.7</strong>&deg;C</div></td>
+        <td width="20">&nbsp;</td>
+      </tr>
+      <tr  class="sfondotag2">
+        <td width="15" height="30">&nbsp;</td>
+        <td width="80" class="testo3">Umidit&agrave;</td>
+        <td width="10">&nbsp;</td>
+        <td width="80"><div align="center"><strong>13</strong>%</div></td>
+        <td width="20">&nbsp;</td>
+        <td width="80"><div align="center"><strong>97</strong>%</div></td>
+        <td width="20">&nbsp;</td>
+      </tr>
+      <tr>
+        <td width="15" height="30">&nbsp;</td>
+        <td width="80" class="testo3">Dew Point</td>
+        <td width="10">&nbsp;</td>
+        <td width="80"><div align="center"><strong>-13.3</strong>&deg;C</div></td>
+        <td width="20">&nbsp;</td>
+        <td width="80"><div align="center"><strong>25.0</strong>&deg;C</div></td>
+        <td width="20">&nbsp;</td>
+      </tr>
+      <tr  class="sfondotag2">
+        <td height="30">&nbsp;</td>
+        <td width="80" class="testo3">Heat Index</td>
+        <td width="10">&nbsp;</td>
+        <td width="80"><div align="center">-</div></td>
+        <td width="20">&nbsp;</td>
+        <td width="80"><div align="center"><strong>41.7</strong>&deg;C</div></td>
+        <td width="20">&nbsp;</td>
+      </tr>
+      <tr>
+        <td width="15" height="30">&nbsp;</td>
+        <td width="80" class="testo3">Pressione</td>
+        <td width="10">&nbsp;</td>
+        <td width="80"><div align="center"><strong>962.7 </strong>hPa</div></td>
+        <td width="20">&nbsp;</td>
+        <td width="80"><div align="center"><strong>1005.8 </strong>hPa</div></td>
+        <td width="20">&nbsp;</td>
+      </tr>
+      <tr  class="sfondotag2">
+        <td width="15" height="30">&nbsp;</td>
+        <td width="80" class="testo3">Wind Chill</td>
+        <td width="10">&nbsp;</td>
+        <td width="80"><div align="center"><strong>-6.7</strong>&deg;C</div></td>
+        <td width="20">&nbsp;</td>
+        <td width="80"><div align="center">-</div></td>
+        <td width="20">&nbsp;</td>
+      </tr>
+      <tr>
+        <td height="30">&nbsp;</td>
+        <td width="80" class="testo3">Raffica di Vento</td>
+        <td>&nbsp;</td>
+        <td width="80"><div align="center">-</div></td>
+        <td>&nbsp;</td>
+        <td width="80"><div align="center"><strong>157.7</strong> Km/h</div></td>
+        <td>&nbsp;</td>
+      </tr>
+    </table></td>
+  </tr>
+</table>
+</body>
+</html>
+</div></td>
+      </tr>
+    </table></td>
+			 
+          </tr>
+        </tbody>
+      </table></td>
+    </tr>
+   
+    <tr class="respocell">
+      <td bgcolor="#FFF"><div align="center" style="margin-bottom: 8px"><img src="files/logo.png" alt="MeteoProject"/></div></td>
+    </tr>
+     <tr>
+      <td class="cella-foot">TEMPLATE PER STAZIONE METEO E WEBCAM v. 9.10 - <a href="https://www.meteoproject.it">WWW.METEOPROJECT.IT</a></td>
+    </tr>  </tbody>
+</table>
+</body>
+</html>

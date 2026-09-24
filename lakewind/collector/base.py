@@ -43,6 +43,11 @@ class BaseCollector(ABC):
     # Retry config (Spec §8 graceful degradation)
     max_retries: int = 2
     retry_backoff_seconds: float = 1.5
+    # Station-cadence marker: ground-station collectors poll cheap endpoints
+    # every collectors_stations_minutes (default 10) instead of the 30-min NWP
+    # cycle. The pipeline loop selects on this attribute — the former
+    # hardcoded source-name tuple silently skipped every newly added station.
+    is_station_cadence: bool = False
     # Real attempt count of the last _fetch_raw_with_retry() call
     _last_fetch_attempts: int = 0
 

@@ -51,8 +51,10 @@ _state: dict[str, Any] = {
     "stop_event": None,
 }
 
-# Collectors that poll ground stations (cheap, high cadence).
-_STATION_COLLECTORS = ("domaso_live", "arpa_lombardia", "arpa_hydro")
+# Collectors that poll ground stations (cheap, high cadence). Selected by the
+# BaseCollector.is_station_cadence attribute — the former hardcoded tuple
+# silently skipped every newly added station collector.
+_STATION_COLLECTORS = ("domaso_live", "arpa_lombardia", "arpa_hydro")  # BC fallback
 
 
 def status() -> dict[str, Any]:
@@ -78,7 +80,7 @@ def _station_collect() -> list[dict[str, Any]]:
 
     results: list[dict[str, Any]] = []
     for c in all_collectors():
-        if c.source_name not in _STATION_COLLECTORS:
+        if not (getattr(c, "is_station_cadence", False) or c.source_name in _STATION_COLLECTORS):
             continue
         try:
             r = c.collect()

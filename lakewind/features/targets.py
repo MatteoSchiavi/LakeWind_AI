@@ -32,8 +32,13 @@ from typing import Any
 # Tier 0: real anemometers. These are the ground truth the product promises.
 # 'lake_water_temp' is station-class too (R6) — it can never become a wind
 # target (no wind components) but is classified as a real sensor for
-# reporting and confidence semantics.
-STATION_SOURCE_PREFIXES = ("arpa_", "domaso", "diy_buoy", "netatmo", "lake_water_temp", "metar_")
+# reporting and confidence semantics. The club_ prefixes (station-network
+# expansion, docs/station_network.md) cover RIBIX / MeteoProject /
+# meteolivevco / deltaclub / meteosystem sailing-club anemometers.
+STATION_SOURCE_PREFIXES = (
+    "arpa_", "domaso", "diy_buoy", "netatmo", "lake_water_temp", "metar_",
+    "ribix_", "meteoproject_", "meteolivevco_", "meteosystem_", "deltaclub_",
+)
 # Tier 1 (Phase 5/S5): crowdsourced human reports from the water (/report).
 # A person ON the lake outranks any reanalysis grid cell — but never an
 # instrument, and (per the approved Phase 5 plan) can NEVER satisfy the

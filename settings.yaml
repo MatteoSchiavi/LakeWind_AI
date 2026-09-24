@@ -254,6 +254,76 @@ domaso:
   url: "https://www.nauticadomaso.it/it/Meteo-Webcam"
   fallback_url: "https://www.domaso.it/it/METEO%20WEBCAM"
 
+# Station-network expansion (2026-09-24 mega-research, docs/station_network.md):
+# sailing-club + regional platforms that passed the requirements gate. Every
+# source_id below MUST keep its prefix (targets.STATION_SOURCE_PREFIXES maps
+# them to station tier 0 = training weight 1.0).
+club_stations:
+  enabled: true
+  # RIBIX windsurf network (meteo.ribix.it) — Bracciano's local platform (the
+  # sailing-school widgets on the lake consume it). ONE /map-data call returns
+  # the whole network; `label` must match the RIBIX display name exactly.
+  # The mid-lake station is 2-5 km from ALL four Bracciano spots — the lake's
+  # first station-tier coverage. history=true also pulls ~48 h of 30-min rows
+  # (real timestamps) every cycle via idempotent upserts.
+  ribix:
+    enabled: true
+    base_url: "https://meteo.ribix.it"
+    history_hours: 48
+    max_age_minutes: 180
+    stations:
+      - {source_id: ribix_bracciano,        label: "Lago di Bracciano",   lat: 42.116,   lon: 12.231,   confidence: 0.85, history: true}
+      - {source_id: ribix_mn_bracciano,     label: "MN Lago di Bracciano", lat: 42.071,  lon: 12.286,   confidence: 0.80, history: false}
+      - {source_id: ribix_dpc_castello_vici, label: "DPC Castello Vici",  lat: 42.08472, lon: 12.27111, confidence: 0.75, history: false}
+      # Tyrrhenian coast truth-check anchors (ERA5/NWP fidelity at the shore)
+      - {source_id: ribix_civitavecchia,    label: "Civitavecchia",      lat: 42.093,   lon: 11.796,   confidence: 0.70, history: false}
+      - {source_id: ribix_anzio,            label: "Anzio",              lat: 41.447,   lon: 12.62,    confidence: 0.70, history: false}
+  # MeteoProject club pages — Fraglia Vela Malcesine (0.7 km from the
+  # malcesine spot, reports in KNOTS) and NausikaYacht Colico (0.4 km from
+  # colico, km/h). Slugs verified live 2026-09-24.
+  meteoproject:
+    enabled: true
+    base_url: "https://stazioni.meteoproject.it/dati"
+    stations:
+      - {slug: malcesine, source_id: meteoproject_malcesine, label: "Fraglia Vela Malcesine", lat: 45.7646, lon: 10.8119, confidence: 0.85}
+      - {slug: colico,    source_id: meteoproject_colico,    label: "NausikaYacht Colico",    lat: 46.1390, lon: 9.3727,  confidence: 0.85}
+  # meteolivevco Baveno observatory — Lago Maggiore west shore (JSON, km/h);
+  # ~18-25 km from the Maggiore spots. History feed ingested every cycle.
+  meteolivevco:
+    enabled: true
+    current_url: "https://www.meteolivevco.it/api/baveno.php"
+    history_url: "https://www.meteolivevco.it/api/history/baveno_history.json"
+    source_id: "meteolivevco_baveno"
+    lat: 45.908
+    lon: 8.510
+    confidence: 0.80
+    max_age_minutes: 180
+  # Deltaclub Laveno — Sasso del Ferro hilltop (~1060 m) above the SE
+  # Maggiore shore. Real anemometer, 3-min updates, but elevation limits
+  # lake-level representativeness -> confidence 0.70 (km/h, own timestamps).
+  deltaclub_laveno:
+    enabled: true
+    url: "https://www.deltaclublaveno.it/meteo/api.php"
+    source_id: "deltaclub_sassodelferro"
+    lat: 45.893
+    lon: 8.682
+    confidence: 0.70
+    timezone: "Europe/Rome"
+    max_age_minutes: 120
+  # Circolo Vela Torbole (meteosystem.com) — page was STALE at the 2026-09-24
+  # audit ("Last update: 24/10/25"). The collector parses the page's own
+  # timestamp and self-rejects stale rows, so flipping enabled: true is safe;
+  # until the club fixes its upload this would only log warnings.
+  meteosystem_torbole:
+    enabled: false
+    url: "https://www.meteosystem.com/wlip/torbole/tabella2.php"
+    source_id: "meteosystem_torbole"
+    lat: 45.8669
+    lon: 10.8640
+    confidence: 0.80
+    max_age_minutes: 180
+    timezone: "Europe/Rome"
+
 cml:
   url: "https://www.centrometeolombardo.com/temporeale.php"
 

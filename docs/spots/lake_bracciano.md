@@ -62,21 +62,25 @@ lon 12.170–12.290 (round panel, near-square figure).
 
 ## Data pipeline notes
 
-- **Ground stations**: ARPA Lombardia collectors are bbox-scoped to the
-  alpine lakes — no Bracciano coverage. There is no station-tier obs source
-  for this lake yet; candidates for later: Centro Surf Bracciano's own
-  weather station (page exposes live data), Lazio regional open-data
-  portals, or a DIY buoy (`diy_buoy` collector is config-gated and ready).
+- **Ground stations** (updated 2026-09-24): the RIBIX windsurf-station
+  network now covers the lake — station tier 0 for all four spots. The
+  mid-lake "Lago di Bracciano" RIBIX station is 2–5 km from every spot
+  (with history backfill ~48 h at 30-min resolution); "MN Lago di
+  Bracciano" (Marina Militare) and "DPC Castello Vici" (Protezione
+  Civile) anchor the SE shore; Civitavecchia/Anzio feed the coast
+  truth-check. Centro Surf Bracciano's own station page is anti-bot
+  protected and its Windguru/Windfinder APIs are auth-walled — documented
+  in `docs/station_network.md`; the RIBIX feed is the same lake's live
+  windsurf ecosystem (the sailing-school widgets on the lake consume it).
 - **Water temperature**: ARPA hydro (Lombardia) does not cover Bracciano;
   `_water_temp_c` returns None and the bot simply omits the water-temp line
   for this lake.
 - **Forecast tier until first retrain**: predictions come from the
   weather-feature MOS path once backfill lands; the on-demand raw-NWP
   fallback (icon_eu) covers the bot immediately, same launch pattern as
-  Garda/Maggiore.
-- **ERA5 ground truth**: works globally — the ERA5 collector will backfill
-  Bracciano automatically (25 km target-match cap applies to nothing here;
-  ERA5 is the only obs source at launch, demoted per Deep Audit R2).
+  Garda/Maggiore. With station-tier targets now flowing for Bracciano, the
+  next retrain trains directly against real lake anemometers.
+- **ERA5 ground truth**: works globally — retained as the lowest tier.
 
 ## Backfill (server operator)
 

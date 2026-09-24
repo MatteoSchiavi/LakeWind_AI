@@ -128,6 +128,7 @@ class DomasoCollector(BaseCollector):
     """Scrape the Domaso live weather station from Nautica Domaso's webcam page."""
 
     source_name = "domaso_live"
+    is_station_cadence = True
 
     # A frozen page re-scraped every 10 min used to be re-stamped as a BRAND
     # NEW observation (timestamp=utcnow) with the same old values — a

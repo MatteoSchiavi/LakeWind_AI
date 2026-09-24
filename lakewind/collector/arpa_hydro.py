@@ -53,6 +53,7 @@ class ArpaHydroCollector(BaseCollector):
     """Collect lake water temperature from ARPA Lombardia telemetered stations."""
 
     source_name = "arpa_hydro"
+    is_station_cadence = True
 
     def __init__(self) -> None:
         s = load_settings()

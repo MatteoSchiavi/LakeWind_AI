@@ -169,6 +169,105 @@ class MetarStationsConfig(BaseModel):
     hours_back: int = 36
 
 
+class ClubStationRef(BaseModel):
+    """One station inside a club/platform network (settings: club_stations)."""
+
+    # Platform-unique source id stored in observations.source — MUST carry a
+    # prefix registered in features/targets.STATION_SOURCE_PREFIXES so the
+    # rows land in station tier 0.
+    source_id: str
+    label: str = ""
+    lat: float | None = None   # RIBIX payloads carry coords; others need them
+    lon: float | None = None
+    confidence: float = 0.85
+    history: bool = False      # pull the platform's per-station history feed
+
+
+class RibixConfig(BaseModel):
+    """RIBIX windsurf-station network (meteo.ribix.it) — see
+    docs/station_network.md. /map-data returns every station in ONE call;
+    per-station source ids keep provenance + silence monitoring clean."""
+
+    enabled: bool = True
+    base_url: str = "https://meteo.ribix.it"
+    stations: list[ClubStationRef] = Field(default_factory=list)
+    history_hours: int = 48      # window requested from /history
+    max_age_minutes: int = 180   # reject history rows older than this
+
+
+class MeteoProjectStation(BaseModel):
+    slug: str                    # stazioni.meteoproject.it/dati/<slug>/
+    source_id: str
+    label: str = ""
+    lat: float
+    lon: float
+    confidence: float = 0.85
+
+
+class MeteoProjectConfig(BaseModel):
+    enabled: bool = True
+    base_url: str = "https://stazioni.meteoproject.it/dati"
+    # The pages carry their own 'Dati aggiornati' stamp; rows older than
+    # this are rejected (dormant-station protection).
+    max_age_minutes: int = 180
+    stations: list[MeteoProjectStation] = Field(default_factory=list)
+
+
+class MeteoLiveVcoConfig(BaseModel):
+    """meteolivevco.it Baveno observatory (Lago Maggiore west shore)."""
+
+    enabled: bool = True
+    current_url: str = "https://www.meteolivevco.it/api/baveno.php"
+    history_url: str = "https://www.meteolivevco.it/api/history/baveno_history.json"
+    source_id: str = "meteolivevco_baveno"
+    lat: float = 45.908
+    lon: float = 8.510
+    confidence: float = 0.80
+    max_age_minutes: int = 180
+
+
+class DeltaclubLavenoConfig(BaseModel):
+    """deltaclublaveno.it plain-text API — Sasso del Ferro (hilltop above the
+    SE Maggiore shore). Elevation limits lake-level representativeness, so
+    confidence is capped below the shore stations."""
+
+    enabled: bool = True
+    url: str = "https://www.deltaclublaveno.it/meteo/api.php"
+    source_id: str = "deltaclub_sassodelferro"
+    lat: float = 45.893
+    lon: float = 8.682
+    confidence: float = 0.70
+    timezone: str = "Europe/Rome"
+    max_age_minutes: int = 120
+
+
+class MeteoSystemTorboleConfig(BaseModel):
+    """Circolo Vela Torbole (meteosystem.com) — station STALE as of the
+    2026-09-24 audit (page self-reports its last upload). Kept wired with
+    enabled: false; the collector parses the page's own 'Last update' stamp
+    and rejects rows older than max_age_minutes, so enabling it is safe."""
+
+    enabled: bool = False
+    url: str = "https://www.meteosystem.com/wlip/torbole/tabella2.php"
+    source_id: str = "meteosystem_torbole"
+    lat: float = 45.8669
+    lon: float = 10.8640
+    confidence: float = 0.80
+    max_age_minutes: int = 180
+    timezone: str = "Europe/Rome"
+
+
+class ClubStationsConfig(BaseModel):
+    """Sailing-club & regional station networks (docs/station_network.md)."""
+
+    enabled: bool = True
+    ribix: RibixConfig = Field(default_factory=RibixConfig)
+    meteoproject: MeteoProjectConfig = Field(default_factory=MeteoProjectConfig)
+    meteolivevco: MeteoLiveVcoConfig = Field(default_factory=MeteoLiveVcoConfig)
+    deltaclub_laveno: DeltaclubLavenoConfig = Field(default_factory=DeltaclubLavenoConfig)
+    meteosystem_torbole: MeteoSystemTorboleConfig = Field(default_factory=MeteoSystemTorboleConfig)
+
+
 class LgbmParams(BaseModel):
     objective: str = "quantile"
     metric: str = "quantile"
@@ -452,6 +551,7 @@ class Settings(BaseModel):
     arpa_hydro: ArpaHydroConfig = Field(default_factory=ArpaHydroConfig)
     diy_buoy: DiyBuoyConfig
     metar_stations: MetarStationsConfig = Field(default_factory=MetarStationsConfig)
+    club_stations: ClubStationsConfig = Field(default_factory=ClubStationsConfig)
     model: ModelConfig
     success_criteria: SuccessCriteria
     pipeline: PipelineConfig

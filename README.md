@@ -7,7 +7,7 @@ LakeWind is a MOS (Model Output Statistics) system: it learns the systematic err
 | | |
 |---|---|
 | Model | LightGBM + XGBoost quantile ensemble (u/v × q10/q50/q90), conformal calibration; ECMWF reference bias target |
-| Truth | Station-tier ground truth (ARPA / Domaso / crowdsourced) + independent METAR truth-check — reanalysis demoted, never trusted blindly |
+| Truth | Station-tier ground truth (ARPA / Domaso / sailing-club networks / crowdsourced) + independent METAR truth-check — reanalysis demoted, never trusted blindly |
 | Runtime | One Python process (pipeline + Telegram bot + FastAPI) + one Next.js dashboard |
 | Storage | Single DuckDB file, single-writer discipline, verified nightly backups |
 | Resources | CPU-only; DuckDB capped (default 1536 MB / 2 threads); container capped at 3 GB |
@@ -148,7 +148,7 @@ users cost ONE projection query.
 
 | Path | Role |
 |---|---|
-| `lakewind/collector/` | 7 sources: open_meteo (multi-model), open_meteo_ensemble, arpa_lombardia, arpa_hydro (lake water temp), domaso_live, era5_reanalysis, diy_buoy |
+| `lakewind/collector/` | 12 sources: open_meteo (multi-model), open_meteo_ensemble, arpa_lombardia, arpa_hydro (lake water temp), domaso_live, era5_reanalysis, diy_buoy + the club-station network (ribix ×5, meteoproject ×2, meteolivevco, deltaclub, meteosystem — see `club_stations.py` and `docs/station_network.md`) |
 | `lakewind/collector/historical_backfill.py` | Leakage-free history: Previous Runs API (honest `run_time` per run), Historical Forecast API, ERA5 archive |
 | `lakewind/features/` | ONE feature builder shared by training/inference/backtest (no train/serve skew): per-model forecasts, agreement, ensemble spread, Foehn gradient, thermal inertia, lake-breeze potential, climatology, V7 physics, R7 feature pack (lead time, spot one-hots, real obs lags, online rolling bias, harmonics, regime, ramp) |
 | `lakewind/features/targets.py` | Ground-truth hierarchy (see below) |
@@ -170,7 +170,7 @@ observation* defines "observed" is tiered:
 
 | Tier | Sources | Training weight | Notes |
 |---|---|---|---|
-| 0 — station | `arpa_*`, `domaso`, `diy_buoy`, `netatmo`, `lake_water_temp` | 1.0 × confidence | The truth the product promises. Always wins target selection regardless of distance. |
+| 0 — station | `arpa_*`, `domaso`, `diy_buoy`, `netatmo`, `lake_water_temp`, `ribix_*`, `meteoproject_*`, `meteolivevco_*`, `meteosystem_*`, `deltaclub_*` | 1.0 × confidence | The truth the product promises — now incl. sailing-club anemometers (Fraglia Vela Malcesine, NausikaYacht Colico, RIBIX Bracciano network, Baveno, Sasso del Ferro). Always wins target selection regardless of distance. |
 | 1 — crowdsourced | `report_*` (bot `/report`) | 0.5 × confidence | A person on the water outranks any grid cell, never an instrument; can NEVER satisfy the promotion gate. |
 | 2 — intermediate | `cerra*` | 0.6 × confidence | Regional reanalysis bridge while the station ledger grows. |
 | 3 — ERA5 | `era5_reanalysis` | 0.4 × confidence | 25 km terrain-smoothed cells; demoted, not removed (still teaches synoptic structure). |

@@ -12,6 +12,7 @@ from typing import Any
 from lakewind.collector.arpa_hydro import ArpaHydroCollector
 from lakewind.collector.arpa_lombardia import ArpaLombardiaCollector
 from lakewind.collector.base import BaseCollector, CollectResult
+from lakewind.collector.club_stations import club_station_collectors
 from lakewind.collector.diy_buoy import DiyBuoyCollector
 from lakewind.collector.domaso_station import DomasoCollector
 from lakewind.collector.era5_reanalysis import Era5ReanalysisCollector
@@ -41,6 +42,11 @@ def all_collectors() -> list[BaseCollector]:
         ArpaHydroCollector(),
         # Phase 5.5 — regional airport METAR ground truth (verify-truth anchor)
         MetarStationsCollector(),
+        # Station-network expansion (docs/station_network.md): sailing-club
+        # and regional platforms — RIBIX (Bracciano + coast), MeteoProject
+        # (Fraglia Vela Malcesine, NausikaYacht Colico), Baveno, Sasso del
+        # Ferro, Circolo Vela Torbole (stale-guarded, disabled by default).
+        *club_station_collectors(),
         Era5ReanalysisCollector(),
         # Tier 0 — DIY buoy (Spec §4.1, disabled until hardware exists)
         DiyBuoyCollector(),
@@ -79,4 +85,4 @@ def run_all_collectors() -> list[dict[str, Any]]:
     return results
 
 
-__all__ = ["all_collectors", "run_all_collectors"]
+__all__ = ["all_collectors", "run_all_collectors", "club_station_collectors"]
