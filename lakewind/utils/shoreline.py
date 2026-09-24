@@ -7,6 +7,7 @@ image via `COPY lakewind/`).
   - lake_como     OSM relation 541757 (290→66 verts, ~144 km², 2026-09-12)
   - lake_garda    OSM relation 8569  (Nominatim polygon, ~40 m simplify, 2026-09-18)
   - lake_maggiore OSM relation 11758 (Nominatim polygon, ~40 m simplify, 2026-09-18)
+  - lake_bracciano OSM relation via Nominatim (79 verts, ~56.7 km², 2026-09-23)
 
 Every operational point in settings.yaml is verified ON WATER against its
 lake's polygon by scripts/validate_points.py; the heatmap clips its
@@ -30,6 +31,7 @@ _LAKE_FILES: dict[str, str] = {
     "lake_como": "lake_como_shoreline.geojson",
     "lake_garda": "lake_garda_shoreline.geojson",
     "lake_maggiore": "lake_maggiore_shoreline.geojson",
+    "lake_bracciano": "lake_bracciano_shoreline.geojson",
 }
 
 _CACHE: dict[str, list[tuple[float, float]]] = {}

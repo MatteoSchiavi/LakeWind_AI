@@ -1,24 +1,37 @@
-"""V5 Telegram bot — query builder with inline keyboards.
+"""V7 Telegram bot — lake-first query builder with inline keyboards.
 
-Completely redesigned UX:
-- Multi-level inline keyboard menus (command → point → time → result)
+UX model (Phase 6 multi-lake + operator feedback):
+- ONE normal UI for every user; admin capabilities only for configured
+  admins (settings.telegram.admin_ids/admin_user_id) — everyone else gets
+  the full standard feature set with NO admin surface at all.
+- Lake-first spot selection: menus no longer dump 26 spot buttons in one
+  flat list — first pick the LAKE (Como/Garda/Maggiore/Bracciano), then
+  the SPOT on that lake (e.g. Lake Como -> Dongo, Lake Garda -> Torbole).
+- Map is lake-scoped too: pick the lake (or All lakes), then the time.
+- Sailing report groups rows per lake with a per-lake best.
+- New features: Best now (top spots across all lakes + water temp),
+  Tomorrow (sailing report for tomorrow's 11-16 window), interactive
+  alert setup (lake -> spot -> threshold buttons).
 - ASCII infographic for text-only display
-- Rich image generation (heatmap, trend chart, wind rose)
+- Rich image generation (heatmap, trend chart)
 - Weather + rain + safety warnings
 - Multi-user with rate limiting
 - Crash-safe with graceful error handling
 
 Menu structure:
-  /start → Main menu (inline keyboard)
-    🌬 Wind → Choose point → Choose time → Result + image
-    📅 Today → Choose point → Hourly table
-    🗺 Map → Choose time → Heatmap image
-    ⛵ Sailing → GO/NO-GO recommendation
-    🗓 Weekend → Choose point → Sat 07:00 → Sun 22:00 timeline
-    📈 Trend → Choose point → Chart image
-    ⚠️ Alerts → Set/list/delete
-    ⚙️ Settings → Language/units/point
-    ℹ️ Status → Data source health
+  /start -> Main menu (inline keyboard)
+    Wind -> Lake -> Spot -> Time -> Result + infographic
+    Today -> Lake -> Spot -> Hourly table
+    Map -> Lake (or All) -> Time -> Heatmap image
+    Sailing -> GO/NO-GO report (grouped by lake)
+    Weekend -> Lake -> Spot -> Sat 07:00 -> Sun 22:00 timeline
+    Best now -> Top spots across all lakes right now
+    Tomorrow -> Sailing report for tomorrow's window
+    Trend -> Lake -> Spot -> Chart image
+    Alerts -> Set (lake -> spot -> threshold) / list / delete
+    Settings -> Language/units/favorite
+    Status -> Data source health
+    Admin -> admin-only panel (admins only)
 """
 from __future__ import annotations
 
@@ -96,6 +109,71 @@ def _get_user_lang(user: dict | None) -> str:
 
 def _get_user_units(user: dict | None) -> str:
     return user.get("units", "kn") if user else "kn"
+
+
+# --- Lake-first navigation helpers (Phase 6, operator request) -------------
+# Spot menus no longer list all 26 operational points flat: first the LAKE,
+# then the SPOTS on that lake (Lake Como -> Dongo, Lake Garda -> Torbole).
+
+
+def _lake_list() -> list[tuple[str, str]]:
+    """Ordered (lake_id, display_name) pairs from settings.lakes."""
+    s = load_settings()
+    return [(lid, cfg.name) for lid, cfg in (s.lakes or {}).items()]
+
+
+def _lake_of_point(point_id: str) -> str | None:
+    s = load_settings()
+    for vp in s.virtual_points:
+        if vp.id == point_id:
+            return vp.lake
+    return None
+
+
+def _points_of_lake(lake_id: str) -> list[tuple[str, str]]:
+    """Ordered (point_id, display_label) of operational points on a lake."""
+    s = load_settings()
+    out: list[tuple[str, str]] = []
+    for vp_id in s.operational_point_ids or []:
+        vp = next((p for p in s.virtual_points if p.id == vp_id), None)
+        if vp is None or (vp.lake or "") != lake_id:
+            continue
+        out.append((vp.id, vp.label or vp.id.replace("_", " ").title()))
+    return out
+
+
+def _point_label(point_id: str) -> str:
+    s = load_settings()
+    for vp in s.virtual_points:
+        if vp.id == point_id:
+            return vp.label or vp.id.replace("_", " ").title()
+    return point_id.replace("_", " ").title()
+
+
+def _water_temp_c(lake_id: str) -> float | None:
+    """Latest lake water temperature (deg C) for a lake, or None.
+
+    Sourced from the lake_water_temp ARPA-hydro collector (Lombardia
+    stations cover Como/Garda/Maggiore; Bracciano has none yet and simply
+    reports nothing). Looks near every spot of the lake within 30 km.
+    """
+    from lakewind.config import get_virtual_point
+
+    for pid, _label in _points_of_lake(lake_id):
+        try:
+            vp = get_virtual_point(pid)
+        except KeyError:
+            continue
+        try:
+            obs = access.fetch_latest_observation_near(
+                vp.lat, vp.lon, utcnow(), max_age_minutes=48 * 60, max_distance_km=30.0,
+            )
+        except Exception:
+            continue
+        for o in obs:
+            if str(o.get("source", "")).startswith("lake_water_temp") and o.get("temperature") is not None:
+                return float(o["temperature"])
+    return None
 
 
 def _fetch_pred_at(point_id: str, target_time: datetime) -> dict | None:
@@ -252,17 +330,16 @@ def is_user_admin(user_id: int) -> bool:
 # --- Inline keyboards ---
 
 def _main_menu_kb(user_id: int | None = None) -> InlineKeyboardMarkup:
-    """Main menu — 2×4 grid plus a full-width Weekend row.
+    """Main menu — ONE normal UI for everyone, plus a full-width Weekend row.
 
-    Weekend sits directly under Sailing: most sailors plan the WEEKEND,
-    not the next 24 h, and the two buttons answer the two halves of the
-    same question ("today?" vs "which day of the coming weekend?").
+    Every user gets the full standard feature set (wind/today/map/sailing/
+    weekend/best/tomorrow/trend/alerts/settings/status). Weekend sits
+    directly under Sailing: most sailors plan the WEEKEND, not the next
+    24 h, and the two buttons answer the two halves of the same question
+    ("today?" vs "which day of the coming weekend?").
 
-    Admin gating: the 🔧 Admin entry appears ONLY for admins (Phase 6.5
-    union of the admin-UI split with the Weekend feature). Everything else
-    — Alerts, Settings, Status included — is part of the NORMAL UI and
-    stays for every user; "no admin capabilities" means the admin
-    button/commands, not the user features.
+    Admin gating: the 🔧 Admin entry appears ONLY for configured admins —
+    everyone else sees a normal UI with zero admin capabilities.
     """
     is_admin = user_id is not None and is_user_admin(user_id)
     rows = [
@@ -275,6 +352,10 @@ def _main_menu_kb(user_id: int | None = None) -> InlineKeyboardMarkup:
             InlineKeyboardButton("⛵ Sailing", callback_data="m:sail"),
         ],
         [InlineKeyboardButton("🗓 Weekend", callback_data="m:weekend")],
+        [
+            InlineKeyboardButton("🏆 Best now", callback_data="m:best"),
+            InlineKeyboardButton("🌅 Tomorrow", callback_data="m:tomorrow"),
+        ],
         [
             InlineKeyboardButton("📈 Trend", callback_data="m:trend"),
             InlineKeyboardButton("⚠️ Alerts", callback_data="m:alert"),
@@ -289,25 +370,60 @@ def _main_menu_kb(user_id: int | None = None) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
-def _point_kb(action: str, lang: str = "en") -> InlineKeyboardMarkup:
-    """Point selection keyboard."""
-    s = load_settings()
+# Lake menu emoji — one visual anchor per basin (keys = settings.lakes ids).
+_LAKE_EMOJI = {
+    "lake_como": "🌊",
+    "lake_garda": "🏔",
+    "lake_maggiore": "🌅",
+    "lake_bracciano": "🌋",
+}
+
+
+def _lake_kb(action: str) -> InlineKeyboardMarkup:
+    """Lake selection keyboard — step 1 of every spot menu.
+
+    `<action>` is the flow the user came from (w/t/tr/fav/al); it is echoed
+    back in the callback (`wl:<action>:<lake>`) so the next step re-opens
+    the right flow with that lake's spots.
+    """
     buttons = []
     row = []
-    for vp_id in (s.operational_point_ids or []):
-        label = vp_id.replace("_", " ").title()
-        row.append(InlineKeyboardButton(label, callback_data=f"{action}:{vp_id}"))
+    for lid, name in _lake_list():
+        emoji = _LAKE_EMOJI.get(lid, "🌊")
+        row.append(InlineKeyboardButton(f"{emoji} {name}", callback_data=f"wl:{action}:{lid}"))
         if len(row) == 2:
             buttons.append(row)
             row = []
     if row:
         buttons.append(row)
-    buttons.append([InlineKeyboardButton("« Back", callback_data="m:back")])
+    buttons.append([InlineKeyboardButton("« Main menu", callback_data="m:back")])
+    return InlineKeyboardMarkup(buttons)
+
+
+def _spot_kb(action: str, lake_id: str, lang: str = "en") -> InlineKeyboardMarkup:
+    """Spot selection keyboard for ONE lake — step 2 of every spot menu."""
+    buttons = []
+    row = []
+    for pid, label in _points_of_lake(lake_id):
+        row.append(InlineKeyboardButton(label, callback_data=f"{action}:{pid}"))
+        if len(row) == 2:
+            buttons.append(row)
+            row = []
+    if row:
+        buttons.append(row)
+    buttons.append([InlineKeyboardButton("« Lakes", callback_data=f"wl:{action}")])
+    buttons.append([InlineKeyboardButton("« Main menu", callback_data="m:back")])
     return InlineKeyboardMarkup(buttons)
 
 
 def _time_kb(action: str, point_id: str) -> InlineKeyboardMarkup:
-    """Time horizon selection keyboard."""
+    """Time horizon selection keyboard.
+
+    Back returns to the SPOT LIST of the point's lake (lake-first UX) —
+    the lake is resolved from settings so stale keyboards stay correct.
+    """
+    lake_id = _lake_of_point(point_id)
+    back_cb = f"wl:{action}:{lake_id}" if lake_id else f"wl:{action}"
     return InlineKeyboardMarkup([
         [
             InlineKeyboardButton("Now", callback_data=f"{action}:{point_id}:0"),
@@ -319,19 +435,58 @@ def _time_kb(action: str, point_id: str) -> InlineKeyboardMarkup:
             InlineKeyboardButton("+12h", callback_data=f"{action}:{point_id}:12"),
             InlineKeyboardButton("+24h", callback_data=f"{action}:{point_id}:24"),
         ],
-        [InlineKeyboardButton("« Back to points", callback_data=f"{action}:back")],
+        [InlineKeyboardButton("« Back to spots", callback_data=back_cb)],
+        [InlineKeyboardButton("« Main menu", callback_data="m:back")],
     ])
 
 
-def _map_time_kb() -> InlineKeyboardMarkup:
+def _map_lake_kb() -> InlineKeyboardMarkup:
+    """Map: lake picker (All lakes + one button per lake) — then time."""
+    buttons = [[InlineKeyboardButton("🌐 All lakes", callback_data="mp:all")]]
+    row = []
+    for lid, name in _lake_list():
+        emoji = _LAKE_EMOJI.get(lid, "🌊")
+        row.append(InlineKeyboardButton(f"{emoji} {name}", callback_data=f"mp:{lid}"))
+        if len(row) == 2:
+            buttons.append(row)
+            row = []
+    if row:
+        buttons.append(row)
+    buttons.append([InlineKeyboardButton("« Main menu", callback_data="m:back")])
+    return InlineKeyboardMarkup(buttons)
+
+
+def _map_time_kb(lake_id: str) -> InlineKeyboardMarkup:
+    """Map time picker for a lake ('all' = every lake with data)."""
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("Now", callback_data="map:0"),
-            InlineKeyboardButton("+2h", callback_data="map:2"),
-            InlineKeyboardButton("+4h", callback_data="map:4"),
-            InlineKeyboardButton("+6h", callback_data="map:6"),
+            InlineKeyboardButton("Now", callback_data=f"map:{lake_id}:0"),
+            InlineKeyboardButton("+2h", callback_data=f"map:{lake_id}:2"),
+            InlineKeyboardButton("+4h", callback_data=f"map:{lake_id}:4"),
+            InlineKeyboardButton("+6h", callback_data=f"map:{lake_id}:6"),
         ],
-        [InlineKeyboardButton("« Back", callback_data="m:back")],
+        [
+            InlineKeyboardButton("+12h", callback_data=f"map:{lake_id}:12"),
+            InlineKeyboardButton("+24h", callback_data=f"map:{lake_id}:24"),
+        ],
+        [InlineKeyboardButton("« Back", callback_data="m:map")],
+        [InlineKeyboardButton("« Main menu", callback_data="m:back")],
+    ])
+
+
+def _alert_threshold_kb(point_id: str) -> InlineKeyboardMarkup:
+    """Threshold picker for an alert on `point_id` (interactive setup)."""
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("6 kn", callback_data=f"al:set:{point_id}:6"),
+            InlineKeyboardButton("8 kn", callback_data=f"al:set:{point_id}:8"),
+            InlineKeyboardButton("10 kn", callback_data=f"al:set:{point_id}:10"),
+            InlineKeyboardButton("12 kn", callback_data=f"al:set:{point_id}:12"),
+        ],
+        [InlineKeyboardButton("15 kn", callback_data=f"al:set:{point_id}:15"),
+         InlineKeyboardButton("18 kn", callback_data=f"al:set:{point_id}:18")],
+        [InlineKeyboardButton("« Back to spots", callback_data="al:new")],
+        [InlineKeyboardButton("« Main menu", callback_data="m:back")],
     ])
 
 
@@ -485,37 +640,24 @@ def _onboarding_kb_units() -> InlineKeyboardMarkup:
     ]])
 
 
-def _onboarding_kb_fav(lang: str) -> InlineKeyboardMarkup:
-    s = load_settings()
-    buttons = []
-    row = []
-    for vp_id in (s.operational_point_ids or []):
-        row.append(InlineKeyboardButton(
-            vp_id.replace("_", " ").title(), callback_data=f"ob:fav:{vp_id}",
-        ))
-        if len(row) == 2:
-            buttons.append(row)
-            row = []
-    if row:
-        buttons.append(row)
-    skip = "Skip" if lang == "en" else "Salta"
-    buttons.append([InlineKeyboardButton(f"« {skip}", callback_data="ob:skip")])
-    return InlineKeyboardMarkup(buttons)
+def _onboarding_kb_fav(_lang: str) -> InlineKeyboardMarkup:
+    """Favorite-spot step: lake-first (pick the lake, then the spot)."""
+    return _lake_kb("fav")
 
 
 _ONBOARDING_TEXTS = {
     "en": {
-        "welcome": "🌊 Welcome to LakeWind AI!\n\nHyperlocal wind forecasts for Dongo-Dervio, Lake Como.\nLet's set you up — three quick questions.",
+        "welcome": "🌊 Welcome to LakeWind AI!\n\nHyperlocal wind forecasts for Lake Como, Garda, Maggiore and Bracciano.\nLet's set you up — three quick questions.",
         "lang": "1/3 · What language should I speak?",
         "units": "2/3 · Which units do you prefer?",
-        "fav": "3/3 · Which is your favorite spot?",
+        "fav": "3/3 · Pick your lake, then your favorite spot:",
         "done": "✅ All set! Tip: /sailing answers \"can I go out this afternoon?\" in one tap.",
     },
     "it": {
-        "welcome": "🌊 Benvenuto su LakeWind AI!\n\nPrevisioni del vento iperlocali per Dongo-Dervio, Lago di Como.\nConfiguriamoti — tre domande rapide.",
+        "welcome": "🌊 Benvenuto su LakeWind AI!\n\nPrevisioni del vento iperlocali per Lago di Como, Garda, Maggiore e Bracciano.\nConfiguriamoti — tre domande rapide.",
         "lang": "1/3 · Che lingua preferisci?",
         "units": "2/3 · Quali unità di misura?",
-        "fav": "3/3 · Qual è il tuo spot preferito?",
+        "fav": "3/3 · Scegli il lago, poi il tuo spot preferito:",
         "done": "✅ Tutto pronto! Sugo: /sailing risponde a \"si esce questo pomeriggio?\" con un tocco.",
     },
 }
@@ -634,22 +776,22 @@ async def _menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     if data == "m:wind":
         await query.edit_message_text(
-            "🌬 Wind\nChoose a point 👇",
-            reply_markup=_point_kb("w", lang),
+            "🌬 Wind\nChoose a lake 👇",
+            reply_markup=_lake_kb("w"),
         )
         return
 
     if data == "m:today":
         await query.edit_message_text(
-            "📅 Today\nChoose a point 👇",
-            reply_markup=_point_kb("t", lang),
+            "📅 Today\nChoose a lake 👇",
+            reply_markup=_lake_kb("t"),
         )
         return
 
     if data == "m:map":
         await query.edit_message_text(
-            "🗺 Wind Map\nChoose a time 👇",
-            reply_markup=_map_time_kb(),
+            "🗺 Wind Map\nChoose a lake 👇",
+            reply_markup=_map_lake_kb(),
         )
         return
 
@@ -659,16 +801,24 @@ async def _menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     if data == "m:weekend":
         await query.edit_message_text(
-            "🗓 Weekend\nChoose a spot 👇",
-            reply_markup=_point_kb("wk", lang),
+            "🗓 Weekend\nChoose a lake 👇",
+            reply_markup=_lake_kb("wk"),
         )
         return
 
     if data == "m:trend":
         await query.edit_message_text(
-            "📈 Trend\nChoose a point 👇",
-            reply_markup=_point_kb("tr", lang),
+            "📈 Trend\nChoose a lake 👇",
+            reply_markup=_lake_kb("tr"),
         )
+        return
+
+    if data == "m:best":
+        await _best_now(query, user, lang, units, user.get("telegram_user_id"))
+        return
+
+    if data == "m:tomorrow":
+        await _sailing_recommendation(query, user, lang, units, user.get("telegram_user_id"), day_offset=1)
         return
 
     if data == "m:alert":
@@ -696,6 +846,74 @@ async def _menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await query.answer("⛔ Admin only", show_alert=True)
         return
 
+    # --- Lake-first navigation: wl:<action> (lake list) / wl:<action>:<lake>
+    # (spot list of that lake). <action> re-opens the originating flow:
+    # w=wind, t=today, tr=trend, fav=onboarding favorite, al=alert setup.
+    if data == "wl:" or data.startswith("wl:") and data.count(":") == 1:
+        action = data[3:]
+        await query.edit_message_text(
+            "🌊 Choose a lake 👇",
+            reply_markup=_lake_kb(action),
+        )
+        return
+
+    if data.startswith("wl:") and data.count(":") == 2:
+        _, action, lake_id = data.split(":", 2)
+        lakes = {lid: name for lid, name in _lake_list()}
+        if lake_id not in lakes:
+            await query.edit_message_text("🌊 Choose a lake 👇", reply_markup=_lake_kb(action))
+            return
+        if not _points_of_lake(lake_id):
+            await query.edit_message_text(
+                f"No spots configured on {lakes[lake_id]} yet.",
+                reply_markup=_lake_kb(action),
+            )
+            return
+        await query.edit_message_text(
+            f"{lakes[lake_id]}\nChoose a spot 👇",
+            reply_markup=_spot_kb(action, lake_id, lang),
+        )
+        return
+
+    # --- Interactive alert setup: al:new -> wl:al:<lake> -> al:<point> ->
+    # threshold buttons -> al:set:<point>:<kn> (created).
+    if data == "al:new":
+        await query.edit_message_text("⚠️ New alert\nChoose a lake 👇", reply_markup=_lake_kb("al"))
+        return
+
+    if data.startswith("al:") and data.count(":") == 1 and data != "al:new":
+        point_id = data[3:]
+        if point_id not in (load_settings().operational_point_ids or []):
+            await query.edit_message_text("⚠️ New alert\nChoose a lake 👇", reply_markup=_lake_kb("al"))
+            return
+        await query.edit_message_text(
+            f"⚠️ Alert on {_point_label(point_id)}\nNotify me when wind ≥ 👇",
+            reply_markup=_alert_threshold_kb(point_id),
+        )
+        return
+
+    if data.startswith("al:set:") and data.count(":") == 2:
+        _, point_id, kn_str = data.split(":")
+        try:
+            kn = float(kn_str)
+        except ValueError:
+            kn = 8.0
+        aid = user_db.create_alert(update.effective_user.id, point_id, kn)
+        await query.edit_message_text(
+            f"✅ Alert #{aid}: will notify when wind ≥ {kn:.0f}kn at {_point_label(point_id)}",
+            reply_markup=_main_menu_kb(user.get("telegram_user_id")),
+        )
+        return
+
+    # --- Onboarding favorite via the lake-first picker: fav:<point> --------
+    if data.startswith("fav:") and data.count(":") == 1:
+        uid = update.effective_user.id
+        picked = data[4:]
+        if picked in (load_settings().operational_point_ids or []):
+            user_db.set_user_preference(uid, "favorite_point_id", picked)
+        await query.edit_message_text(_ob_text(lang, "done"), reply_markup=_main_menu_kb(uid))
+        return
+
     # --- Wind: point + time selected → show result (CHECK FIRST — 2 colons) ---
     if data.startswith("w:") and data.count(":") == 2:
         _, point_id, hours_str = data.split(":")
@@ -712,10 +930,12 @@ async def _menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             return
         forecast = await _asyncio.to_thread(_fetch_forecast_at, point_id, target)
         text = _format_wind_infographic(pred, forecast, lang, units)
+        lake_id = _lake_of_point(point_id)
+        back_cb = f"wl:w:{lake_id}" if lake_id else "w:back"
         await query.edit_message_text(
             text,
             reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("« Back to points", callback_data="w:back"),
+                InlineKeyboardButton("« Back to spots", callback_data=back_cb),
                 InlineKeyboardButton("🏠 Main menu", callback_data="m:back"),
             ]]),
         )
@@ -725,13 +945,14 @@ async def _menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if data.startswith("w:") and data != "w:back":
         point_id = data[2:]
         await query.edit_message_text(
-            f"🌬 {point_id.replace('_', ' ').title()}\nChoose a time 👇",
+            f"🌬 {_point_label(point_id)}\nChoose a time 👇",
             reply_markup=_time_kb("w", point_id),
         )
         return
 
     if data == "w:back":
-        await query.edit_message_text("🌬 Wind\nChoose a point 👇", reply_markup=_point_kb("w", lang))
+        # Legacy keyboard: upgrade to the lake-first picker.
+        await query.edit_message_text("🌬 Wind\nChoose a lake 👇", reply_markup=_lake_kb("w"))
         return
 
     # --- Today: point selected → show hourly table ---
@@ -744,13 +965,13 @@ async def _menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await query.edit_message_text(
             text,
             reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("« Back", callback_data="m:back"),
+                InlineKeyboardButton("« Main menu", callback_data="m:back"),
             ]]),
         )
         return
 
     if data == "t:back":
-        await query.edit_message_text("📅 Today\nChoose a point 👇", reply_markup=_point_kb("t", lang))
+        await query.edit_message_text("📅 Today\nChoose a lake 👇", reply_markup=_lake_kb("t"))
         return
 
     # --- Weekend: spot selected → Sat 07:00 → Sun 22:00 local timeline ---
@@ -761,15 +982,35 @@ async def _menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     if data == "wk:back":
         await query.edit_message_text(
-            "🗓 Weekend\nChoose a spot 👇", reply_markup=_point_kb("wk", lang)
+            "🗓 Weekend\nChoose a lake 👇", reply_markup=_lake_kb("wk")
         )
         return
 
-    # --- Map: time selected → generate + send heatmap ---
-    if data.startswith("map:"):
-        hours = int(data[4:]) if data[4:].isdigit() else 0
+    # --- Map: lake chosen (mp:<lake>) → time picker for that lake ----------
+    if data.startswith("mp:") and data.count(":") == 1:
+        lake_id = data[3:]
+        title = "All lakes" if lake_id == "all" else _lake_name(lake_id)
+        await query.edit_message_text(
+            f"🗺 Wind Map — {title}\nChoose a time 👇",
+            reply_markup=_map_time_kb(lake_id),
+        )
+        return
+
+    # --- Map: time selected → generate + send heatmap ----------------------
+    # New scheme: map:<lake|all>:<hours>; legacy stale keyboards still send
+    # map:<hours> (1 colon) — treated as All lakes.
+    if data.startswith("map:") and data.count(":") == 2:
+        _, lake_sel, hours_str = data.split(":")
+        hours = int(hours_str) if hours_str.isdigit() else 0
         target = utcnow() + timedelta(hours=hours)
-        await _send_map(query, target, lang, user.get("telegram_user_id"))
+        await _send_map(query, target, lang, user.get("telegram_user_id"), lake_id=lake_sel)
+        return
+
+    if data.startswith("map:") and data.count(":") == 1:
+        hours_str = data[4:]
+        hours = int(hours_str) if hours_str.isdigit() else 0
+        target = utcnow() + timedelta(hours=hours)
+        await _send_map(query, target, lang, user.get("telegram_user_id"), lake_id="all")
         return
 
     # --- Trend: point selected → generate + send chart ---
@@ -779,12 +1020,21 @@ async def _menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     if data == "tr:back":
-        await query.edit_message_text("📈 Trend\nChoose a point 👇", reply_markup=_point_kb("tr", lang))
+        await query.edit_message_text("📈 Trend\nChoose a lake 👇", reply_markup=_lake_kb("tr"))
         return
 
 
-async def _sailing_recommendation(query, user, lang, units, user_id=None) -> None:
-    """GO/NO-GO sailing recommendation across all points.
+def _lake_name(lake_id: str) -> str:
+    for lid, name in _lake_list():
+        if lid == lake_id:
+            return name
+    return lake_id.replace("_", " ").title()
+
+
+async def _sailing_recommendation(
+    query, user, lang, units, user_id=None, day_offset: int = 0,
+) -> None:
+    """GO/NO-GO sailing recommendation, grouped by lake.
 
     Phase 2: served from the forecast store projection — ONE bulk query per
     projection TTL (5 min) instead of 42 DuckDB connections per request.
@@ -793,6 +1043,9 @@ async def _sailing_recommendation(query, user, lang, units, user_id=None) -> Non
     web "Go sailing?" card all answer with the SAME numbers. The window
     rule is preserved (>=2 sailable hours => GO) but hour counting is now
     probability-based: P(>=8 kn) >= 0.5 from the calibrated band.
+    Phase 6 (operator): rows are grouped under a lake header with a per-lake
+    best — 26 spots on one list was unreadable. `day_offset=1` targets
+    TOMORROW's 11-16 window (the "Tomorrow" menu entry).
     """
     import zoneinfo
 
@@ -805,52 +1058,82 @@ async def _sailing_recommendation(query, user, lang, units, user_id=None) -> Non
 
     local_now = to_local(utcnow(), s.project.timezone)
 
-    lines = ["━━━━━━━━━━━━━━━━━━━━━━", f"  ⛵ SAILING REPORT — {local_now.strftime('%a %b %d')}", "━━━━━━━━━━━━━━━━━━━━━━"]
+    title = "TOMORROW" if day_offset else "SAILING REPORT"
+    date_str = (local_now + timedelta(days=day_offset)).strftime("%a %b %d")
+    lines = ["━━━━━━━━━━━━━━━━━━━━━━", f"  ⛵ {title} — {date_str}", "━━━━━━━━━━━━━━━━━━━━━━"]
 
-    # Phase 4 (W2): decision window = today 11:00-16:00 local (the historical
-    # /sailing window). Once the afternoon is over, the report targets
-    # TOMORROW's window instead of hours already past.
-    window_start_local = local_now.replace(hour=11, minute=0, second=0, microsecond=0)
-    if local_now.hour >= 17:
+    # Decision window = 11:00-16:00 local of the target day. For TODAY, once
+    # the afternoon is over the report targets tomorrow instead (legacy rule).
+    window_start_local = local_now.replace(hour=11, minute=0, second=0, microsecond=0) + timedelta(days=day_offset)
+    if day_offset == 0 and local_now.hour >= 17:
         window_start_local += timedelta(days=1)
     window_start_utc = to_aware_utc(window_start_local).replace(tzinfo=None)
 
-    best_point = None
-    best_dec = None
-    for vp_id in s.operational_point_ids or []:
-        rows = await store.get_series(vp_id, hours=17, start=window_start_utc)
-        if not rows:
+    overall_best = None  # (p_go, point, dec) across all lakes
+    any_rows = False
+
+    for lid, lake_disp in _lake_list():
+        spots = _points_of_lake(lid)
+        if not spots:
             continue
-        dec = compute_decision(rows, tz=tz)
-        if not dec.hours:
-            continue
+        lake_lines: list[str] = []
+        lake_best = None
+        for pid, label in spots:
+            rows = await store.get_series(pid, hours=17, start=window_start_utc)
+            if not rows:
+                continue
+            dec = compute_decision(rows, tz=tz)
+            if not dec.hours:
+                continue
+            any_rows = True
 
-        # 11-16h subset for the per-point line (max/avg/sailable hours).
-        win_hours = [h for h in dec.hours if h.hour is not None and 11 <= h.hour <= 16]
-        if not win_hours:
-            win_hours = dec.hours[:6]
-        max_speed = max(h.speed_kn for h in win_hours)
-        avg_speed = sum(h.speed_kn for h in win_hours) / len(win_hours)
-        v_max, u = _convert_speed(max_speed, units)
-        v_avg, _ = _convert_speed(avg_speed, units)
+            # 11-16h subset for the per-point line (max/avg/sailable hours).
+            win_hours = [h for h in dec.hours if h.hour is not None and 11 <= h.hour <= 16]
+            if not win_hours:
+                win_hours = dec.hours[:6]
+            max_speed = max(h.speed_kn for h in win_hours)
+            avg_speed = sum(h.speed_kn for h in win_hours) / len(win_hours)
+            v_max, u = _convert_speed(max_speed, units)
+            v_avg, _ = _convert_speed(avg_speed, units)
 
-        # Sailable hours: P(>=8 kn) >= 0.5 (calibrated band, shared module)
-        sail_hours = sum(1 for h in win_hours if h.p_go >= 0.5)
+            # Sailable hours: P(>=8 kn) >= 0.5 (calibrated band, shared module)
+            sail_hours = sum(1 for h in win_hours if h.p_go >= 0.5)
 
-        if dec.verdict == "go" and (best_dec is None or dec.peak_p_go > best_dec.peak_p_go):
-            best_dec = dec
-            best_point = vp_id
+            mark = "✅" if sail_hours >= 2 else "⚠️" if sail_hours >= 1 else "❌"
+            lake_lines.append(
+                f"  {mark} {label:<20} max {v_max:.1f}{u} avg {v_avg:.1f}{u} ({sail_hours}h ≥8kn)"
+            )
+            if dec.verdict == "go" and (lake_best is None or dec.peak_p_go > lake_best.peak_p_go):
+                lake_best = dec
+                lake_best_point = pid
+            if overall_best is None or (dec.verdict == "go" and dec.peak_p_go > overall_best[0]):
+                overall_best = (dec.peak_p_go, pid, dec)
 
-        mark = "✅" if sail_hours >= 2 else "⚠️" if sail_hours >= 1 else "❌"
-        lines.append(f"  {mark} {vp_id.replace('_',' ').title():<20} max {v_max:.1f}{u} avg {v_avg:.1f}{u} ({sail_hours}h ≥8kn)")
+        if lake_lines:
+            lines.append(f"  {lake_disp}")
+            lines.extend(lake_lines)
+            if lake_best is not None:
+                v, u = _convert_speed(lake_best.best_speed_kn or 0.0, units)
+                lines.append(
+                    f"  🏆 {lake_disp}: {lake_best_point.replace('_',' ').title()} "
+                    f"@ {lake_best.best_hour or '--'}:00 · {v:.1f} {u}"
+                )
+            lines.append("")
 
-    if best_point and best_dec is not None:
-        v, u = _convert_speed(best_dec.best_speed_kn or 0.0, units)
+    if not any_rows:
+        lines.append("  No forecast data yet — try again after the next cycle.")
         lines.append("━━━━━━━━━━━━━━━━━━━━━━")
-        lines.append(f"  🏆 BEST: {best_point.replace('_',' ').title()} @ {best_dec.best_hour or '--'}:00")
-        lines.append(f"  🌬 Peak: {v:.1f} {u} · P(≥8kn) {best_dec.peak_p_go:.0%}")
-        if best_dec.regime:
-            lines.append(f"  🌡 Regime: {best_dec.regime}")
+        await query.edit_message_text(chr(10).join(lines), reply_markup=_main_menu_kb(user_id))
+        return
+
+    if overall_best is not None:
+        p_go, bp, bdec = overall_best
+        v, u = _convert_speed(bdec.best_speed_kn or 0.0, units)
+        lines.append("━━━━━━━━━━━━━━━━━━━━━━")
+        lines.append(f"  🏆 BEST: {_point_label(bp)} @ {bdec.best_hour or '--'}:00")
+        lines.append(f"  🌬 Peak: {v:.1f} {u} · P(≥8kn) {p_go:.0%}")
+        if bdec.regime:
+            lines.append(f"  🌡 Regime: {bdec.regime}")
         lines.append("  ⛵ GO SAILING!" if lang == "en" else "  ⛵ VAI!")
     else:
         lines.append("━━━━━━━━━━━━━━━━━━━━━━")
@@ -987,17 +1270,91 @@ def _format_weekend_timeline(
     return "\n".join(lines)
 
 
-async def _send_map(query, target_time, lang, user_id=None) -> None:
-    """Generate and send a heatmap image per lake.
+async def _best_now(query, user, lang, units, user_id=None) -> None:
+    """🏆 Best now — top spots across ALL lakes at this moment.
+
+    One tap answers "where is it windy right now?": ranks every operational
+    spot by the current predicted speed, shows the top 5 with direction and
+    the best hour over the next 12h for the overall winner, plus the latest
+    lake water temperature where a sensor reports (ARPA hydro — Como/Garda/
+    Maggiore).
+    """
+    from lakewind.forecast_store import store
+
+    s = load_settings()
+    now = utcnow()
+    rows_out: list[tuple[float, str, str]] = []  # (speed, pid, label)
+
+    for vp_id in s.operational_point_ids or []:
+        pred = await store.get_pred(vp_id, now)
+        if not pred:
+            continue
+        speed = pred.get("wind_speed_kn")
+        if speed is None:
+            continue
+        rows_out.append((float(speed), vp_id, _point_label(vp_id)))
+
+    if not rows_out:
+        await query.edit_message_text(
+            "❌ No forecast data yet.",
+            reply_markup=_main_menu_kb(user_id),
+        )
+        return
+
+    rows_out.sort(reverse=True)
+    top = rows_out[:5]
+
+    lines = ["━━━━━━━━━━━━━━━━━━━━━━", "  🏆 BEST SPOTS — NOW", "━━━━━━━━━━━━━━━━━━━━━━"]
+    medals = ["🥇", "🥈", "🥉", "4.", "5."]
+    for i, (speed, pid, label) in enumerate(top):
+        v, u = _convert_speed(speed, units)
+        lake_disp = _lake_name(_lake_of_point(pid) or "")
+        lines.append(f"  {medals[i]} {label} — {v:.1f} {u}  ({lake_disp})")
+
+    # Best hour over the next 12h for the winner + water temp of its lake
+    winner = top[0][1]
+    series = await store.get_series(winner, hours=13)
+    if series:
+        future = []
+        for p in series:
+            vt = p.get("valid_time")
+            if isinstance(vt, str):
+                try:
+                    vt = datetime.fromisoformat(vt)
+                except Exception:
+                    continue
+            if vt is None:
+                continue
+            if vt.tzinfo is not None:
+                vt = vt.replace(tzinfo=None)
+            if vt >= now:
+                future.append((vt, p.get("wind_speed_kn") or 0.0))
+        if future:
+            bt, bs = max(future, key=lambda x: x[1])
+            local_t = to_local(bt, s.project.timezone)
+            bv, bu = _convert_speed(bs, units)
+            lines.append("━━━━━━━━━━━━━━━━━━━━━━")
+            lines.append(f"  ⏱ {_point_label(winner)} peaks {local_t.strftime('%H:%M')} local — {bv:.1f} {bu}")
+
+    wt = _water_temp_c(_lake_of_point(winner) or "")
+    if wt is not None:
+        lines.append(f"  💧 Water: {wt:.1f}°C")
+    lines.append("━━━━━━━━━━━━━━━━━━━━━━")
+    await query.edit_message_text(chr(10).join(lines), reply_markup=_main_menu_kb(user_id))
+
+
+async def _send_map(query, target_time, lang, user_id=None, lake_id: str = "all") -> None:
+    """Generate and send a heatmap image for one lake (or all lakes).
 
     Phase 2 serving chain (precompute-on-write, serve-on-read):
       1. pre-rendered artifact from the last pipeline cycle (ms) — Como panel
       2. on-demand render in a worker thread, bounded by _render_semaphore
          — the event loop is NEVER blocked by matplotlib anymore
-    Phase 6: predictions are grouped by lake; one map is sent per lake with
-    data (Como first, then Garda/Maggiore on-demand renders — they are
-    intentionally NOT precomputed: 2 small panels, rendered in ~1-2 s each,
-    keeps the T420's per-cycle render budget unchanged).
+    Phase 6: predictions are grouped by lake; one map per lake with data.
+    Phase 6 (operator): the map menu asks for the LAKE first, so a tap sends
+    ONE photo for the picked lake instead of one per basin — 'all' keeps the
+    multi-photo behavior for the legacy/stale keyboards. Como stays
+    artifact-first; the others render on demand (~1-2 s each).
     """
     from lakewind import artifacts
     from lakewind.forecast_store import store
@@ -1019,6 +1376,14 @@ async def _send_map(query, target_time, lang, user_id=None) -> None:
         return
 
     groups = group_predictions_by_lake(preds)
+    if lake_id != "all":
+        groups = {lid: g for lid, g in groups.items() if lid == lake_id}
+        if not groups:
+            await query.edit_message_text(
+                f"❌ No data for {_lake_name(lake_id)} yet.",
+                reply_markup=_main_menu_kb(user_id),
+            )
+            return
     sent_any = False
     for lid, lake_preds in groups.items():
         png = None
@@ -1040,7 +1405,7 @@ async def _send_map(query, target_time, lang, user_id=None) -> None:
         sent_any = True
 
     if sent_any:
-        await query.edit_message_text("🗺 Maps sent above 👆", reply_markup=_main_menu_kb(user_id))
+        await query.edit_message_text("🗺 Map sent above 👆", reply_markup=_main_menu_kb(user_id))
     else:
         await query.edit_message_text("❌ Map generation failed.", reply_markup=_main_menu_kb(user_id))
 
@@ -1065,15 +1430,18 @@ async def _send_trend(query, point_id, lang, user_id=None) -> None:
 
 
 async def _alert_menu(query, user, lang, user_id=None) -> None:
-    """Show alert management menu."""
+    """Alert management menu — interactive setup (lake -> spot -> threshold)."""
     alerts = user_db.list_alerts(user["telegram_user_id"])
-    if not alerts:
-        text = "⚠️ Alerts\nNo alerts set.\n\nUse /alert set 8 dervio_shore\nto get notified when wind reaches 8kn at Dervio."
-    else:
+    rows = [[InlineKeyboardButton("➕ New alert", callback_data="al:new")]]
+    if alerts:
         text = "⚠️ Your Alerts\n\n"
         for a in alerts:
-            text += f"  • #{a['id']} {a['point_id']} ≥ {a['threshold_kn']}kn {'✅' if a['enabled'] else '❌'}\n"
-    await query.edit_message_text(text, reply_markup=_main_menu_kb(user_id))
+            text += f"  • #{a['id']} {_point_label(a['point_id'])} ≥ {a['threshold_kn']}kn {'✅' if a['enabled'] else '❌'}\n"
+        rows.append([InlineKeyboardButton("🗑 Delete via /alert del <id>", callback_data="m:alert")])
+    else:
+        text = "⚠️ Alerts\nNo alerts set yet.\n\nPick a lake and a spot, then a wind threshold —\nyou'll be notified when the forecast crosses it."
+    rows.append([InlineKeyboardButton("« Main menu", callback_data="m:back")])
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(rows))
 
 
 async def _settings_menu(query, user, lang, user_id=None) -> None:
@@ -1087,7 +1455,7 @@ async def _settings_menu(query, user, lang, user_id=None) -> None:
         f"Change with:\n"
         f"  /language en|it\n"
         f"  /units kn|ms|kmh\n"
-        f"  /prefs set favorite_point_id dervio_shore"
+        f"  /alert — set alerts interactively"
     )
     await query.edit_message_text(text, reply_markup=_main_menu_kb(user_id))
 
@@ -1125,8 +1493,8 @@ async def _wind_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     lang = _get_user_lang(user)
     units = _get_user_units(user)
     point_id = (context.args[0] if context.args else None) or user.get("favorite_point_id")
-    if not point_id:
-        await update.message.reply_text("🌬 Choose a point 👇", reply_markup=_point_kb("w", lang))
+    if not point_id or point_id not in (load_settings().operational_point_ids or []):
+        await update.message.reply_text("🌬 Choose a lake 👇", reply_markup=_lake_kb("w"))
         return
     from lakewind.forecast_store import store
 
@@ -1147,8 +1515,8 @@ async def _today_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     lang = _get_user_lang(user)
     units = _get_user_units(user)
     point_id = (context.args[0] if context.args else None) or user.get("favorite_point_id")
-    if not point_id:
-        await update.message.reply_text("📅 Choose a point 👇", reply_markup=_point_kb("t", lang))
+    if not point_id or point_id not in (load_settings().operational_point_ids or []):
+        await update.message.reply_text("📅 Choose a lake 👇", reply_markup=_lake_kb("t"))
         return
     from lakewind.forecast_store import store
 
@@ -1161,7 +1529,7 @@ async def _map_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     allowed, user = await _authorize(update)
     if not allowed:
         return
-    await update.message.reply_text("🗺 Choose a time 👇", reply_markup=_map_time_kb())
+    await update.message.reply_text("🗺 Choose a lake 👇", reply_markup=_map_lake_kb())
 
 
 async def _sailing_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1192,7 +1560,7 @@ async def _weekend_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     units = _get_user_units(user)
     point_id = (context.args[0] if context.args else None) or user.get("favorite_point_id")
     if not point_id:
-        await update.message.reply_text("🗓 Choose a spot 👇", reply_markup=_point_kb("wk", lang))
+        await update.message.reply_text("🗓 Choose a lake 👇", reply_markup=_lake_kb("wk"))
         return
 
     class FakeQuery:
@@ -1206,17 +1574,59 @@ async def _weekend_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await _send_weekend(fq, point_id, lang, units)
 
 
+async def _tomorrow_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/tomorrow — sailing report for tomorrow's 11-16 window."""
+    allowed, user = await _authorize(update)
+    if not allowed:
+        return
+    class FakeQuery:
+        def __init__(self, msg):
+            self.message = msg
+        async def answer(self):
+            pass
+        async def edit_message_text(self, text, reply_markup=None):
+            await self.message.reply_text(text, reply_markup=reply_markup)
+    fq = FakeQuery(update.message)
+    await _sailing_recommendation(
+        fq, user, _get_user_lang(user), _get_user_units(user),
+        user.get("telegram_user_id"), day_offset=1,
+    )
+
+
+async def _best_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/best — top spots across all lakes right now."""
+    allowed, user = await _authorize(update)
+    if not allowed:
+        return
+    if not _check_rate_limit(update.effective_user.id):
+        await update.message.reply_text("⏱ Too many commands. Try again later.")
+        return
+
+    class FakeQuery:
+        def __init__(self, msg):
+            self.message = msg
+        async def answer(self):
+            pass
+        async def edit_message_text(self, text, reply_markup=None):
+            await self.message.reply_text(text, reply_markup=reply_markup)
+    fq = FakeQuery(update.message)
+    await _best_now(fq, user, _get_user_lang(user), _get_user_units(user), user.get("telegram_user_id"))
+
+
 async def _trend_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     allowed, user = await _authorize(update)
     if not allowed:
         return
-    point_id = (context.args[0] if context.args else None) or user.get("favorite_point_id") or "mid_channel"
+    point_id = (context.args[0] if context.args else None) or user.get("favorite_point_id")
+    if not point_id or point_id not in (load_settings().operational_point_ids or []):
+        await update.message.reply_text("📈 Choose a lake 👇", reply_markup=_lake_kb("tr"))
+        return
     from lakewind.utils.heatmap_v3 import generate_trend_chart
     png = generate_trend_chart(point_id, hours=24)
     if png:
         await update.message.reply_photo(
             photo=io.BytesIO(png),
-            caption=f"📈 {point_id.replace('_', ' ').title()} — 24h trend",
+            caption=f"📈 {_point_label(point_id)} — 24h trend",
         )
     else:
         await update.message.reply_text("❌ No data for trend chart.")
@@ -1231,8 +1641,10 @@ async def _alert_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         alerts = user_db.list_alerts(update.effective_user.id)
         if not alerts:
             await update.message.reply_text(
-                "⚠️ No alerts set.\n\nUsage: /alert set 8 dervio_shore\n"
-                "This notifies you when wind reaches 8kn at Dervio."
+                "⚠️ No alerts set.\n\n"
+                "Set one interactively: tap /start → Alerts → New alert.\n"
+                "Or: /alert set 8 dervio — notifies you when wind\n"
+                "reaches 8kn at Dervio."
             )
             return
         text = "⚠️ Your Alerts\n\n"
@@ -1808,20 +2220,14 @@ async def _webapp_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if webapp_url:
         # Phase 4 (W4/F7): deep links per point — the dashboard reads
         # ?point=<id> and preselects it, so the bot can hand over context.
+        # Lake-first: one row per lake (dashboard reads ?lake= too), the
+        # spots of the first lake as direct buttons.
         base = webapp_url.rstrip("/")
-        s = load_settings()
         rows = []
-        row = []
-        for vp_id in (s.operational_point_ids or [])[:7]:
-            row.append(InlineKeyboardButton(
-                vp_id.replace("_", " ").title(),
-                url=f"{base}/?point={vp_id}",
-            ))
-            if len(row) == 2:
-                rows.append(row)
-                row = []
-        if row:
-            rows.append(row)
+        for lid, name in _lake_list():
+            rows.append([InlineKeyboardButton(
+                f"🌐 {name}", url=f"{base}/?lake={lid}",
+            )])
         keyboard = InlineKeyboardMarkup(rows)
     else:
         keyboard = None
@@ -1878,6 +2284,8 @@ def _register_handlers(app) -> None:
     app.add_handler(CommandHandler("map", _map_cmd))
     app.add_handler(CommandHandler("sailing", _sailing_cmd))
     app.add_handler(CommandHandler("weekend", _weekend_cmd))
+    app.add_handler(CommandHandler("best", _best_cmd))
+    app.add_handler(CommandHandler("tomorrow", _tomorrow_cmd))
     app.add_handler(CommandHandler("trend", _trend_cmd))
     app.add_handler(CommandHandler("alert", _alert_cmd))
     app.add_handler(CommandHandler("status", _status_cmd))

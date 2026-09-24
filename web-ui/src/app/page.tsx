@@ -393,6 +393,8 @@ export default function LakeWindDashboard() {
     const p = params.get('point');
     const h = parseInt(params.get('h') || '0', 10);
     const l = params.get('lang');
+    const lk = params.get('lake');
+    if (lk) setActiveLake(lk); // lake-first deep links (bot /webapp buttons)
     if (p) setSelectedPoint(p);
     if (!Number.isNaN(h) && HORIZONS.some(x => x.hours === h)) setSelectedHorizon(h);
     const storedLang = (l === 'it' || l === 'en' ? l : localStorage.getItem('lw_lang')) as Lang | null;
@@ -510,6 +512,7 @@ export default function LakeWindDashboard() {
     { id: 'lake_como', name: 'Como' },
     { id: 'lake_garda', name: 'Garda' },
     { id: 'lake_maggiore', name: 'Maggiore' },
+    { id: 'lake_bracciano', name: 'Bracciano' },
   ];
 
   // --- Precomputed heatmap fetch (blob, with provenance headers) ---

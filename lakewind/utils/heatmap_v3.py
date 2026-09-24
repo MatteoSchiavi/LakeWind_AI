@@ -118,6 +118,30 @@ def _map_display_name(label: str) -> str:
     return label
 
 
+def _figure_size_for(lake_id: str | None, compact: bool = False) -> tuple[float, float]:
+    """Figure size (inches) shaped like the lake panel (operator 'zoom' fix).
+
+    The former fixed 11x8.5 canvas fought the geographic aspect: the map
+    data is ~0.6 km-wide per km-tall for the alpine lakes, so a landscape
+    figure left the fixed-aspect axes as a narrow box with vast empty
+    margins (the map hugged the colorbar on the right, the left side of the
+    Telegram photo was blank). Sizing the figure from the panel's real
+    km aspect makes the map FILL the image — the photo the bot sends is
+    all map, with only thin title/footer/colorbar margins.
+    """
+    lon_min, lon_max, lat_min, lat_max, _ = _lake_bbox(lake_id)
+    pad = 0.010
+    w_deg = (lon_max + pad) - (lon_min - pad)
+    h_deg = (lat_max + pad) - (lat_min - pad)
+    lat0 = 0.5 * (lat_min + lat_max)
+    data_ratio = (w_deg * math.cos(math.radians(lat0))) / h_deg  # km wide / km tall
+    map_h_in = 6.4 if compact else 9.2
+    margin_w = 0.95 if compact else 1.45   # colorbar + tick labels
+    margin_h = 0.95 if compact else 1.30   # title + footer + tick labels
+    map_w_in = max(map_h_in * data_ratio, 4.2)
+    return (map_w_in + margin_w, map_h_in + margin_h)
+
+
 def _open_water_side(lon: float, lat: float, lake_id: str | None = None) -> str:
     """Return 'right' or 'left': the side of (lon, lat) where the lake opens.
 
@@ -139,7 +163,10 @@ def _open_water_side(lon: float, lat: float, lake_id: str | None = None) -> str:
     return "right"          # open water on both sides — default right
 
 
-def _draw_spot_cards(ax, spots: list[dict[str, Any]], xlim: tuple[float, float]) -> None:
+def _draw_spot_cards(
+    ax, spots: list[dict[str, Any]], xlim: tuple[float, float], ylim: tuple[float, float],
+    arrow_len_km: float = _ARROW_LEN_KM, extra_obstacles: list[tuple[float, float, float, float]] | None = None,
+) -> None:
     """Draw one compact two-line card per spot, on its open-water side.
 
         Dongo
@@ -153,6 +180,15 @@ def _draw_spot_cards(ax, spots: list[dict[str, Any]], xlim: tuple[float, float])
     shifted vertically until it hits nothing (greedy north-to-south with
     fallback offsets; the other dots are no-go obstacles). A thin leader
     line ties every card to its dot, so a shifted card stays unambiguous.
+
+    Overlap root cause fixed: extents are measured with the FINAL axes
+    transform — _draw_panel_v3 now sets xlim/ylim/aspect BEFORE this runs
+    and a canvas.draw() settles constrained layout + the fixed aspect, so
+    the measured data-space boxes match what is actually painted. (They
+    were measured under the auto-scaled pre-aspect transform, i.e. too
+    small — that is why tags still collided.) The fallback grid is also
+    scaled to the panel (not fixed degrees) and every candidate is bounds-
+    checked so no shift can push a card off-frame or under the colorbar.
     """
     if not spots:
         return
@@ -160,7 +196,7 @@ def _draw_spot_cards(ax, spots: list[dict[str, Any]], xlim: tuple[float, float])
     from matplotlib.patches import FancyBboxPatch
 
     fig = ax.figure
-    fig.canvas.draw()  # settle constrained layout before measuring extents
+    fig.canvas.draw()  # settle constrained layout + aspect BEFORE measuring
     renderer = fig.canvas.get_renderer()
     inv = ax.transData.inverted()
 
@@ -168,17 +204,31 @@ def _draw_spot_cards(ax, spots: list[dict[str, Any]], xlim: tuple[float, float])
         (x0, y0), (x1, y1) = inv.transform([(bb.x0, bb.y0), (bb.x1, bb.y1)])
         return min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1)
 
-    dy_candidates = (0.0, -0.0055, 0.0055, -0.011, 0.011, -0.0165, 0.0165,
-                     -0.022, 0.022, -0.0275, 0.0275, -0.033, 0.033,
-                     -0.044, 0.044, -0.055, 0.055)
-    # Lateral fallback: near-co-located spots (e.g. Domaso/Gravedona 0.002 deg
-    # apart) can NEVER clear each other by vertical shifts alone — the second
-    # card slides further out over the lake instead. Applied on top of dy.
-    dx_candidates = (0.0, 0.008, -0.008, 0.016, -0.016, 0.024, -0.024)
-    arrow_room = _ARROW_GAP_DEG + 2.0 * 0.5 * _ARROW_LEN_KM / 77.0 + 0.001
+    # Candidate shifts SCALE WITH THE PANEL (the old fixed-degree grid was
+    # coarse for small basins and tiny for Como). Fine vertical steps so
+    # stacked cards on one shore can always separate; lateral steps as the
+    # last resort for near-co-located spots.
+    h_deg = ylim[1] - ylim[0]
+    w_deg = xlim[1] - xlim[0]
+    dy_step = h_deg / 120.0
+    dy_max = h_deg * 0.42
+    dy_candidates = [0.0]
+    k = 1
+    while k * dy_step <= dy_max:
+        dy_candidates.extend((-k * dy_step, k * dy_step))
+        k += 1
+    dx_step = w_deg / 60.0
+    dx_candidates = [0.0, dx_step, -dx_step, 2 * dx_step, -2 * dx_step,
+                     3 * dx_step, -3 * dx_step]
+    x_lo, x_hi = xlim[0] + 0.004, xlim[1] - 0.004
+    arrow_room = _ARROW_GAP_DEG + 2.0 * 0.5 * arrow_len_km / 77.0 + 0.001
+    _CARD_PAD_X = 0.0016
+    _CARD_PAD_Y = 0.0011
 
     obstacles = [(p["lon"] - 0.0085, p["lon"] + 0.0085,
                   p["lat"] - 0.0065, p["lat"] + 0.0065) for p in spots]
+    if extra_obstacles:
+        obstacles.extend(extra_obstacles)  # compass rose + scale bar
     placed: list[tuple[float, float, float, float]] = []
     recs: list[dict[str, Any]] = []
 
@@ -205,7 +255,7 @@ def _draw_spot_cards(ax, spots: list[dict[str, Any]], xlim: tuple[float, float])
 
         # Keep the card inside the axes — near the east/west map edge the
         # text would otherwise spill over the frame or under the colorbar.
-        far, lim = (x1, xlim[1] - 0.004) if sign > 0 else (x0, xlim[0] + 0.004)
+        far, lim = (x1, x_hi) if sign > 0 else (x0, x_lo)
         dx = (lim - far) if ((far > lim) if sign > 0 else (far < lim)) else 0.0
         if dx:
             tx += dx
@@ -216,36 +266,45 @@ def _draw_spot_cards(ax, spots: list[dict[str, Any]], xlim: tuple[float, float])
             sx0 += dx
             sx1 += dx
 
-        box = (0.0, 0.0, 0.0, 0.0)
         chosen = 0.0
         chosen_dx = 0.0
-        # Keep the sliding card inside the axes as well — a big lateral
-        # fallback must never push text past the frame or under the colorbar.
+        found = False
         for dy in dy_candidates:
             done = False
             for dx in dx_candidates:
-                bx0 = (x0 + dx) if sign > 0 else (x0 + dx) - arrow_room
-                bx1 = (x1 + dx) + arrow_room if sign > 0 else (x1 + dx)
-                by0, by1 = y0 + dy, y1 + dy
-                box = (bx0, bx1, by0, by1)
+                bx0 = (x0 + dx - _CARD_PAD_X) if sign > 0 else (x0 + dx - arrow_room - _CARD_PAD_X)
+                bx1 = (x1 + dx + arrow_room + _CARD_PAD_X) if sign > 0 else (x1 + dx + _CARD_PAD_X)
+                by0, by1 = y0 + dy - _CARD_PAD_Y, y1 + dy + _CARD_PAD_Y
+                # Bounds check: a lateral fallback must never push the card
+                # past the frame or under the colorbar.
+                if bx0 < x_lo or bx1 > x_hi:
+                    continue
                 if not any(bx0 < ox1 and bx1 > ox0 and by0 < oy1 and by1 > oy0
                            for ox0, ox1, oy0, oy1 in placed + obstacles):
                     chosen = dy
                     chosen_dx = dx
+                    found = True
                     done = True
                     break
             if done:
                 break
+        if not found:
+            # Densely packed basin: accept the unshifted card rather than
+            # dropping information, but keep it inside the frame.
+            chosen, chosen_dx = 0.0, 0.0
         if chosen_dx:
             tx += chosen_dx
-            t_name.set_position((tx, sp["lat"] + chosen + _NAME_LINE_DY))
-            t_speed.set_position((tx, sp["lat"] + chosen + _SPEED_LINE_DY))
             x0 += chosen_dx
             x1 += chosen_dx
             sx0 += chosen_dx
             sx1 += chosen_dx
-        placed.append(box)
-        # Re-apply the chosen fallback shift to the text artists themselves —
+        placed.append((
+            (x0 - _CARD_PAD_X) if sign > 0 else (x0 - arrow_room - _CARD_PAD_X),
+            (x1 + arrow_room + _CARD_PAD_X) if sign > 0 else (x1 + _CARD_PAD_X),
+            y0 + chosen - _CARD_PAD_Y,
+            y1 + chosen + _CARD_PAD_Y,
+        ))
+        # Apply the chosen fallback shift to the text artists themselves —
         # the patch/leader/arrow below are drawn from the shifted geometry.
         t_name.set_position((tx, sp["lat"] + chosen + _NAME_LINE_DY))
         t_speed.set_position((tx, sp["lat"] + chosen + _SPEED_LINE_DY))
@@ -269,8 +328,8 @@ def _draw_spot_cards(ax, spots: list[dict[str, Any]], xlim: tuple[float, float])
         if r["speed"] is not None and sp.get("wind_dir_deg") is not None:
             go = math.radians((float(sp["wind_dir_deg"]) + 180.0) % 360.0)
             km_lon = 111.32 * math.cos(math.radians(sp["lat"]))
-            hlx = 0.5 * _ARROW_LEN_KM * math.sin(go) / km_lon
-            hly = 0.5 * _ARROW_LEN_KM * math.cos(go) / km_lat
+            hlx = 0.5 * arrow_len_km * math.sin(go) / km_lon
+            hly = 0.5 * arrow_len_km * math.cos(go) / km_lat
             cx = (r["sx1"] if sign > 0 else r["sx0"]) + sign * (_ARROW_GAP_DEG + abs(hlx))
             cy = r["speed_y"]
             x0, x1 = min(r["x0"], cx - abs(hlx)), max(r["x1"], cx + abs(hlx))
@@ -358,7 +417,7 @@ def _interpolate_grid_v3(
     return grid_lons, grid_lats, grid_speeds
 
 
-def _add_scale_bar_v3(ax, lat: float, lon: float, length_km: float = 2.0) -> None:
+def _add_scale_bar_v3(ax, lat: float, lon: float, length_km: float = 2.0) -> tuple[float, float, float, float]:
     """Draw a scale bar (lon-direction bar, geodesic-corrected).
 
     At 46°N one degree of longitude spans only ~77 km (vs 111 km for
@@ -366,6 +425,10 @@ def _add_scale_bar_v3(ax, lat: float, lon: float, length_km: float = 2.0) -> Non
     factor, so under the (now corrected) geographic aspect the bar under-
     represented real east-west distance by ~30%. The cosine factor makes
     the drawn bar a true length_km on the ground.
+
+    Returns the occupied rect (x0, x1, y0, y1) so card placement can treat
+    it as a no-go obstacle (on compact basins like Bracciano the bar sits
+    inside the lake's bbox frame and cards used to drift onto it).
     """
     km_per_deg_lat = 111.32
     km_per_deg_lon = km_per_deg_lat * math.cos(math.radians(lat))
@@ -381,10 +444,11 @@ def _add_scale_bar_v3(ax, lat: float, lon: float, length_km: float = 2.0) -> Non
         fontsize=7, ha="center", va="top", fontweight="bold", zorder=10,
         bbox=dict(boxstyle="round,pad=0.1", facecolor="white", alpha=0.8),
     )
+    return (x0 - 0.002, x1 + 0.002, y - 0.006, y + 0.003)
 
 
-def _add_compass_v3(ax, lat: float, lon: float, size: float = 0.006) -> None:
-    """Draw a compass rose / north arrow."""
+def _add_compass_v3(ax, lat: float, lon: float, size: float = 0.006) -> tuple[float, float, float, float]:
+    """Draw a compass rose / north arrow. Returns its occupied rect."""
     ax.annotate(
         "", xy=(lon, lat + size), xytext=(lon, lat),
         arrowprops=dict(arrowstyle="->", lw=2.5, color="black"),
@@ -392,6 +456,7 @@ def _add_compass_v3(ax, lat: float, lon: float, size: float = 0.006) -> None:
     )
     ax.text(lon, lat + size + 0.0015, "N", fontsize=8, fontweight="bold",
             ha="center", zorder=10)
+    return (lon - 0.005, lon + 0.005, lat - 0.002, lat + size + 0.006)
 
 
 def _draw_data_overlay(ax, predictions: list[dict[str, Any]], valid_time: datetime) -> None:
@@ -594,23 +659,9 @@ def _draw_panel_v3(
 
     # V5 shore-side cards: name / speed / direction arrow per spot, on the
     # open-water side of each dot (east shore -> left, west shore -> right).
-    spots = []
-    for p in valid:
-        vp = vp_by_id.get(p["point_id"])
-        if vp is None or vp.label is None:
-            continue  # aux gradient points carry no card
-        spots.append({**p, "name": _map_display_name(vp.label),
-                      "side": _open_water_side(p["lon"], p["lat"], lake_id)})
-    _draw_spot_cards(ax, spots, xlim)
-
-    # Compass + scale bar (whole-lake map: 5 km reference)
-    _add_compass_v3(ax, lat=lat_min + 0.014, lon=lon_min + 0.015, size=0.007)
-    _add_scale_bar_v3(ax, lat=lat_min + 0.007, lon=lon_max - 0.055, length_km=5.0)
-
-    # Data overlay (regime + pressure gradient)
-    if show_data_overlay:
-        _draw_data_overlay(ax, valid, target_time)
-
+    # MUST run after xlim/ylim/aspect are final (below): the collision
+    # boxes are measured in data space, and measuring them under a stale
+    # transform is exactly what made tags overlap on the old maps.
     ax.set_xlim(*xlim)
     ax.set_ylim(*ylim)
     # Geographic (equirectangular) aspect: 1° of latitude must display
@@ -625,6 +676,36 @@ def _draw_panel_v3(
     for spine in ax.spines.values():
         spine.set_edgecolor("#888")
         spine.set_linewidth(0.5)
+
+    # Compass + scale bar BEFORE the cards: their rects become no-go
+    # obstacles (on compact basins the bar sits inside the frame and cards
+    # used to drift onto it). Scale adapts to the basin — a 5 km bar on the
+    # 9-km-wide Bracciano spanned half the lake.
+    center_lat_km = 111.32 * math.cos(math.radians(center_lat))
+    basin_km_w = (xlim[1] - xlim[0]) * center_lat_km
+    bar_km = 5.0 if basin_km_w >= 25.0 else 2.0
+    bar_deg = bar_km / center_lat_km
+    compass_rect = _add_compass_v3(ax, lat=lat_min + 0.014, lon=lon_min + 0.015, size=0.007)
+    bar_rect = _add_scale_bar_v3(
+        ax, lat=lat_min + 0.0065, lon=xlim[1] - 0.014 - bar_deg, length_km=bar_km,
+    )
+
+    spots = []
+    for p in valid:
+        vp = vp_by_id.get(p["point_id"])
+        if vp is None or vp.label is None:
+            continue  # aux gradient points carry no card
+        spots.append({**p, "name": _map_display_name(vp.label),
+                      "side": _open_water_side(p["lon"], p["lat"], lake_id)})
+    # Direction arrows shrink with the basin: 0.85 km reads well on the
+    # 33-km-wide Como panel but dwarfs the 9-km Bracciano one.
+    arrow_len_km = max(0.35, min(_ARROW_LEN_KM, basin_km_w / 30.0 * _ARROW_LEN_KM))
+    _draw_spot_cards(ax, spots, xlim, ylim, arrow_len_km=arrow_len_km,
+                     extra_obstacles=[compass_rect, bar_rect])
+
+    # Data overlay (regime + pressure gradient)
+    if show_data_overlay:
+        _draw_data_overlay(ax, valid, target_time)
 
     if show_title:
         n_spots = len(valid)
@@ -699,7 +780,7 @@ def generate_heatmap_v3(
     except Exception:
         import matplotlib.pyplot as plt
 
-    figsize = (8, 6) if compact else (11, 8.5)
+    figsize = _figure_size_for(lake_id, compact)
     dpi = 120 if compact else 160
 
     fig, ax = plt.subplots(figsize=figsize, constrained_layout=True)

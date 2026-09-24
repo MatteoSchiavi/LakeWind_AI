@@ -524,15 +524,82 @@ class TestOnboarding:
         data = [b.callback_data for row in _onboarding_kb_units().inline_keyboard for b in row]
         assert data == ["ob:units:kn", "ob:units:ms", "ob:units:kmh"]
 
-    def test_fav_keyboard_lists_operational_points_and_skip(self):
+    def test_fav_keyboard_is_lake_first(self):
         from lakewind.config import load_settings
         from lakewind.interfaces.telegram_bot import _onboarding_kb_fav
 
         kb = _onboarding_kb_fav("en")
         data = [b.callback_data for row in kb.inline_keyboard for b in row]
-        ops = load_settings().operational_point_ids or []
-        assert data[:-1] == [f"ob:fav:{p}" for p in ops]
-        assert data[-1] == "ob:skip"
+        lakes = list((load_settings().lakes or {}).keys())
+        # every lake gets a wl:fav:<lake> button, then the back row
+        assert data[:-1] == [f"wl:fav:{lid}" for lid in lakes]
+        assert data[-1] == "m:back"
+
+
+class TestLakeFirstMenus:
+    """Phase 6 (operator): spot menus go lake -> spot, never a flat list."""
+
+    def test_lake_kb_lists_all_lakes(self):
+        from lakewind.config import load_settings
+        from lakewind.interfaces.telegram_bot import _lake_kb
+
+        kb = _lake_kb("w")
+        data = [b.callback_data for row in kb.inline_keyboard for b in row]
+        lakes = list((load_settings().lakes or {}).keys())
+        assert data[:-1] == [f"wl:w:{lid}" for lid in lakes]
+        assert data[-1] == "m:back"
+
+    def test_spot_kb_scoped_to_one_lake(self):
+        from lakewind.interfaces.telegram_bot import _points_of_lake, _spot_kb
+
+        kb = _spot_kb("w", "lake_bracciano")
+        data = [b.callback_data for row in kb.inline_keyboard for b in row]
+        spots = [pid for pid, _ in _points_of_lake("lake_bracciano")]
+        assert data[: len(spots)] == [f"w:{pid}" for pid in spots]
+        assert data[-2] == "wl:w" and data[-1] == "m:back"
+        # no cross-lake leakage
+        assert all(pid in spots for pid in ("trevignano", "anguillara"))
+        assert "dongo" not in data
+
+    def test_lake_of_point_roundtrip(self):
+        from lakewind.interfaces.telegram_bot import _lake_of_point, _points_of_lake
+
+        for lid in ("lake_como", "lake_garda", "lake_maggiore", "lake_bracciano"):
+            for pid, _label in _points_of_lake(lid):
+                assert _lake_of_point(pid) == lid
+
+    def test_time_kb_back_returns_to_lake_spots(self):
+        from lakewind.interfaces.telegram_bot import _time_kb
+
+        kb = _time_kb("w", "dongo")
+        data = [b.callback_data for row in kb.inline_keyboard for b in row]
+        assert "wl:w:lake_como" in data
+
+    def test_map_kb_lake_then_time(self):
+        from lakewind.interfaces.telegram_bot import _map_lake_kb, _map_time_kb
+
+        lk = [b.callback_data for row in _map_lake_kb().inline_keyboard for b in row]
+        assert lk[0] == "mp:all"
+        assert "mp:lake_bracciano" in lk
+        tk = [b.callback_data for row in _map_time_kb("lake_garda").inline_keyboard for b in row]
+        assert "map:lake_garda:0" in tk and "map:lake_garda:24" in tk
+        assert "m:map" in tk  # back re-opens the lake picker
+
+    def test_main_menu_admin_row_only_for_admins(self):
+        from lakewind.interfaces.telegram_bot import _main_menu_kb, is_user_admin
+
+        admin_id = 1762615402  # legacy configured admin
+        normal_id = 999999999
+        if is_user_admin(normal_id):  # open deployments promote nobody per-id
+            normal_id = -1
+        admin_rows = [b.callback_data for row in _main_menu_kb(admin_id).inline_keyboard for b in row]
+        normal_rows = [b.callback_data for row in _main_menu_kb(normal_id).inline_keyboard for b in row]
+        assert "m:admin" in admin_rows
+        assert "m:admin" not in normal_rows
+        # normal users still get the FULL standard UI
+        for cb in ("m:wind", "m:today", "m:map", "m:sail", "m:best", "m:tomorrow",
+                   "m:trend", "m:alert", "m:settings", "m:status"):
+            assert cb in normal_rows, f"{cb} missing from the normal UI"
 
 
 class TestHelpText:

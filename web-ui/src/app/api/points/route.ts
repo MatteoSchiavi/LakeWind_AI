@@ -50,6 +50,11 @@ const FALLBACK_POINTS: PointInfo[] = [
   { id: 'luino', lat: 46.0015, lon: 8.729, is_operational: true, sector: 'maggiore_nord', label: 'Luino', lake: 'lake_maggiore' },
   { id: 'cannero', lat: 46.018, lon: 8.7, is_operational: true, sector: 'maggiore_nord', label: 'Cannero Riviera', lake: 'lake_maggiore' },
   { id: 'cannobio', lat: 46.063, lon: 8.71, is_operational: true, sector: 'maggiore_nord', label: 'Cannobio', lake: 'lake_maggiore' },
+  // Phase 6: Lake Bracciano (Lazio, verified on-water, settings.yaml)
+  { id: 'trevignano', lat: 42.15222, lon: 12.2532, is_operational: true, sector: 'bracciano', label: 'Trevignano Romano', lake: 'lake_bracciano' },
+  { id: 'bracciano_city', lat: 42.10955, lon: 12.19022, is_operational: true, sector: 'bracciano', label: 'Bracciano', lake: 'lake_bracciano' },
+  { id: 'vigna_di_valle', lat: 42.08845, lon: 12.22092, is_operational: true, sector: 'bracciano', label: 'Vigna di Valle', lake: 'lake_bracciano' },
+  { id: 'anguillara', lat: 42.09691, lon: 12.27516, is_operational: true, sector: 'bracciano', label: 'Anguillara Sabazia', lake: 'lake_bracciano' },
   // Auxiliary (4) — macro-area pressure-gradient inputs, not forecast points
   { id: 'zurich', lat: 47.376, lon: 8.541, is_operational: false, sector: 'auxiliary', label: 'Zurich' },
   { id: 'milano_linate', lat: 45.445, lon: 9.278, is_operational: false, sector: 'auxiliary', label: 'Milano Linate' },
@@ -65,6 +70,7 @@ const SECTOR_FALLBACKS: Record<string, string> = {
   garda_nord: 'Garda Nord',
   garda_sud: 'Garda Sud',
   maggiore_nord: 'Maggiore Nord',
+  bracciano: 'Bracciano',
   auxiliary: 'Auxiliary',
 };
 

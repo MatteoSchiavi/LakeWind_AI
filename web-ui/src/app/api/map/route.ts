@@ -20,7 +20,7 @@ export async function GET(request: NextRequest) {
   const offset = Math.min(Math.max(parseInt(searchParams.get('offset') || '0', 10) || 0, 0), 24);
   // Phase 6: lake panel selector (lake_como default keeps artifact serving)
   const lakeParam = searchParams.get('lake') || 'lake_como';
-  const lake = ['lake_como', 'lake_garda', 'lake_maggiore'].includes(lakeParam) ? lakeParam : 'lake_como';
+  const lake = ['lake_como', 'lake_garda', 'lake_maggiore', 'lake_bracciano'].includes(lakeParam) ? lakeParam : 'lake_como';
 
   try {
     const upstream = `${API_URL}/api/map.png?offset=${offset}&lake=${lake}`;
